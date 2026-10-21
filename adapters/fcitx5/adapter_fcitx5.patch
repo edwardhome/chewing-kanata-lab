@@ -1,0 +1,53 @@
+--- a/src/eim.cpp
++++ b/src/eim.cpp
+@@ -19,6 +19,7 @@
+ #include <fcitx-utils/i18n.h>
+ #include <fcitx-utils/key.h>
+ #include <fcitx-utils/keysym.h>
++#include "policy_core.h"
+ 
+ namespace fcitx {
+ 
+@@ -108,7 +109,10 @@ public:
+         }
+ 
+         if (chewing_commit_Check(ctx)) {
+-            inputContext->commitString(safeChewing_commit_String(ctx));
++            policy_context_t pol_ctx = {POLICY_PROFILE_MARKDOWN, true, false};
++            auto raw = safeChewing_commit_String(ctx);
++            auto transformed = policy_transform_commit(raw.c_str(), &pol_ctx);
++            inputContext->commitString(transformed);
+         }
+         engine_->updateUI(inputContext);
+     }
+@@ -470,6 +474,18 @@ void ChewingEngine::keyEvent(const InputMethodEntry &entry,
+         keyEvent.filterAndAccept();
+         return;
+     }
++
++    // ASCII-first policy: bypass syntax keys when buffer is empty
++    if (chewing_buffer_Check(ctx) == 0 && chewing_bopomofo_Check(ctx) == 0) {
++        if (keyEvent.key().isSimple() && !keyEvent.rawKey().states().test(KeyState::Shift)) {
++            char keyChar = keyEvent.key().sym() & 0xff;
++            policy_context_t pol_ctx = {POLICY_PROFILE_MARKDOWN, false, false};
++            if (policy_should_bypass_key(keyChar, &pol_ctx)) {
++                CHEWING_DEBUG() << "ASCII-first: bypassing key " << keyChar;
++                return;
++            }
++        }
++    }
+ 
+     int chewingReturnValue = 0;
+     if (keyEvent.key().check(FcitxKey_space)) {
+@@ -562,7 +578,10 @@ void ChewingEngine::keyEvent(const InputMethodEntry &entry,
+     }
+     if (chewing_commit_Check(ctx)) {
+         keyEvent.filterAndAccept();
+-        ic->commitString(safeChewing_commit_String(ctx));
++        policy_context_t pol_ctx = {POLICY_PROFILE_MARKDOWN, false, false};
++        auto raw = safeChewing_commit_String(ctx);
++        auto transformed = policy_transform_commit(raw.c_str(), &pol_ctx);
++        ic->commitString(transformed);
+     }
+     updateUI(ic);
+ }

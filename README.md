@@ -34,36 +34,25 @@
    最小修改規劃、Windows TSF / Linux Fcitx5 具體修改點、公開 API/ABI 影響評估、系統隔離與不安裝覆蓋防護、上游追隨與同步策略。
 5. [**`docs/04_OUTPUT_POLICY.md`**](docs/04_OUTPUT_POLICY.md)  
    符號輸出政策詳細規格書：Profile 矩陣（`default`、`markdown`、`code`、`formal`、`raw-command`、`manual-fullwidth`）、受保護標記（URL/Email/Markdown/程式碼/Vim）、決策優先順序與快速鍵草案。
+6. [**`docs/05_PLATFORM_WINDOWS.md`**](docs/05_PLATFORM_WINDOWS.md)  
+   Windows TSF 內部架構深度研究：`ITfEditSession` (`InsertText` / `SetCompositionString`) 生命週期、按鍵過濾閘門與無痛 Bypass 機制。
+7. [**`docs/06_PLATFORM_LINUX.md`**](docs/06_PLATFORM_LINUX.md)  
+   Linux Fcitx5 / IBus 深度研究：`ChewingEngine::keyEvent` 分流、候選字攔截、Preedit 更新與 Flush 緩衝區沖刷。
+8. [**`docs/07_KANATA_INTERACTION_ANALYSIS.md`**](docs/07_KANATA_INTERACTION_ANALYSIS.md)  
+   Kanata 原始配置深度互動分析：小鍵盤事件流 vs Unicode 注入機制，以及為何 `(unicode u+003a)` 依然會被應用程式或輸入法變為全形的三大真實途徑剖析。
+9. [**`docs/08_POLICY_CORE_DESIGN.md`**](docs/08_POLICY_CORE_DESIGN.md)  
+   跨平台符號策略核心規格書：微秒級無鎖純演算法、查表規範（語法標點集與正式中文標點對照表）與 C-ABI 規格。
 
 ---
 
-## 3. 設定與原始碼模組結構
+## 3. 設定、策略核心與 Patch 草案
 
-```text
-chewing-kanata-lab/
-├── README.md                          # 專案總覽
-├── .gitignore                         # 忽略建置產物、個人詞庫與暫存檔案
-├── config/
-│   ├── kanata.original.kbd           # 【不可修改】使用者原始 Kanata 配置基準
-│   └── policy.example.toml            # 輸入法 Profile 與符號策略設定範例
-├── docs/                              # 5 份核心交付文件 (如上列)
-├── policy-core/                       # 跨平台純邏輯符號政策核心 (Rust + C ABI)
-│   ├── Cargo.toml
-│   ├── include/
-│   │   └── policy_core.h             # 提供給 C/C++ (Fcitx5) 呼叫之 C 標頭
-│   └── src/
-│       ├── librs
-│       └── capi.rs
-├── adapters/                          # 平台適配層 (Windows TSF / Linux Fcitx5 / IBus)
-│   ├── windows-tsf/
-│   ├── fcitx5/
-│   └── ibus/
-└── upstream/                          # 鎖定之上游原始碼工作樹
-    ├── libchewing/                    # Commit: ec7f595ea7726fa06a9493e819b81669eba605a5
-    ├── windows-chewing-tsf/           # Commit: 053d31ba10c089ae98508dd4a908ac2c2be3cb49
-    ├── fcitx5-chewing/                # Commit: 60096e8ef49df21de6c155d7a0785a58fcccb955
-    └── ibus-chewing/                  # Commit: 6e885f1a8556cb8cfcc657c5b0cfd71b93db4c5c
-```
+* **使用者基準配置**：[`config/kanata.original.kbd`](config/kanata.original.kbd)
+* **設定檔範例**：[`config/policy.example.toml`](config/policy.example.toml)
+* **共用策略核心骨架**：[`policy-core/`](policy-core/)（純 Rust 實作與 C-ABI 標頭）
+* **Windows TSF 最小補丁草案**：[`adapters/windows-tsf/adapter_tsf.patch`](adapters/windows-tsf/adapter_tsf.patch)
+* **Linux Fcitx5 最小補丁草案**：[`adapters/fcitx5/adapter_fcitx5.patch`](adapters/fcitx5/adapter_fcitx5.patch)
+* **上游工作樹同步腳本**：[`scripts/sync_upstream.ps1`](scripts/sync_upstream.ps1)
 
 ---
 

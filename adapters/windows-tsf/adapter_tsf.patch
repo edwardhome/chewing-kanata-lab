@@ -1,0 +1,46 @@
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -25,6 +25,7 @@ use chewing::zhuyin::Syllable;
+ use chewing_tip_core::config::{ChewingTsfConfig, Config};
+ use chewing_tip_core::shell::open_url;
++use chewing_policy_core::{PolicyContext, PolicyProfile, should_bypass_key, transform_commit};
+ 
+ const TF_ES_ASYNC: u32 = 0x8;
+ const TF_ES_READWRITE: u32 = 0x2;
+@@ -482,6 +483,19 @@ impl ChewingTextService {
+         if !self.is_composing() {
+             let shape_mode = self.chewing_editor.editor_options().character_form;
++            
++            // ASCII-first policy interception:
++            // If not composing, and the key is an ASCII syntax punctuation (e.g. ':', '[', ']', '`'),
++            // bypass IME and let application handle it directly.
++            if evt.ksym.is_ascii() {
++                let ascii_char = evt.ksym.to_unicode();
++                let ctx = PolicyContext {
++                    profile: PolicyProfile::Markdown, // default or active profile from cfg
++                    has_active_preedit: false,
++                    is_secure_field: false,
++                };
++                if should_bypass_key(ascii_char, &ctx) {
++                    debug!(ascii_char; "ASCII-first: bypassing key to application");
++                    return Ok(false);
++                }
++            }
++
+             // don't do further handling in pure English + half shape mode
+             if self.lang_mode.get() == LanguageMode::English
+                 && shape_mode == CharacterForm::Halfwidth
+@@ -718,6 +732,13 @@ impl ChewingTextService {
+                 if let Some(param) = text_action {
+                     commit.push_str(&param);
+                 }
++                // Transform commit string through ASCII-first policy
++                let ctx = PolicyContext {
++                    profile: PolicyProfile::Markdown,
++                    has_active_preedit: true,
++                    is_secure_field: false,
++                };
++                commit = transform_commit(&commit, &ctx).to_owned();
+                 commit
+             } else {
+                 String::new()
