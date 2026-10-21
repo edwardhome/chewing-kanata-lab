@@ -1,0 +1,30 @@
+# Local build / IDE
+build/
+out/
+dist/
+.cache/
+.vscode/
+.idea/
+*.obj
+*.o
+*.pdb
+*.log
+
+# Rust build artifacts
+**/target/
+
+# Local personal data
+user-data/
+private-config/
+*.sqlite
+*.db
+*.sqlite-wal
+*.sqlite-shm
+
+# AI assets (avoid binary/model weight commits)
+models/
+*.gguf
+*.safetensors
+
+# Upstream working trees (tracked by scripts/sync_upstream.ps1 and docs/00_UPSTREAM_INVENTORY.md)
+upstream/

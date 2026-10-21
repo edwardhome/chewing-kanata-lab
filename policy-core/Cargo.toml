@@ -1,0 +1,12 @@
+[package]
+name = "chewing-policy-core"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform character output policy library for Chewing + Kanata"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "chewing_policy_core"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]

@@ -1,0 +1,85 @@
+# Chewing + Kanata ASCII-First Policy Configuration Example
+# 檔案位置建議：
+#   Windows: %APPDATA%\ChewingDev\policy.toml
+#   Linux:   ~/.config/fcitx5/chewing-policy.toml
+
+schema_version = 1
+
+# 預設啟用的 Profile
+# 可選值: "default", "markdown", "code", "formal", "manual_fullwidth", "raw_command"
+profile_default = "default"
+
+# Profile 手動切換快速鍵 (預設 unassigned 避免與 Kanata / 系統快捷鍵衝突)
+# 可配置為: "Ctrl+Alt+P" 等
+manual_profile_hotkey = "unassigned"
+
+# ----------------------------------------------------------------------------
+# 各 Profile 詳細規則定義
+# ----------------------------------------------------------------------------
+
+[profiles.default]
+# 一般中英混合輸入模式
+latin_width = "ascii"
+punctuation = "upstream_with_explicit_ascii_priority"
+ai_rerank = false
+
+[profiles.markdown]
+# Obsidian / Markdown 編輯寫作模式 (保護 []{}():;` 等語法)
+latin_width = "ascii"
+punctuation = "literal_ascii"
+ai_rerank = false
+
+[profiles.code]
+# 程式碼開發環境 (VS Code, CLion, Neovim)
+latin_width = "ascii"
+punctuation = "literal_ascii"
+ai_rerank = false
+
+[profiles.formal]
+# 正式中文公文 / 書信寫作模式 (優先中文全形標點，但嚴格保護 Email/URL)
+latin_width = "ascii"
+punctuation = "traditional_chinese_when_explicit"
+protect_urls_and_emails = true
+ai_rerank = false
+
+[profiles.manual_fullwidth]
+# 使用者明確要求全形英數符號 (傳統全形模式)
+latin_width = "fullwidth"
+punctuation = "follow_upstream_fullwidth"
+ai_rerank = false
+
+[profiles.raw_command]
+# 命令列或 Vim Normal / Visual 模式 (完全放行，關閉組字)
+latin_width = "ascii"
+punctuation = "passthrough"
+ai_rerank = false
+
+# ----------------------------------------------------------------------------
+# 應用程式自動綁定 (可選，以行程或視窗類別綁定)
+# ----------------------------------------------------------------------------
+[app_bindings]
+"code.exe" = "code"
+"nvim.exe" = "code"
+"obsidian.exe" = "markdown"
+"outlook.exe" = "formal"
+"devenv.exe" = "code"
+
+# ----------------------------------------------------------------------------
+# 編輯器上下文橋接 (後續階段擴充，預設關閉)
+# ----------------------------------------------------------------------------
+[context_bridge]
+trust_editor_bridge = false
+fallback_profile = "default"
+socket_path = "auto"
+
+# ----------------------------------------------------------------------------
+# AI 候選字重排序 (後續階段擴充，預設關閉，零雲端)
+# ----------------------------------------------------------------------------
+[ai]
+enabled = false
+provider = "ollama"
+model = "qwen3:0.6b"
+endpoint = "http://127.0.0.1:11434"
+allow_network_non_loopback = false
+timeout_ms = 120
+max_memory_mb = 4096
