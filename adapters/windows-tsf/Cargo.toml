@@ -1,0 +1,9 @@
+[package]
+name = "chewing-adapter-tsf"
+version = "0.1.0"
+edition = "2021"
+description = "Windows TSF Adapter Bridge for Chewing + Kanata"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+chewing-policy-core = { path = "../../policy-core" }

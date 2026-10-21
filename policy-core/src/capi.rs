@@ -1,9 +1,24 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
-use crate::{PolicyContext, should_bypass_key, transform_commit};
+use crate::{PolicyContext, PolicyMode, should_bypass_key, transform_commit};
 
 #[no_mangle]
-pub unsafe extern "C" fn policy_should_bypass_key(
+pub unsafe extern "C" fn policy_context_default_rs() -> PolicyContext {
+    PolicyContext::default_legacy()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn policy_context_create_rs(mode: i32) -> PolicyContext {
+    let policy_mode = match mode {
+        1 => PolicyMode::AsciiFirst,
+        2 => PolicyMode::FormalZh,
+        _ => PolicyMode::Legacy,
+    };
+    PolicyContext::new(policy_mode)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn policy_should_bypass_key_rs(
     ascii_key: c_char,
     ctx: *const PolicyContext,
 ) -> bool {
@@ -16,26 +31,35 @@ pub unsafe extern "C" fn policy_should_bypass_key(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn policy_transform_commit(
-    utf8_text: *const c_char,
+pub unsafe extern "C" fn policy_transform_commit_rs(
+    utf8_input: *const c_char,
     ctx: *const PolicyContext,
-) -> *const c_char {
-    if utf8_text.is_null() {
-        return std::ptr::null();
-    }
-    if ctx.is_null() {
-        return utf8_text;
-    }
-
-    let c_str = CStr::from_ptr(utf8_text);
-    if let Ok(rust_str) = c_str.to_str() {
-        let context = &*ctx;
-        let converted = transform_commit(rust_str, context);
-        if converted == ":" {
-            static COLON: &[u8] = b":\0";
-            return COLON.as_ptr() as *const c_char;
-        }
+    out_buffer: *mut c_char,
+    out_buffer_size: usize,
+) -> usize {
+    if utf8_input.is_null() || out_buffer.is_null() || out_buffer_size == 0 {
+        return 0;
     }
 
-    utf8_text
+    let c_str = match CStr::from_ptr(utf8_input).to_str() {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    let context = if ctx.is_null() {
+        PolicyContext::default_legacy()
+    } else {
+        *ctx
+    };
+
+    let transformed = transform_commit(c_str, &context);
+    let bytes = transformed.as_bytes();
+    if bytes.len() + 1 > out_buffer_size {
+        return 0;
+    }
+
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buffer as *mut u8, bytes.len());
+    *out_buffer.add(bytes.len()) = 0;
+
+    bytes.len()
 }

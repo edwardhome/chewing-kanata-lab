@@ -9,6 +9,7 @@ dist/
 *.o
 *.pdb
 *.log
+*.exe
 
 # Rust build artifacts
 **/target/
