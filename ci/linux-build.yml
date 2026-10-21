@@ -1,0 +1,27 @@
+name: Linux Fcitx5 CI
+
+on:
+  push:
+    branches: [ integration/main, feature/* ]
+  pull_request:
+    branches: [ integration/main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake extra-cmake-modules fcitx5 fcitx5-modules-dev libchewing3-dev
+      - name: Build Policy Core & Fcitx5 Adapter Tests
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Ipolicy-core/include -Iadapters/fcitx5/include policy-core/src/policy_core.c adapters/fcitx5/src/fcitx5_policy_bridge.cpp adapters/fcitx5/tests/test_fcitx5_adapter.cpp -o test_fcitx5.exe
+          ./test_fcitx5.exe
+      - name: Build Fcitx5 Chewing Addon
+        run: |
+          cd upstream/fcitx5-chewing
+          git apply ../../adapters/fcitx5/adapter_fcitx5.patch
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build --parallel

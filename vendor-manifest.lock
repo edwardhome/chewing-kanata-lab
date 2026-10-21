@@ -1,0 +1,52 @@
+# Vendor Manifest Lockfile
+# 本檔案記錄所有已鎖定之上游原始碼工作樹狀態與授權規範
+
+schema_version = 1
+locked_at = "2026-10-22T02:10:00+08:00"
+
+[[upstream]]
+name = "libchewing"
+primary_remote = "https://codeberg.org/chewing/libchewing.git"
+mirror_remote = "https://github.com/chewing/libchewing.git"
+commit = "ec7f595ea7726fa06a9493e819b81669eba605a5"
+version = "0.14.0-alpha.4"
+license = "LGPL-2.1-or-later"
+build_system = "Cargo (Rust Edition 2024 / MSRV 1.95+) / CMake 3.27+"
+role = "Core Zhuyin Bopomofo Engine & Dictionary"
+
+[[upstream]]
+name = "windows-chewing-tsf"
+primary_remote = "https://codeberg.org/chewing/windows-chewing-tsf.git"
+mirror_remote = "https://github.com/chewing/windows-chewing-tsf.git"
+commit = "053d31ba10c089ae98508dd4a908ac2c2be3cb49"
+version = "26.9.0"
+license = "GPL-3.0-or-later"
+build_system = "Cargo xtask, MSVC Build Tools 2022/2026, Windows SDK"
+role = "Windows Text Services Framework Frontend"
+
+[[upstream]]
+name = "fcitx5-chewing"
+primary_remote = "https://github.com/fcitx/fcitx5-chewing.git"
+mirror_remote = ""
+commit = "60096e8ef49df21de6c155d7a0785a58fcccb955"
+version = "5.1.13"
+license = "LGPL-2.1-or-later"
+build_system = "CMake 3.6+, ECM, Fcitx5Core 5.1.13, PkgConfig"
+role = "Linux Fcitx5 Frontend Addon"
+
+[[upstream]]
+name = "ibus-chewing"
+primary_remote = "https://codeberg.org/chewing/ibus-chewing.git"
+mirror_remote = "https://github.com/chewing/ibus-chewing.git"
+commit = "6e885f1a8556cb8cfcc657c5b0cfd71b93db4c5c"
+version = "2.2.0"
+license = "GPL-2.0-only"
+build_system = "Meson >= 0.57.0, C23, GLib 2.0, IBus, GTK4"
+role = "Linux IBus Frontend (Optional / Fallback)"
+
+[[reference]]
+name = "kanata"
+remote = "https://github.com/jtroo/kanata.git"
+license = "LGPL-3.0-only"
+baseline_config = "config/kanata.original.kbd"
+role = "User Keyboard Remapping Layer (Read-Only)"

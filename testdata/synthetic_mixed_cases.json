@@ -1,0 +1,31 @@
+[
+  {
+    "id": "TC-001",
+    "description": "Markdown header and code fence",
+    "raw_input": "# Chewing Test\n```rust\nlet x = 10;\n```",
+    "expected_profile": "markdown",
+    "expected_colon": ":"
+  },
+  {
+    "id": "TC-002",
+    "description": "Code syntax with braces and arrows",
+    "raw_input": "fn main() -> Result<()> { let map: HashMap<String, i32> = HashMap::new(); }",
+    "expected_profile": "code",
+    "expected_colon": ":"
+  },
+  {
+    "id": "TC-003",
+    "description": "Formal Chinese correspondence",
+    "raw_input": "敬啟者：關於本次專案報告，請參閱附件「專案規格書」。",
+    "expected_profile": "formal_zh",
+    "expected_colon": "："
+  },
+  {
+    "id": "TC-004",
+    "description": "Email and URL protection",
+    "raw_input": "請寄信至 contact@example.com 或瀏覽 https://codeberg.org/chewing",
+    "expected_profile": "formal_zh",
+    "expected_at": "@",
+    "expected_colon": ":"
+  }
+]

@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EditorContextEvent",
+  "description": "Neovim / Editor to IME Context Bridge IPC Protocol",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "session_id",
+    "sequence",
+    "timestamp_ms",
+    "source",
+    "editor_mode",
+    "focused",
+    "expires_after_ms"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Opaque random UUID per editor process"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonically increasing sequence number"
+    },
+    "timestamp_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic timestamp in milliseconds"
+    },
+    "source": {
+      "type": "string",
+      "enum": ["neovim", "vscode_vim", "jetbrains_vim", "terminal"]
+    },
+    "editor_mode": {
+      "type": "string",
+      "enum": ["normal", "visual", "operator_pending", "insert", "command_line", "search", "terminal", "unknown"]
+    },
+    "filetype": {
+      "type": "string",
+      "description": "Optional filetype hint (e.g. markdown, rust, python, gitcommit)"
+    },
+    "focused": {
+      "type": "boolean",
+      "description": "Whether the editor currently has OS focus"
+    },
+    "expires_after_ms": {
+      "type": "integer",
+      "default": 1000,
+      "description": "TTL in ms after which IME falls back to unknown mode"
+    }
+  },
+  "additionalProperties": false
+}

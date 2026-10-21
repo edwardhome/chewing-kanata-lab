@@ -1,0 +1,30 @@
+name: Windows TSF & Policy CI
+
+on:
+  push:
+    branches: [ integration/main, feature/* ]
+  pull_request:
+    branches: [ integration/main ]
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Build & Run Policy Core Unit Tests
+        run: |
+          gcc -std=c99 -Wall -Wextra -Ipolicy-core/include policy-core/src/policy_core.c policy-core/tests/test_policy.c -o test_policy.exe
+          ./test_policy.exe
+      - name: Build & Run AI Reranker Tests
+        run: |
+          gcc -std=c99 -Wall -Wextra -Iai-adapter/include ai-adapter/src/ai_reranker.c ai-adapter/tests/test_ai_reranker.c -o test_ai.exe
+          ./test_ai.exe
+      - name: Build Windows TSF xtask
+        run: |
+          cd upstream/windows-chewing-tsf
+          git apply ../../adapters/windows-tsf/adapter_tsf.patch
+          cargo test --workspace

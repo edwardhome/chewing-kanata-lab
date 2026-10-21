@@ -1,0 +1,20 @@
+name: macOS Fcitx5 Plugin CI (v1.1)
+
+on:
+  push:
+    branches: [ integration/main, release/* ]
+  pull_request:
+    branches: [ integration/main ]
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Policy Core
+        run: |
+          clang -std=c99 -Wall -Wextra -Ipolicy-core/include policy-core/src/policy_core.c policy-core/tests/test_policy.c -o test_policy
+          ./test_policy
+      - name: Packaging Script Check
+        run: |
+          bash packaging/macos/build_macos_addon.sh

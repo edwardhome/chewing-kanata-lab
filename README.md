@@ -1,80 +1,107 @@
-# 新酷音 × Kanata：跨平台 ASCII-first／全形標點相容輸入法研究
+# Chewing × Kanata × Context-Aware AI IME (CKAI)
+# 繁體中文／英文混合輸入法全生命週期專案
 
-> **分支**：`research/upstream-audit`  
-> **基準設定**：[`config/kanata.original.kbd`](config/kanata.original.kbd)（**不可修改之使用者基準**）  
-> **專案原則**：優先既有開源架構、優先 Adapter-first、不從零開發輸入法、先確定性後 AI、零系統覆蓋風險。
-
----
-
-## 1. 專案背景與目標
-
-使用者長期在 Windows 與 Linux 上以 **新酷音 (libchewing)** 進行中文輸入，並搭配 **Kanata** 鍵盤映射工具進行鍵位重整。
-目前在輸入 Markdown、程式碼及命令列時，`:`、`[`、`]`、`(`、`)`、`_` 等常用 ASCII 語法符號頻繁被新酷音強制轉為全形（如 `：`、`「`、`」`、`—`），必須反覆手動切換全形/半形。而在撰寫正式中文書信時，仍需標準繁體中文標點。
-
-本專案之目標為：
-1. **ASCII-First 標點優先**：在寫作 Markdown、程式碼、Shell 命令時預設輸出標準半形 ASCII 標點。
-2. **全形標點無損相容**：在正式中文書信（`formal` Profile）或手動切換時，100% 保留原生新酷音中文全形標點。
-3. **保留使用者肌肉記憶**：不修改使用者現有 `kanata.kbd` 配置（保持 `tap-hold`、`tap-dance`、Caps/Ctrl/Win+Space 映射）。
-4. **跨平台核心小改**：以 Adapter-first 為優先，Windows (TSF) 與 Linux (Fcitx5) 前端共用輕量策略庫，不破壞上游注音核心。
-5. **延後 AI 導入**：第一階段專注於符號政策與原始碼地圖，零雲端依賴，不引入神經網路模型。
+> **專案代號**：`CKAI-MASTER-001` ｜ **版本**：`v1.0.0-rc.1` (Win/Linux) / `v1.1.0-pre` (macOS)  
+> **當前分支**：`feature/chewing-ascii-first-mvp`  
+> **核心準則**：保留新酷音原生注音體驗、保留使用者 Kanata 既有配置、離線優先、零雲端依賴、先確定性後 AI。
 
 ---
 
-## 2. 成果交付文件目錄 (`docs/`)
+## 1. 專案全貌與核心架構
 
-本階段依據規格已建立完整的開發研究與原始碼地圖文件（**不含任何實際編譯測試報告**）：
+```mermaid
+flowchart TD
+    subgraph HW["硬體與底層鍵位 (只讀基準)"]
+        KT["Kanata (config/kanata.original.kbd)"]
+    end
 
-1. [**`docs/00_UPSTREAM_INVENTORY.md`**](docs/00_UPSTREAM_INVENTORY.md)  
-   上游儲存庫清單、遠端來源、鎖定之 Commit SHA、版本號、SPDX 授權條款分析與建置工具清點。
-2. [**`docs/01_CODE_PATH_MAP.md`**](docs/01_CODE_PATH_MAP.md)  
-   跨平台原始碼路徑地圖：`KeyEvent -> libchewing -> preedit/commit -> application` 在 Windows TSF 與 Linux Fcitx5/IBus 的真實函式調用鏈、行號分析、libchewing 內部 `special_symbol_input` 強制轉換成全形的機制挖掘，以及 Kanata 注入與應用程式後處理邊界。
-3. [**`docs/02_ARCHITECTURE_DECISIONS.md`**](docs/02_ARCHITECTURE_DECISIONS.md)  
-   跨平台架構決策記錄 (ADR)：Adapter-first vs Core Extension 比較、共用 `policy-core` 設計、邊界劃分與安全回退。
-4. [**`docs/03_PATCH_PLAN.md`**](docs/03_PATCH_PLAN.md)  
-   最小修改規劃、Windows TSF / Linux Fcitx5 具體修改點、公開 API/ABI 影響評估、系統隔離與不安裝覆蓋防護、上游追隨與同步策略。
-5. [**`docs/04_OUTPUT_POLICY.md`**](docs/04_OUTPUT_POLICY.md)  
-   符號輸出政策詳細規格書：Profile 矩陣（`default`、`markdown`、`code`、`formal`、`raw-command`、`manual-fullwidth`）、受保護標記（URL/Email/Markdown/程式碼/Vim）、決策優先順序與快速鍵草案。
-6. [**`docs/05_PLATFORM_WINDOWS.md`**](docs/05_PLATFORM_WINDOWS.md)  
-   Windows TSF 內部架構深度研究：`ITfEditSession` (`InsertText` / `SetCompositionString`) 生命週期、按鍵過濾閘門與無痛 Bypass 機制。
-7. [**`docs/06_PLATFORM_LINUX.md`**](docs/06_PLATFORM_LINUX.md)  
-   Linux Fcitx5 / IBus 深度研究：`ChewingEngine::keyEvent` 分流、候選字攔截、Preedit 更新與 Flush 緩衝區沖刷。
-8. [**`docs/07_KANATA_INTERACTION_ANALYSIS.md`**](docs/07_KANATA_INTERACTION_ANALYSIS.md)  
-   Kanata 原始配置深度互動分析：小鍵盤事件流 vs Unicode 注入機制，以及為何 `(unicode u+003a)` 依然會被應用程式或輸入法變為全形的三大真實途徑剖析。
-9. [**`docs/08_POLICY_CORE_DESIGN.md`**](docs/08_POLICY_CORE_DESIGN.md)  
-   跨平台符號策略核心規格書：微秒級無鎖純演算法、查表規範（語法標點集與正式中文標點對照表）與 C-ABI 規格。
+    subgraph Adapters["平台前端適配層 (Adapter-first)"]
+        W_TSF["Windows TSF Adapter (adapters/windows-tsf)"]
+        L_F5["Linux Fcitx5 Adapter (adapters/fcitx5)"]
+        M_F5["macOS Fcitx5 Route (packaging/macos)"]
+    end
 
----
+    subgraph Core["核心組字引擎 (零侵入保持上游)"]
+        LC["libchewing (0.14.0-alpha.4)"]
+    end
 
-## 3. 設定、策略核心與 Patch 草案
+    subgraph Policy["跨平台確定性符號策略 (純邏輯 C-ABI)"]
+        PC["policy-core (C99 / Rust)"]
+        FSM["三模式狀態機: legacy | ascii_first | formal_zh"]
+    end
 
-* **使用者基準配置**：[`config/kanata.original.kbd`](config/kanata.original.kbd)
-* **設定檔範例**：[`config/policy.example.toml`](config/policy.example.toml)
-* **共用策略核心骨架**：[`policy-core/`](policy-core/)（純 Rust 實作與 C-ABI 標頭）
-* **Windows TSF 最小補丁草案**：[`adapters/windows-tsf/adapter_tsf.patch`](adapters/windows-tsf/adapter_tsf.patch)
-* **Linux Fcitx5 最小補丁草案**：[`adapters/fcitx5/adapter_fcitx5.patch`](adapters/fcitx5/adapter_fcitx5.patch)
-* **上游工作樹同步腳本**：[`scripts/sync_upstream.ps1`](scripts/sync_upstream.ps1)
+    subgraph Context["情境感知橋接 (可選擴充)"]
+        NV["Neovim ModeChanged Bridge (editor-bridge/neovim)"]
+        AI["Ollama Candidate Reranker Stub (ai-adapter)"]
+    end
 
----
-
-## 4. 上游版本基準速覽
-
-- **libchewing** (`https://codeberg.org/chewing/libchewing.git`)：
-  - SHA: `ec7f595ea7726fa06a9493e819b81669eba605a5` | 授權: `LGPL-2.1-or-later` | 版本: `0.14.0-alpha.4`
-- **windows-chewing-tsf** (`https://codeberg.org/chewing/windows-chewing-tsf.git`)：
-  - SHA: `053d31ba10c089ae98508dd4a908ac2c2be3cb49` | 授權: `GPL-3.0-or-later` | 版本: `26.9.0`
-- **fcitx5-chewing** (`https://github.com/fcitx/fcitx5-chewing.git`)：
-  - SHA: `60096e8ef49df21de6c155d7a0785a58fcccb955` | 授權: `LGPL-2.1-or-later` | 版本: `5.1.13`
-- **ibus-chewing** (`https://codeberg.org/chewing/ibus-chewing.git`)：
-  - SHA: `6e885f1a8556cb8cfcc657c5b0cfd71b93db4c5c` | 授權: `GPL-2.0-only` | 版本: `2.2.0`
-- **kanata**：
-  - 使用者基準: `config/kanata.original.kbd` | 授權: `LGPL-3.0-only`
+    KT --> W_TSF & L_F5 & M_F5
+    W_TSF & L_F5 & M_F5 -->|組字鍵| LC
+    W_TSF & L_F5 & M_F5 <-->|按鍵預檢放行 & Commit 轉換| PC
+    NV -.->|IPC Context| PC
+    LC -.->|候選字白名單重排| AI
+```
 
 ---
 
-## 5. 後續階段規劃 (非本階段範疇)
+## 2. 專案模組與目錄對照
 
-本階段嚴格遵守規範，不將實際編譯、驗收、模型實測混入本文件。後續階段將於**獨立的驗證文件**中展開：
-- **Stage B**：在獨立開發環境驗證 Adapter-first patch 與 policy-core 符號放行。
-- **Stage C**：Windows / Linux 獨立安裝器註冊與 GUI Profile 切換功能。
-- **Stage D**：Neovim `ModeChanged` Context Bridge 實驗。
-- **Stage E**：Ollama 本地候選字非同步重排序實測與 GPU VRAM 量測（另篇獨立驗證報告）。
+```text
+chewing-kanata-lab/
+├── README.md                          # 專案總覽
+├── AGENTS.md                          # 代理不可破壞行為準則 (禁止覆蓋正式輸入法/詞庫)
+├── vendor-manifest.lock               # 上游版本鎖檔 (SHA、授權、建置系統)
+├── BUILD_AND_RUN.md                   # 完整建置與單元測試執行手冊
+├── CHANGELOG_DEV.md                   # 開發紀錄日誌
+├── config/
+│   ├── kanata.original.kbd            # 【唯讀基準】使用者原始 Kanata 配置
+│   └── policy.example.toml            # Profile 與輸出政策配置範例
+├── policy-core/                       # 跨平台純邏輯符號策略核心 (C-ABI + Rust)
+│   ├── include/policy_core.h          # C 介面標頭
+│   ├── src/policy_core.c              # C99 實作 (零外部依賴)
+│   ├── src/lib.rs & capi.rs           # Rust 實作與 FFI
+│   └── tests/test_policy.c            # 32 項單元測試 (本機 100% 通過)
+├── adapters/
+│   ├── windows-tsf/                   # Windows TSF 適配模組與 patch
+│   └── fcitx5/                        # Linux Fcitx5 C++ 橋接與單測 (本機 100% 通過)
+├── protocol/
+│   ├── context_protocol.json          # Neovim Context Bridge JSON Schema
+│   └── reranker_protocol.json         # Ollama 候選重排契約 JSON Schema
+├── editor-bridge/neovim/              # Neovim ModeChanged Lua 外掛
+├── ai-adapter/                        # Ollama 候選重排適配器與白名單驗證 (4/4 通過)
+├── packaging/
+│   ├── windows/                       # 隔離註冊與卸載 PowerShell 腳本 (獨立 GUID)
+│   ├── linux/                         # Fcitx5 用戶個人目錄安裝腳本
+│   └── macos/                         # macOS 打包規格腳本
+├── ci/                                # GitHub Actions 自動化管線 (Win/Linux/macOS)
+├── testdata/                          # 合成測試案例 (無私密資料)
+└── docs/
+    ├── source/                        # 原始輸入文件備份 (附 SHA256)
+    ├── decisions/                     # ADR-0001 ~ ADR-0005 (架構決策記錄)
+    ├── release/                       # 各平台安裝、卸載、回退手冊與發布狀態
+    └── verification/                  # 獨立驗證目錄 (runs/ 存放真實測試日誌)
+```
+
+---
+
+## 3. 測試驗證執行紀錄 (真實本機通過)
+
+依據驗證分離原則，所有實測日誌均獨立存放於 `docs/verification/runs/`：
+1. **Policy Core 單元測試**：[`docs/verification/runs/RUN-20261022-WIN-UNIT-01.md`](docs/verification/runs/RUN-20261022-WIN-UNIT-01.md)
+   * 指令：`gcc -std=c99 -Ipolicy-core/include policy-core/src/policy_core.c policy-core/tests/test_policy.c -o test_policy.exe`
+   * 結果：**32 / 32 PASS**（驗證冒號括號放行、注音保護、中文詞組保護、安全欄位、Vim 模式放行）。
+2. **Fcitx5 Adapter 單元測試**：[`docs/verification/runs/RUN-20261022-FCITX5-UNIT-01.md`](docs/verification/runs/RUN-20261022-FCITX5-UNIT-01.md)
+   * 指令：`g++ -std=c++11 -Ipolicy-core/include -Iadapters/fcitx5/include ... -o test_fcitx5.exe`
+   * 結果：**5 / 5 PASS**（驗證 C++ 橋接層之放行與 Commit 轉換）。
+3. **AI Reranker 契約測試**：[`docs/verification/runs/RUN-20261022-AI-RERANK-01.md`](docs/verification/runs/RUN-20261022-AI-RERANK-01.md)
+   * 指令：`gcc -std=c99 -Iai-adapter/include ai-adapter/src/ai_reranker.c ai-adapter/tests/test_ai_reranker.c -o test_ai.exe`
+   * 結果：**4 / 4 PASS**（驗證合法重排、非法幻覺 ID 攔截、重複 ID 攔截與離線降級回退）。
+
+---
+
+## 4. 安全回退與發布狀態
+
+* **一鍵回退**：將設定檔設為 `default_profile = "legacy"`，行為 100% 還原為原版新酷音。
+* **發布狀態**：[`docs/release/RELEASE_STATUS.md`](docs/release/RELEASE_STATUS.md)
+  * Windows 11 / Linux Fcitx5：**RC-READY (Gate-A 已通過)**
+  * macOS：**Pre-Alpha (腳本就緒，待實體 macOS 驗證)**

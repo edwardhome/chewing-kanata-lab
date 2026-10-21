@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CandidateRerankerContract",
+  "description": "IME to Local AI Candidate Reranker JSON Contract",
+  "definitions": {
+    "CandidateItem": {
+      "type": "object",
+      "required": ["id", "text"],
+      "properties": {
+        "id": { "type": "integer" },
+        "text": { "type": "string" },
+        "upstream_score": { "type": "number" }
+      }
+    },
+    "RerankRequest": {
+      "type": "object",
+      "required": ["request_id", "composition_revision", "context_type", "candidates"],
+      "properties": {
+        "request_id": { "type": "string" },
+        "composition_revision": { "type": "integer" },
+        "context_type": { "type": "string", "enum": ["normal_text", "markdown", "code", "formal_zh"] },
+        "recent_context": { "type": "string", "maxLength": 128 },
+        "candidates": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/CandidateItem" },
+          "minItems": 1,
+          "maxItems": 16
+        }
+      }
+    },
+    "RerankResponse": {
+      "type": "object",
+      "required": ["request_id", "composition_revision", "ordered_candidate_ids"],
+      "properties": {
+        "request_id": { "type": "string" },
+        "composition_revision": { "type": "integer" },
+        "ordered_candidate_ids": {
+          "type": "array",
+          "items": { "type": "integer" }
+        }
+      }
+    }
+  }
+}
