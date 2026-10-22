@@ -11,7 +11,7 @@
 
 | 平台 | 原始碼狀態 | 建置狀態 (Build) | 測試狀態 (Tests) | 安裝與卸載 | 簽署狀態 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Windows 11 x64** | **DONE** (Policy + TSF Adapter) | **PASS** (C/C++), **PENDING** (Rust xtask) | **PASS** (32/32 Unit Tests) | 獨立 GUID 隔離腳本就緒 | Unsigned (Dev Build) |
+| **Windows 11 x64** | **DONE** (Policy + TSF Adapter) | **PASS** (chewing_tip.dll 4.1MB built) | **PASS** (32/32 Unit Tests) | 獨立 GUID 註冊就緒 | Unsigned (Dev Build) |
 | **Linux Fcitx5** | **DONE** (Policy + C++ Bridge) | **PASS** (G++ Bridge Tests) | **PASS** (5/5 Unit Tests) | User-local 腳本就緒 | Open Source (GPL/LGPL) |
 | **macOS Fcitx5** | **DONE** (Policy + Route Spec) | **NOT_RUN** (缺實體 macOS runner) | **NOT_RUN** | 打包腳本就緒 | Not Notarized |
 

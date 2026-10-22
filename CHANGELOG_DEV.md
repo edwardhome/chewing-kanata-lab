@@ -8,6 +8,12 @@
 ## [Phase 1 - Sprint A & B] 2026-10-22
 
 ### 1. 實際完成項目 (Completed)
+- **Windows TSF 原生 Release 二進位建置完成**：
+  - 配置 Rust 1.99.1 + Visual Studio 2026 MSVC (19.50) 工具鏈。
+  - 編譯產出 `dist/windows/chewing_tip.dll` (4.1MB, SHA256: `F8ACC7FF...`)。
+  - 編譯產出 `dist/windows/tsfreg.exe` (221KB, SHA256: `520C7039...`)。
+  - 成功執行本地隔離註冊 (`packaging/windows/register_dev_tsf.ps1`)，註冊於 HKCU 獨立 GUID。
+  - 自動部署設定檔至 `%APPDATA%\ChewingDev\policy.toml`。
 - **分支建立**：由 `research/upstream-audit` 建立獨立功能分支 `feature/chewing-ascii-first-mvp`。
 - **上游工作樹鎖定**：
   - `libchewing`: `ec7f595ea7726fa06a9493e819b81669eba605a5` (`0.14.0-alpha.4`)
