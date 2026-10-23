@@ -3,6 +3,7 @@
 //! 本模組為純邏輯層，不包含平台特定 API (如 Win32/TSF 或 Fcitx)，亦不包含網路呼叫。
 
 pub mod capi;
+pub mod grammar_corrector;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
