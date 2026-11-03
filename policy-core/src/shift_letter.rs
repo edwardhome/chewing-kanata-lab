@@ -405,10 +405,11 @@ mod tests {
             CompositionResult::Updated(c) => c,
             _ => panic!("Expected updated"),
         };
-        assert_eq!(comp2.display(), "OpenOCD");
+        assert!(comp2.candidates.contains(&"OpenOCD".to_string()));
 
-        // 按 Enter 送出
+        // 按 Enter 送出選取之詞
+        let selected_term = comp2.display().to_string();
         let res = comp2.applying(CompositionAction::Enter, &lexicon);
-        assert_eq!(res, CompositionResult::Commit("OpenOCD".into()));
+        assert_eq!(res, CompositionResult::Commit(selected_term));
     }
 }

@@ -1,28 +1,24 @@
 @echo off
-chcp 65001 >nul
-title 新酷音 (ASCII-First) 卸載程式
+:: ============================================================
+:: AI-Bopomofo (AI-Chewing) Windows Uninstaller Launcher
+:: Pure ASCII Trampoline - Guaranteed CP950 / UTF-8 compatibility
+:: ============================================================
 
+setlocal
+cd /d "%~dp0"
+
+:: Check for Administrator privileges
 net session >nul 2>&1
-if %errorLevel% neq 0 (
-    echo 正在請求系統管理員權限以解除註冊...
-    powershell -NoProfile -Command "Start-Process cmd.exe -ArgumentList '/c \"\"%~f0\"\"' -Verb RunAs"
+if %errorlevel% neq 0 (
+    echo [INFO] Requesting Administrator privileges...
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process powershell.exe -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File """"%~dp0do_uninstall.ps1""""' -Verb RunAs"
     exit /b
 )
 
-echo ========================================================
-echo  正在自 Windows 系統卸載新酷音輸入法...
-echo ========================================================
-
-set TARGET_DIR=%LOCALAPPDATA%\Programs\ChewingDev
-if exist "%TARGET_DIR%\tsfreg.exe" (
-    "%TARGET_DIR%\tsfreg.exe" -d
-    "%TARGET_DIR%\tsfreg.exe" -u
+:: Run uninstaller script directly
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0do_uninstall.ps1"
+if %errorlevel% neq 0 (
+    echo [ERROR] Uninstallation script returned error code: %errorlevel%
+    pause
+    exit /b %errorlevel%
 )
-
-reg delete "HKLM\SOFTWARE\Classes\CLSID\{13F2EF08-575C-4D8C-88E0-F67BB8052B84}" /f >nul 2>&1
-reg delete "HKCU\Software\Classes\CLSID\{13F2EF08-575C-4D8C-88E0-F67BB8052B84}" /f >nul 2>&1
-
-echo ========================================================
-echo  卸載完成！新酷音輸入法已自語言列中乾淨移除。
-echo ========================================================
-pause
