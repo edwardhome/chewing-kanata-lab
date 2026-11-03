@@ -29,3 +29,5 @@ models/
 
 # Upstream working trees (tracked by scripts/sync_upstream.ps1 and docs/00_UPSTREAM_INVENTORY.md)
 upstream/
+reference/
+graphify-out/

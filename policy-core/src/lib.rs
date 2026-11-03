@@ -3,7 +3,24 @@
 //! 本模組為純邏輯層，不包含平台特定 API (如 Win32/TSF 或 Fcitx)，亦不包含網路呼叫。
 
 pub mod capi;
+pub mod double_shift;
+pub mod f_hold;
 pub mod grammar_corrector;
+pub mod shift_letter;
+pub mod technical_lexicon;
+pub mod text_assistance;
+
+pub use double_shift::DoubleShiftGesture;
+pub use f_hold::{
+    can_start_chord, is_phonetic_f_overlap, prefers_phonetic_f_chord, Effect as FHoldEffect,
+    Event as FHoldEvent, FHoldGesture, Phase as FHoldPhase,
+};
+pub use shift_letter::{
+    ASCIIComposition, CompositionAction, CompositionResult, SessionResult, ShiftLetterSession,
+    ShiftMode,
+};
+pub use technical_lexicon::TechnicalLexicon;
+pub use text_assistance::{ContextualCorrectionPrompt, TextProtection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
