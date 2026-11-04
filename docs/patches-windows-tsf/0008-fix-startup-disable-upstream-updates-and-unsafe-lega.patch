@@ -1,0 +1,98 @@
+From 09c09673a5ae7918ba71769b6f1b27b32a4d8b99 Mon Sep 17 00:00:00 2001
+From: CKAI Dev <ckai-dev@local>
+Date: Thu, 5 Nov 2026 02:56:45 +0800
+Subject: [PATCH] fix(startup): disable upstream updates and unsafe legacy MSI
+ packaging
+
+---
+ crates/chewing_tip_core/src/update/config.rs | 7 ++++---
+ tip/src/text_service/chewing.rs              | 6 +++++-
+ xtask/src/installer.rs                       | 8 ++++++++
+ 3 files changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/crates/chewing_tip_core/src/update/config.rs b/crates/chewing_tip_core/src/update/config.rs
+index 205bfc3..1850ab1 100644
+--- a/crates/chewing_tip_core/src/update/config.rs
++++ b/crates/chewing_tip_core/src/update/config.rs
+@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
+ use scoped_error::{expect_error, impl_context_error};
+ use windows_registry::CURRENT_USER;
+ 
+-use super::version;
++
+ 
+ pub(crate) struct CheckUpdateConfig {
+     pub(crate) enabled: bool,
+@@ -18,12 +18,13 @@ pub(crate) fn get_check_update_config() -> Result<CheckUpdateConfig, UpdateError
+         let channel = match key.get_string("AutoCheckUpdateChannel") {
+             Ok(ch) => ch,
+             Err(_) => {
+-                let dll_channel = version::chewing_dll_channel();
++                let dll_channel = "none".to_string();
+                 let _ = key.set_string("AutoCheckUpdateChannel", &dll_channel);
+                 dll_channel
+             }
+         };
+-        let enabled = channel == "stable" || channel == "development";
++        // Official upstream packages are not an update channel for this fork.
++        let enabled = false;
+         let current_update_info_url = key.get_string("UpdateInfoUrl").unwrap_or_default();
+         let last_update_check_time = key.get_u64("LastUpdateCheckTime").unwrap_or_default();
+         Ok(CheckUpdateConfig {
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index ddd6787..a28cf98 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -334,7 +334,8 @@ impl ChewingTextService {
+             error!("unable to initialize chewing: {error:#}");
+         }
+ 
+-        chewing_tip_core::update::check_for_update();
++        // The isolated fork is updated through verified preview packages.
++        // Never block TSF activation on the upstream release service.
+ 
+         Ok(cts)
+     }
+@@ -474,6 +475,9 @@ impl ChewingTextService {
+             return Ok(false);
+         }
+ 
++        // Shift itself is a modifier, never an instruction to commit an English word.
++        if evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT { return Ok(false); }
++
+         // Shortcut modifiers must bypass the custom F/English policy.
+         if other_modifiers {
+             self.double_shift.reset();
+diff --git a/xtask/src/installer.rs b/xtask/src/installer.rs
+index 7acddb9..228fc8e 100644
+--- a/xtask/src/installer.rs
++++ b/xtask/src/installer.rs
+@@ -27,6 +27,7 @@ impl FromStr for Target {
+ }
+ 
+ pub(crate) fn build_installer(flags: BuildInstaller) -> Result<(), Error> {
++    reject_legacy_installer()?;
+     expect_error("Failed to build installer", || {
+         let sh = Shell::new()?;
+ 
+@@ -186,6 +187,7 @@ pub(crate) fn build_installer(flags: BuildInstaller) -> Result<(), Error> {
+ }
+ 
+ pub(crate) fn package_installer(_flags: PackageInstaller) -> Result<(), Error> {
++    reject_legacy_installer()?;
+     expect_error("Failed to package installer", || {
+         let sh = Shell::new()?;
+ 
+@@ -204,3 +206,9 @@ pub(crate) fn package_installer(_flags: PackageInstaller) -> Result<(), Error> {
+         Ok(())
+     })
+ }
++
++// Keep historical upstream packaging code for source history, but never emit an
++// MSI that registers the official Chewing identity from this isolated fork.
++fn reject_legacy_installer() -> Result<(), Error> {
++    Err(Error::new("Legacy MSI packaging is disabled for AI-Chewing; use the outer repository packaging/windows/build_package.ps1."))
++}
+-- 
+2.55.0.windows.3
+

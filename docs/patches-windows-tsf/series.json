@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "e539beda9993984b35d221075d005be8ac25c009",
+  "tree": "a35c42444bc443c8cdff502728c298c5aecc2a30",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -30,7 +30,11 @@
     {
       "file": "0007-fix-tsf-isolate-runtime-and-preserve-editable-Englis.patch",
       "sha256": "00a316a6735c7618ae4c619442425af218adf0cbfda672ed7530768498b2c5f4"
+    },
+    {
+      "file": "0008-fix-startup-disable-upstream-updates-and-unsafe-lega.patch",
+      "sha256": "a80abe87f019c1c3aec22a59ff2e8c0b8e46e0fac888adb82fc8f30923c3b184"
     }
   ],
-  "native_commit": "7e3be5c9622212f4def3d4dfc410976c86abc7d3"
+  "native_commit": "09c09673a5ae7918ba71769b6f1b27b32a4d8b99"
 }
