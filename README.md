@@ -105,3 +105,12 @@ chewing-kanata-lab/
 * **發布狀態**：[`docs/release/RELEASE_STATUS.md`](docs/release/RELEASE_STATUS.md)
   * Windows 11 / Linux Fcitx5：**RC-READY (Gate-A 已通過)**
   * macOS：**Pre-Alpha (腳本就緒，待實體 macOS 驗證)**
+
+## 6363 上游版權與致敬聲明 (Upstream Credits & Attribution)
+
+本專案衍生自 **新酷音輸入法（Windows-Chewing-TSF）** 核心架構，並完全保留其原始核心與 GPL-3.0 開源授權協議。
+
+* **新酷音官方儲存庫 (Upstream Repo)**: https://github.com/chewing/windows-chewing-tsf
+* **開源授權聲明**: 本專案之核心衍生、修改與全新適配程式碼，皆延續採用 **GNU General Public License v3.0 (GPL-3.0-or-later)**。
+* **致謝貢獻者**: 感謝新酷音開源社群及所有歷代維護者（Chewing core team & Maintainers）在中文輸入法 TSF 框架與 `libchewing` 核心的卓越貢獻，本專案在 Git 開發歷史中已完整追蹤並保留其著作權血統。
+
