@@ -1,4 +1,4 @@
-# Headless tests: synthetic files only; never execute an IME or registration tool.
+# Headless tests: synthetic files and a child shell; never execute an IME or registration tool.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'package_guard.ps1')
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('ckai-package-tests-' + [Guid]::NewGuid().ToString('N'))
@@ -135,6 +135,27 @@ try {
             $null = [Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$parseErrors)
             if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
         }
+    }
+    $shell = (Get-Process -Id $PID).Path
+    Case 'Child failure is awaited and propagated' {
+        $child = Join-Path $testRoot 'failure with spaces.ps1'
+        Set-Content -LiteralPath $child -Value 'Start-Sleep -Milliseconds 100; exit 7'
+        $rejected = $false
+        try { Invoke-ChewingDevRegistration -Executable $shell -Arguments @('-NoProfile', '-File', $child) }
+        catch {
+            if ($_.Exception.Message -notmatch 'exit code 7') { throw }
+            $rejected = $true
+        }
+        if (-not $rejected) { throw 'Child failure was ignored.' }
+    }
+    Case 'Child arguments preserve spaces quotes and trailing backslashes' {
+        $child = Join-Path $testRoot 'arguments with spaces.ps1'
+        Set-Content -LiteralPath $child -Value @'
+param([string]$Value)
+if ($Value -cne 'C:\path with space\"quoted"\tail\') { exit 9 }
+exit 0
+'@
+        Invoke-ChewingDevRegistration -Executable $shell -Arguments @('-NoProfile', '-File', $child, 'C:\path with space\"quoted"\tail\')
     }
     Write-Output "$script:passed package guard cases passed."
 } finally {

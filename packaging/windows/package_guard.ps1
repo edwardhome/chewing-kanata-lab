@@ -72,8 +72,23 @@ function Assert-ChewingDevPackage {
 
 function Invoke-ChewingDevRegistration {
     param([string]$Executable, [string[]]$Arguments)
-    & $Executable @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "TSF registration failed with exit code $LASTEXITCODE."
+    # PowerShell can return immediately for a Windows-subsystem executable.
+    # Wait for the actual process and read its exit code, not stale LASTEXITCODE.
+    $quoted = foreach ($argument in $Arguments) {
+        '"' + ($argument -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+    }
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo.FileName = $Executable
+    $process.StartInfo.Arguments = $quoted -join ' '
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.CreateNoWindow = $true
+    try {
+        if (-not $process.Start()) { throw 'Unable to start TSF registration.' }
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) {
+            throw "TSF registration failed with exit code $($process.ExitCode)."
+        }
+    } finally {
+        $process.Dispose()
     }
 }
