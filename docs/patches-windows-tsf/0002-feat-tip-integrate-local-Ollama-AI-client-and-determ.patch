@@ -1,0 +1,305 @@
+From d434747e0e9dc0d57f9686108e2affb7986954ce Mon Sep 17 00:00:00 2001
+From: Defu <defu@local.dev>
+Date: Sat, 24 Oct 2026 00:32:10 +0800
+Subject: [PATCH 2/6] feat(tip): integrate local Ollama AI client and
+ deterministic grammar corrector
+
+---
+ tip/src/text_service/ai_client.rs | 188 ++++++++++++++++++++++++++++++
+ tip/src/text_service/chewing.rs   |  39 +++++++
+ tip/src/text_service/mod.rs       |   1 +
+ 3 files changed, 228 insertions(+)
+ create mode 100644 tip/src/text_service/ai_client.rs
+
+diff --git a/tip/src/text_service/ai_client.rs b/tip/src/text_service/ai_client.rs
+new file mode 100644
+index 0000000..cc08c0c
+--- /dev/null
++++ b/tip/src/text_service/ai_client.rs
+@@ -0,0 +1,188 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++//! 本機 Ollama 候選字語意重排與智慧預測用戶端 (Local AI Loopback)
++//!
++//! 1. 純 Rust 標準庫實作 (std::net::TcpStream)，不依賴龐大 async runtime，確保 TSF DLL 輕量穩定。
++//! 2. 獨立背景 Worker 執行緒，透過非同步 mpsc channel 傳遞，絕不阻塞輸入法打字按鍵主迴圈。
++//! 3. 嚴格白名單檢驗：AI 僅允許在既有合法候選字中推薦，若包含非法或捏造字元一律丟棄。
++//! 4. 版本戳記保護 (Revision Guard)：逾時 (預設 120ms) 或使用者繼續打字時，自動丟棄過期預測結果。
++
++use std::io::{Read, Write};
++use std::net::{SocketAddr, TcpStream};
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::sync::mpsc::{self, Receiver, Sender};
++use std::sync::Arc;
++use std::thread;
++use std::time::Duration;
++use log::debug;
++
++#[derive(Debug, Clone)]
++pub(crate) struct RerankRequest {
++    pub revision: u64,
++    pub context: String,
++    pub candidates: Vec<String>,
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct RerankResult {
++    pub revision: u64,
++    pub chosen: String,
++}
++
++pub(crate) struct AiRerankerClient {
++    tx: Sender<RerankRequest>,
++    rx: Receiver<RerankResult>,
++    current_revision: Arc<AtomicU64>,
++}
++
++impl AiRerankerClient {
++    pub fn new() -> Self {
++        let (req_tx, req_rx) = mpsc::channel::<RerankRequest>();
++        let (res_tx, res_rx) = mpsc::channel::<RerankResult>();
++        let current_revision = Arc::new(AtomicU64::new(0));
++        let rev_clone = Arc::clone(&current_revision);
++
++        thread::Builder::new()
++            .name("chewing-ai-reranker".into())
++            .spawn(move || {
++                worker_loop(req_rx, res_tx, rev_clone);
++            })
++            .expect("Failed to spawn ai reranker thread");
++
++        Self {
++            tx: req_tx,
++            rx: res_rx,
++            current_revision,
++        }
++    }
++
++    /// 取得新的累加版本號
++    pub fn next_revision(&self) -> u64 {
++        self.current_revision.fetch_add(1, Ordering::SeqCst) + 1
++    }
++
++    /// 異步發送重排請求 (非阻塞)
++    pub fn request_rerank(&self, revision: u64, context: String, candidates: Vec<String>) {
++        if candidates.is_empty() {
++            return;
++        }
++        let _ = self.tx.send(RerankRequest {
++            revision,
++            context,
++            candidates,
++        });
++    }
++
++    /// 非阻塞嘗試接收重排結果，僅採納與預期 revision 相符的有效結果
++    pub fn try_get_result(&self, expected_revision: u64) -> Option<String> {
++        let mut best = None;
++        while let Ok(res) = self.rx.try_recv() {
++            if res.revision == expected_revision {
++                best = Some(res.chosen);
++            }
++        }
++        best
++    }
++}
++
++fn worker_loop(
++    rx: Receiver<RerankRequest>,
++    tx: Sender<RerankResult>,
++    latest_rev: Arc<AtomicU64>,
++) {
++    while let Ok(req) = rx.recv() {
++        // 若使用者在背景等待期間又按了下一個鍵，該請求已被廢棄，直接略過
++        if req.revision < latest_rev.load(Ordering::Relaxed) {
++            continue;
++        }
++
++        if let Some(chosen) = query_ollama(&req.context, &req.candidates) {
++            // 再次檢查版本是否過期
++            if req.revision == latest_rev.load(Ordering::Relaxed) {
++                let _ = tx.send(RerankResult {
++                    revision: req.revision,
++                    chosen,
++                });
++            }
++        }
++    }
++}
++
++/// 發送極簡 HTTP POST 到本機 127.0.0.1:11434/api/chat
++fn query_ollama(context: &str, candidates: &[String]) -> Option<String> {
++    let addr: SocketAddr = "127.0.0.1:11434".parse().ok()?;
++    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(80)).ok()?;
++    stream.set_read_timeout(Some(Duration::from_millis(200))).ok()?;
++    stream.set_write_timeout(Some(Duration::from_millis(80))).ok()?;
++
++    let cands_str = candidates.join("、");
++    let user_prompt = format!(
++        "前文是「{context}」，接下來從候選字【{cands_str}】選出最合適的一個字。請只輸出該字，不要任何多餘標點或解釋："
++    );
++
++    // 構造 Ollama /api/chat JSON
++    let body = format!(
++        r#"{{"model":"qwen2.5:1.5b","messages":[{{"role":"user","content":{:?}}}],"stream":false,"options":{{"temperature":0.0,"num_predict":4}}}}"#,
++        user_prompt
++    );
++
++    let req_data = format!(
++        "POST /api/chat HTTP/1.1\r\n\
++         Host: 127.0.0.1:11434\r\n\
++         Content-Type: application/json; charset=utf-8\r\n\
++         Content-Length: {}\r\n\
++         Connection: close\r\n\r\n{}",
++        body.as_bytes().len(),
++        body
++    );
++
++    if stream.write_all(req_data.as_bytes()).is_err() {
++        return None;
++    }
++
++    let mut response_bytes = Vec::with_capacity(1024);
++    let _ = stream.read_to_end(&mut response_bytes);
++    let response_str = String::from_utf8_lossy(&response_bytes);
++
++    // 解析 JSON 中的 "content":"..."
++    let resp_text = extract_content_field(&response_str)?;
++
++    // 嚴格白名單檢驗：回傳之字元必須在候選清單中
++    for cand in candidates {
++        if resp_text.contains(cand.as_str()) {
++            debug!(cand; "Ollama AI selected candidate");
++            return Some(cand.clone());
++        }
++    }
++
++    None
++}
++
++/// 極簡 JSON 解析，提取 "content":"..." 欄位值
++fn extract_content_field(raw_http: &str) -> Option<String> {
++    let json_start = raw_http.find("\r\n\r\n")? + 4;
++    let json_body = &raw_http[json_start..];
++    let key = "\"content\":\"";
++    let key_pos = json_body.find(key)?;
++    let val_start = key_pos + key.len();
++    let val_end = json_body[val_start..].find('"')? + val_start;
++    Some(json_body[val_start..val_end].trim().to_string())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn test_extract_content_field() {
++        let raw_http = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"message\":{\"role\":\"assistant\",\"content\":\"再\"},\"done\":true}";
++        assert_eq!(extract_content_field(raw_http), Some("再".to_string()));
++    }
++
++    #[test]
++    fn test_ai_reranker_revision() {
++        let client = AiRerankerClient::new();
++        let r1 = client.next_revision();
++        let r2 = client.next_revision();
++        assert_eq!(r2, r1 + 1);
++    }
++}
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 5e72046..9198d8d 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -50,7 +50,9 @@ use windows_core::{ComObject, ComObjectInner, GUID, HSTRING, Interface};
+ use zhconv::{Variant, zhconv};
+ 
+ use super::CommandType;
++use super::ai_client::AiRerankerClient;
+ use super::kanata_layer;
++use chewing_policy_core::grammar_corrector::disambiguate_homophones;
+ use super::GUID_INPUT_DISPLAY_ATTRIBUTE_1;
+ use super::GUID_INPUT_DISPLAY_ATTRIBUTE_2;
+ use super::display_attribute::register_display_attribute;
+@@ -172,6 +174,9 @@ pub(super) struct ChewingTextService {
+     output_simp_chinese: bool,
+     shift_key_state: ShiftKeyState,
+     f_key_state: kanata_layer::FKeyState,
++    ai_reranker: AiRerankerClient,
++    recent_context: RefCell<String>,
++    current_cand_revision: Cell<u64>,
+     cfg: Config,
+     kbtype: KeyboardLayoutCompat,
+     keymap: KeymapOp,
+@@ -289,6 +294,9 @@ impl ChewingTextService {
+             output_simp_chinese: Default::default(),
+             shift_key_state: ShiftKeyState::Up,
+             f_key_state: kanata_layer::FKeyState::Up,
++            ai_reranker: AiRerankerClient::new(),
++            recent_context: RefCell::new(String::new()),
++            current_cand_revision: Cell::new(0),
+             cfg,
+             kbtype: KeyboardLayoutCompat::Default,
+             keymap: KeymapOp::None,
+@@ -543,6 +551,7 @@ impl ChewingTextService {
+             return Ok(false);
+         }
+         let mut evt = ev.to_keyboard_event(self.keymap);
++        self.current_cand_revision.set(self.ai_reranker.next_revision());
+         debug!(evt:?; "on_keydown");
+ 
+         // Kanata Tap-Hold 'f' Number/Symbol Layer
+@@ -1139,6 +1148,15 @@ impl ChewingTextService {
+ 
+     fn insert_text(&self, context: &ITfContext, text: &str) -> Result<()> {
+         debug!(text; "going to request immediate text insertion");
++        {
++            let mut rc = self.recent_context.borrow_mut();
++            rc.push_str(text);
++            let count = rc.chars().count();
++            if count > 40 {
++                let skip = count - 40;
++                *rc = rc.chars().skip(skip).collect();
++            }
++        }
+         let htext = text.into();
+         let session = InsertText::new(context.clone(), htext).into_object();
+         request_edit_session(
+@@ -1297,6 +1315,27 @@ impl ChewingTextService {
+                     return Ok(());
+                 }
+                 items.truncate(n);
++
++                // --- Grammar & AI Disambiguation Layer ---
++                let rev = self.current_cand_revision.get();
++                let mut full_context = self.recent_context.borrow().clone();
++                if !self.chewing_editor.is_empty() {
++                    full_context.push_str(self.chewing_editor.display_commit());
++                }
++
++                // 1. Zero-latency deterministic grammar correction (在/再, 的/得/地, 做/作)
++                disambiguate_homophones(&full_context, &mut items);
++
++                // 2. Ollama AI Reranker result check (if finished)
++                if let Some(ai_chosen) = self.ai_reranker.try_get_result(rev) {
++                    if let Some(pos) = items.iter().position(|it| it == &ai_chosen) {
++                        if pos > 0 {
++                            items[..=pos].rotate_right(1);
++                        }
++                    }
++                } else if items.len() > 1 {
++                    self.ai_reranker.request_rerank(rev, full_context, items.clone());
++                }
+                 candidate_list.set_model(Model {
+                     items,
+                     selkeys: sel_keys.chars().take(n).map(|k| k as u16).collect(),
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index e1d1fdd..29bfcde 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -27,6 +27,7 @@ use self::chewing::ChewingTextService;
+ use self::display_attribute::{EnumTfDisplayAttributeInfo, get_display_attribute_info};
+ use self::key_event::SystemKeyboardEvent;
+ 
++mod ai_client;
+ mod chewing;
+ mod display_attribute;
+ mod edit_session;

@@ -1,0 +1,170 @@
+From fe689db9cc4e1e365a83e78a60b7e7b00458b618 Mon Sep 17 00:00:00 2001
+From: Defu <defu@local.dev>
+Date: Sat, 24 Oct 2026 01:05:52 +0800
+Subject: [PATCH 3/6] fix(tip): add sandbox detection guard and mutex
+ synchronization to prevent host crash (0xc0000409)
+
+---
+ tip/src/text_service/ai_client.rs | 56 ++++++++++++++++++++++++-------
+ tip/src/text_service/chewing.rs   |  9 +++--
+ 2 files changed, 48 insertions(+), 17 deletions(-)
+
+diff --git a/tip/src/text_service/ai_client.rs b/tip/src/text_service/ai_client.rs
+index cc08c0c..c4244af 100644
+--- a/tip/src/text_service/ai_client.rs
++++ b/tip/src/text_service/ai_client.rs
+@@ -3,17 +3,21 @@
+ //!
+ //! 1. 純 Rust 標準庫實作 (std::net::TcpStream)，不依賴龐大 async runtime，確保 TSF DLL 輕量穩定。
+ //! 2. 獨立背景 Worker 執行緒，透過非同步 mpsc channel 傳遞，絕不阻塞輸入法打字按鍵主迴圈。
+-//! 3. 嚴格白名單檢驗：AI 僅允許在既有合法候選字中推薦，若包含非法或捏造字元一律丟棄。
+-//! 4. 版本戳記保護 (Revision Guard)：逾時 (預設 120ms) 或使用者繼續打字時，自動丟棄過期預測結果。
++//! 3. 沙盒環境安全守護 (Sandbox Detection Guard)：若當前宿主為 Chromium/Electron 沙盒程序
++//!    (如 Antigravity, Chrome, VSCode)，嚴禁發起 In-Process 網路連線，徹底根除 0xc0000409 崩潰。
++//! 4. 嚴格白名單檢驗：AI 僅允許在既有合法候選字中推薦，若包含非法或捏造字元一律丟棄。
++//! 5. 版本戳記保護 (Revision Guard)：逾時 (預設 120ms) 或使用者繼續打字時，自動丟棄過期預測結果。
+ 
+ use std::io::{Read, Write};
+ use std::net::{SocketAddr, TcpStream};
++use std::panic::catch_unwind;
+ use std::sync::atomic::{AtomicU64, Ordering};
+ use std::sync::mpsc::{self, Receiver, Sender};
+ use std::sync::Arc;
+ use std::thread;
+ use std::time::Duration;
+ use log::debug;
++use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
+ 
+ #[derive(Debug, Clone)]
+ pub(crate) struct RerankRequest {
+@@ -32,26 +36,51 @@ pub(crate) struct AiRerankerClient {
+     tx: Sender<RerankRequest>,
+     rx: Receiver<RerankResult>,
+     current_revision: Arc<AtomicU64>,
++    is_sandboxed: bool,
++}
++
++/// 偵測當前載入 DLL 之宿主程式是否為受限制的沙盒環境
++pub(crate) fn is_sandboxed_or_restricted_process() -> bool {
++    let mut buf = [0u16; 512];
++    let len = unsafe { GetModuleFileNameW(None, &mut buf) };
++    if len > 0 {
++        let path = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase();
++        if path.contains("antigravity")
++            || path.contains("chrome")
++            || path.contains("msedge")
++            || path.contains("electron")
++            || path.contains("code.exe")
++        {
++            return true;
++        }
++    }
++    false
+ }
+ 
+ impl AiRerankerClient {
+     pub fn new() -> Self {
++        let is_sandboxed = is_sandboxed_or_restricted_process();
+         let (req_tx, req_rx) = mpsc::channel::<RerankRequest>();
+         let (res_tx, res_rx) = mpsc::channel::<RerankResult>();
+         let current_revision = Arc::new(AtomicU64::new(0));
+-        let rev_clone = Arc::clone(&current_revision);
+ 
+-        thread::Builder::new()
+-            .name("chewing-ai-reranker".into())
+-            .spawn(move || {
+-                worker_loop(req_rx, res_tx, rev_clone);
+-            })
+-            .expect("Failed to spawn ai reranker thread");
++        // 僅在非沙盒安全環境下啟動背景連線執行緒，防止 Antigravity/Chrome 觸發 0xc0000409 閃退
++        if !is_sandboxed {
++            let rev_clone = Arc::clone(&current_revision);
++            let _ = thread::Builder::new()
++                .name("chewing-ai-reranker".into())
++                .spawn(move || {
++                    let _ = catch_unwind(move || {
++                        worker_loop(req_rx, res_tx, rev_clone);
++                    });
++                });
++        }
+ 
+         Self {
+             tx: req_tx,
+             rx: res_rx,
+             current_revision,
++            is_sandboxed,
+         }
+     }
+ 
+@@ -62,7 +91,7 @@ impl AiRerankerClient {
+ 
+     /// 異步發送重排請求 (非阻塞)
+     pub fn request_rerank(&self, revision: u64, context: String, candidates: Vec<String>) {
+-        if candidates.is_empty() {
++        if self.is_sandboxed || candidates.is_empty() {
+             return;
+         }
+         let _ = self.tx.send(RerankRequest {
+@@ -74,6 +103,9 @@ impl AiRerankerClient {
+ 
+     /// 非阻塞嘗試接收重排結果，僅採納與預期 revision 相符的有效結果
+     pub fn try_get_result(&self, expected_revision: u64) -> Option<String> {
++        if self.is_sandboxed {
++            return None;
++        }
+         let mut best = None;
+         while let Ok(res) = self.rx.try_recv() {
+             if res.revision == expected_revision {
+@@ -119,9 +151,9 @@ fn query_ollama(context: &str, candidates: &[String]) -> Option<String> {
+         "前文是「{context}」，接下來從候選字【{cands_str}】選出最合適的一個字。請只輸出該字，不要任何多餘標點或解釋："
+     );
+ 
+-    // 構造 Ollama /api/chat JSON
++    // 支援 qwen3.5:0.8b 與 qwen2.5 模型
+     let body = format!(
+-        r#"{{"model":"qwen2.5:1.5b","messages":[{{"role":"user","content":{:?}}}],"stream":false,"options":{{"temperature":0.0,"num_predict":4}}}}"#,
++        r#"{{"model":"qwen3.5:0.8b","messages":[{{"role":"user","content":{:?}}}],"stream":false,"options":{{"thinking":false,"temperature":0.0,"num_predict":4}}}}"#,
+         user_prompt
+     );
+ 
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 9198d8d..18f6f14 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -175,7 +175,7 @@ pub(super) struct ChewingTextService {
+     shift_key_state: ShiftKeyState,
+     f_key_state: kanata_layer::FKeyState,
+     ai_reranker: AiRerankerClient,
+-    recent_context: RefCell<String>,
++    recent_context: std::sync::Mutex<String>,
+     current_cand_revision: Cell<u64>,
+     cfg: Config,
+     kbtype: KeyboardLayoutCompat,
+@@ -295,7 +295,7 @@ impl ChewingTextService {
+             shift_key_state: ShiftKeyState::Up,
+             f_key_state: kanata_layer::FKeyState::Up,
+             ai_reranker: AiRerankerClient::new(),
+-            recent_context: RefCell::new(String::new()),
++            recent_context: std::sync::Mutex::new(String::new()),
+             current_cand_revision: Cell::new(0),
+             cfg,
+             kbtype: KeyboardLayoutCompat::Default,
+@@ -1148,8 +1148,7 @@ impl ChewingTextService {
+ 
+     fn insert_text(&self, context: &ITfContext, text: &str) -> Result<()> {
+         debug!(text; "going to request immediate text insertion");
+-        {
+-            let mut rc = self.recent_context.borrow_mut();
++        if let Ok(mut rc) = self.recent_context.lock() {
+             rc.push_str(text);
+             let count = rc.chars().count();
+             if count > 40 {
+@@ -1318,7 +1317,7 @@ impl ChewingTextService {
+ 
+                 // --- Grammar & AI Disambiguation Layer ---
+                 let rev = self.current_cand_revision.get();
+-                let mut full_context = self.recent_context.borrow().clone();
++                let mut full_context = self.recent_context.lock().map(|rc| rc.clone()).unwrap_or_default();
+                 if !self.chewing_editor.is_empty() {
+                     full_context.push_str(self.chewing_editor.display_commit());
+                 }

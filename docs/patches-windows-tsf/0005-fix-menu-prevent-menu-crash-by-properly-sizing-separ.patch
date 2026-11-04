@@ -1,0 +1,294 @@
+From 6a62bd72ea916520808761d709a1138d4064d7e3 Mon Sep 17 00:00:00 2001
+From: Defu <defu@local.dev>
+Date: Tue, 3 Nov 2026 20:00:18 +0800
+Subject: [PATCH 5/6] =?UTF-8?q?fix(menu):=20prevent=20menu=20crash=20by=20?=
+ =?UTF-8?q?properly=20sizing=20separator=20&=20string=20slice=20in=20build?=
+ =?UTF-8?q?=5Fmenu,=20safe=20TrackPopupMenu=20HWND,=20and=20enforce=20AI?=
+ =?UTF-8?q?=E6=96=B0=E9=85=B7=E9=9F=B3=20profile=20registration?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ crates/tsfreg/Cargo.toml         |  4 +--
+ crates/tsfreg/src/main.rs        | 37 +++++++++++++++++++--------
+ tip/rc/ChewingTextService.rc     | 13 +++++-----
+ tip/src/text_service/chewing.rs  | 44 +++++++++++++++++++-------------
+ tip/src/text_service/lang_bar.rs |  8 +++++-
+ 5 files changed, 69 insertions(+), 37 deletions(-)
+
+diff --git a/crates/tsfreg/Cargo.toml b/crates/tsfreg/Cargo.toml
+index d34f131..17978e5 100644
+--- a/crates/tsfreg/Cargo.toml
++++ b/crates/tsfreg/Cargo.toml
+@@ -15,7 +15,7 @@ windows = { version = "0.62.2", features = [
+   "Win32_UI_Input_KeyboardAndMouse",
+   "Win32_UI_TextServices"
+ ] }
+-windows-registry = { version = "0.6.1", optional = true }
++windows-registry = "0.6.1"
+ 
+ [features]
+-nightly = ["dep:windows-registry"]
++nightly = []
+diff --git a/crates/tsfreg/src/main.rs b/crates/tsfreg/src/main.rs
+index 28a1f88..4ed1afa 100644
+--- a/crates/tsfreg/src/main.rs
++++ b/crates/tsfreg/src/main.rs
+@@ -20,8 +20,7 @@ use windows::{
+     },
+     core::*,
+ };
+-#[cfg(feature = "nightly")]
+-use windows_registry::LOCAL_MACHINE;
++use windows_registry::{CURRENT_USER, LOCAL_MACHINE};
+ 
+ // https://learn.microsoft.com/en-us/windows/win32/tsf/installlayoutortip
+ windows::core::link!("input.dll" "system" fn InstallLayoutOrTip(psz: *const u16, dwFlags: u32));
+@@ -46,50 +45,68 @@ const CATEGORIES: [GUID; 7] = [
+ 
+ fn register(icon_path: String) -> Result<()> {
+     unsafe {
++        let _ = unregister();
++
+         let input_processor_profile_mgr: ITfInputProcessorProfileMgr =
+             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)?;
+ 
+         let pw_icon_path = icon_path.encode_utf16().collect::<Vec<_>>();
++        let desc_zh_tw = "AI新酷音".encode_utf16().collect::<Vec<_>>();
++        let desc_zh_cn = "AI新酷音 (简体)".encode_utf16().collect::<Vec<_>>();
+ 
+         // Register for zh_TW
+         let mut lcid = LocaleNameToLCID(w!("zh-TW"), 0);
+         if matches!(lcid, 0 | 0x0C00 | 0x1000) {
+             lcid = 0x404;
+         }
+-        input_processor_profile_mgr.RegisterProfile(
++        let _ = input_processor_profile_mgr.RegisterProfile(
+             &CHEWING_TSF_CLSID,
+             lcid as u16,
+             &CHEWING_ZH_TW_PROFILE_GUID,
+-            w!("AI新酷音").as_wide(),
++            &desc_zh_tw,
+             &pw_icon_path,
+             0,
+             HKL::default(),
+             0,
+-            false,
++            true,
+             0,
+-        )?;
++        );
+         // Register for zh_CN
+         let mut lcid = LocaleNameToLCID(w!("zh-CN"), 0);
+         if matches!(lcid, 0 | 0x0C00 | 0x1000) {
+             lcid = 0x804;
+         }
+-        input_processor_profile_mgr.RegisterProfile(
++        let _ = input_processor_profile_mgr.RegisterProfile(
+             &CHEWING_TSF_CLSID,
+             lcid as u16,
+             &CHEWING_ZH_CN_PROFILE_GUID,
+-            w!("AI新酷音 (简体)").as_wide(),
++            &desc_zh_cn,
+             &pw_icon_path,
+             0,
+             HKL::default(),
+             0,
+             false,
+             0,
+-        )?;
++        );
+ 
+         let category_manager: ITfCategoryMgr =
+             CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER)?;
+         for tfcat in &CATEGORIES {
+-            category_manager.RegisterCategory(&CHEWING_TSF_CLSID, tfcat, &CHEWING_TSF_CLSID)?;
++            let _ = category_manager.RegisterCategory(&CHEWING_TSF_CLSID, tfcat, &CHEWING_TSF_CLSID);
++        }
++
++        // Direct registry write fallback to ensure "AI新酷音" is always visible
++        if let Ok(key) = CURRENT_USER.create(r"Software\Microsoft\CTF\TIP\{13F2EF08-575C-4D8C-88E0-F67BB8052B84}\LanguageProfile\0x00000404\{CE45F71D-CE79-41D1-967D-640B65A380E3}") {
++            let _ = key.set_string("Description", "AI新酷音");
++        }
++        if let Ok(key) = CURRENT_USER.create(r"Software\Classes\CLSID\{13F2EF08-575C-4D8C-88E0-F67BB8052B84}") {
++            let _ = key.set_string("", "AI新酷音");
++        }
++        if let Ok(key) = LOCAL_MACHINE.create(r"SOFTWARE\Microsoft\CTF\TIP\{13F2EF08-575C-4D8C-88E0-F67BB8052B84}\LanguageProfile\0x00000404\{CE45F71D-CE79-41D1-967D-640B65A380E3}") {
++            let _ = key.set_string("Description", "AI新酷音");
++        }
++        if let Ok(key) = LOCAL_MACHINE.create(r"SOFTWARE\Classes\CLSID\{13F2EF08-575C-4D8C-88E0-F67BB8052B84}") {
++            let _ = key.set_string("", "AI新酷音");
+         }
+     }
+ 
+diff --git a/tip/rc/ChewingTextService.rc b/tip/rc/ChewingTextService.rc
+index 75b2c07..fbec28c 100644
+--- a/tip/rc/ChewingTextService.rc
++++ b/tip/rc/ChewingTextService.rc
+@@ -93,12 +93,12 @@ BEGIN
+         BLOCK "040404b0"
+         BEGIN
+             VALUE "CompanyName", "Chewing"
+-            VALUE "FileDescription", "AI新酷音輸入法"
++            VALUE "FileDescription", "AI新酷音"
+             VALUE "FileVersion", VER_FILEVERSION_STR
+             VALUE "InternalName", "ChewingTextService.dll"
+             VALUE "LegalCopyright", "Copyright (C) 2013-2025"
+             VALUE "OriginalFilename", "ChewingTextService.dll"
+-            VALUE "ProductName", "AI新酷音輸入法"
++            VALUE "ProductName", "AI新酷音"
+             VALUE "ProductVersion", VER_PRODUCTVERSION_STR
+         END
+     END
+@@ -119,7 +119,7 @@ BEGIN
+     POPUP "POPUP"
+     BEGIN
+         MENUITEM "有新版本可以下載(&U)",                ID_CHECK_NEW_VER
+-        MENUITEM "關於AI新酷音輸入法(&A)",                ID_ABOUT
++        MENUITEM "關於AI新酷音(&A)",                    ID_ABOUT
+         MENUITEM "參觀AI新酷音官方網站(&W)",               ID_WEBSITE
+         MENUITEM "AI新酷音線上討論區(&G)",                ID_GROUP
+         MENUITEM SEPARATOR
+@@ -128,7 +128,7 @@ BEGIN
+         MENUITEM SEPARATOR
+         MENUITEM "AI新酷音使用說明 (&H)",                ID_CHEWING_HELP
+         MENUITEM "編輯使用者詞庫 (&E)",                 ID_HASHED
+-        MENUITEM "AIAI新酷音輸入法設定(&C)",                ID_CONFIG
++        MENUITEM "AI新酷音設定(&C)",                    ID_CONFIG
+         MENUITEM SEPARATOR
+         POPUP "網路辭典 (&D)"
+         BEGIN
+@@ -139,6 +139,7 @@ BEGIN
+             MENUITEM "教育部國語小字典",                    ID_LITTLEDICT
+             MENUITEM "教育部成語典",                      ID_PROVERBDICT
+         END
++        MENUITEM "AI 智慧輔助 (本機 LLM) (&L)",         ID_TOGGLE_AI
+         MENUITEM "輸出全形英數字母 (&F)",             ID_SWITCH_SHAPE
+         MENUITEM "輸出簡體中文 (&S)",                 ID_OUTPUT_SIMP_CHINESE
+     END
+@@ -152,11 +153,11 @@ END
+ 
+ STRINGTABLE
+ BEGIN
+-    IDS_CHEWING             "AI新酷音輸入法"
++    IDS_CHEWING             "AI新酷音"
+     IDS_SWITCH_SHAPE        "全形/半形切換"
+     IDS_SWITCH_LANG         "中文/英文切換"
+     IDS_SETTINGS            "設定/工具選單"
+-    IDS_CONFIG_TITLE        "AIAI新酷音輸入法設定"
++    IDS_CONFIG_TITLE        "AI新酷音設定"
+ END
+ 
+ #endif    // Chinese (Traditional, Taiwan) resources
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index c72426e..471d640 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -43,8 +43,8 @@ use windows::Win32::UI::TextServices::{
+     ITfComposition, ITfLangBarItemButton, ITfLangBarItemMgr, ITfThreadMgr,
+ };
+ use windows::Win32::UI::WindowsAndMessaging::{
+-    AppendMenuW, CheckMenuItem, EnableMenuItem, GetCursorPos, HICON, HMENU, MF_CHECKED, MF_ENABLED, MF_GRAYED,
+-    MF_STRING, MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_LEFTBUTTON, TPM_NONOTIFY, TPM_RETURNCMD,
++    CheckMenuItem, EnableMenuItem, GetCursorPos, HICON, HMENU, MF_CHECKED, MF_ENABLED, MF_GRAYED,
++    MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_LEFTBUTTON, TPM_NONOTIFY, TPM_RETURNCMD,
+     TrackPopupMenu,
+ };
+ use windows_core::{ComObject, ComObjectInner, GUID, HSTRING, Interface};
+@@ -218,15 +218,6 @@ impl ChewingTextService {
+ 
+         // Create a small factory to reduce repetition when creating the langbar buttons.
+         let popup_menu = menu.sub_menu(0);
+-        unsafe {
+-            use windows_core::w;
+-            let _ = AppendMenuW(
+-                popup_menu,
+-                MF_STRING,
+-                ID_TOGGLE_AI as usize,
+-                w!("AI 智慧輔助 (本機 LLM) (&A)"),
+-            );
+-        }
+         let factory = LangBarFactory::new(
+             g_hinstance,
+             lang_bar_item_mgr.clone(),
+@@ -1126,7 +1117,15 @@ impl ChewingTextService {
+                 let mut pos = POINT::default();
+                 let ret = unsafe {
+                     let _ = GetCursorPos(&mut pos);
+-                    TrackPopupMenu(
++                    let mut hwnd = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
++                    if hwnd.0.is_null() {
++                        hwnd = windows::Win32::UI::Input::KeyboardAndMouse::GetFocus();
++                    }
++                    if hwnd.0.is_null() {
++                        hwnd = windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow();
++                    }
++                    let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
++                    let ret = TrackPopupMenu(
+                         self.popup_menu,
+                         TPM_NONOTIFY
+                             | TPM_RETURNCMD
+@@ -1136,9 +1135,16 @@ impl ChewingTextService {
+                         pos.x,
+                         pos.y,
+                         None,
+-                        windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow(),
++                        hwnd,
+                         None,
+-                    )
++                    );
++                    let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
++                        Some(hwnd),
++                        windows::Win32::UI::WindowsAndMessaging::WM_NULL,
++                        windows::Win32::Foundation::WPARAM(0),
++                        windows::Win32::Foundation::LPARAM(0),
++                    );
++                    ret
+                 };
+                 if ret.as_bool() {
+                     self.on_command(ret.0 as u32, CommandType::Menu);
+@@ -1166,12 +1172,14 @@ impl ChewingTextService {
+                     }
+                 }
+                 ID_HASHED => {
+-                    open_url("chewing-editor://open");
+-                    let _ = std::process::Command::new(r"C:\Users\Defu\AppData\Local\Programs\ChewingDev\chewing-editor.exe").spawn();
++                    let appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
++                    let p = format!(r"{}\Programs\ChewingDev\chewing-editor.exe", appdata);
++                    let _ = std::process::Command::new(p).spawn();
+                 }
+                 ID_CONFIG => {
+-                    open_url("chewing-preferences://config");
+-                    let _ = std::process::Command::new(r"C:\Users\Defu\AppData\Local\Programs\ChewingDev\ChewingPreferences.exe").spawn();
++                    let appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
++                    let p = format!(r"{}\Programs\ChewingDev\ChewingPreferences.exe", appdata);
++                    let _ = std::process::Command::new(p).spawn();
+                 }
+                 ID_OUTPUT_SIMP_CHINESE => {
+                     if let Err(error) = self.toggle_simp_chinese() {
+diff --git a/tip/src/text_service/lang_bar.rs b/tip/src/text_service/lang_bar.rs
+index 71b5404..6d0a5e7 100644
+--- a/tip/src/text_service/lang_bar.rs
++++ b/tip/src/text_service/lang_bar.rs
+@@ -240,13 +240,19 @@ fn build_menu(menu: &ITfMenu, hmenu: HMENU) -> Result<()> {
+             {
+                 flags |= TF_LBMENUF_GRAYED;
+             }
++            let pch_slice = if mi.fType == MFT_SEPARATOR {
++                &[][..]
++            } else {
++                let len = (mi.cch as usize).min(text_buffer.len());
++                &text_buffer[..len]
++            };
+             if let Ok(()) = unsafe {
+                 menu.AddMenuItem(
+                     mi.wID,
+                     flags,
+                     HBITMAP::default(),
+                     HBITMAP::default(),
+-                    &text_buffer,
++                    pch_slice,
+                     &mut sub_menu,
+                 )
+             } && let Some(sub_menu) = sub_menu

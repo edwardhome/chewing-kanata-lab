@@ -1,0 +1,1394 @@
+From 5e35402e76db9469149abd25aefbec6d4b2fb991 Mon Sep 17 00:00:00 2001
+From: Defu <defu@local.dev>
+Date: Tue, 3 Nov 2026 11:36:46 +0800
+Subject: [PATCH 4/6] feat(kanata): implement AI Bopomofo v2, F-layer delay
+ control, shift bypass, punctuation preservation, and native Win32 preferences
+
+---
+ Cargo.lock                             |   9 +
+ Cargo.toml                             |   3 +-
+ crates/chewing_preferences/Cargo.toml  |  21 +
+ crates/chewing_preferences/src/main.rs | 514 +++++++++++++++++++++++++
+ crates/chewing_tip_core/src/config.rs  |  12 +
+ crates/tsfreg/src/main.rs              |   4 +-
+ tip/rc/ChewingTextService.rc           |  18 +-
+ tip/rc/resource.h                      |   1 +
+ tip/src/text_service/chewing.rs        | 344 +++++++++++------
+ tip/src/text_service/kanata_layer.rs   |  35 ++
+ tip/src/text_service/mod.rs            |   2 +-
+ tip/src/text_service/resources.rs      |   1 +
+ 12 files changed, 840 insertions(+), 124 deletions(-)
+ create mode 100644 crates/chewing_preferences/Cargo.toml
+ create mode 100644 crates/chewing_preferences/src/main.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 54cf4c0..f359afc 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -305,6 +305,15 @@ dependencies = [
+ name = "chewing-policy-core"
+ version = "0.1.0"
+ 
++[[package]]
++name = "chewing_preferences"
++version = "26.9.0"
++dependencies = [
++ "windows",
++ "windows-core",
++ "windows-registry",
++]
++
+ [[package]]
+ name = "chewing_tip"
+ version = "26.9.0"
+diff --git a/Cargo.toml b/Cargo.toml
+index 8455139..e3d905f 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -5,7 +5,8 @@ members = [
+   "crates/chewing_tip_host",
+   "crates/tsfreg",
+   "tip",
+-  "xtask"
++  "xtask",
++  "crates/chewing_preferences"
+ ]
+ 
+ [workspace.package]
+diff --git a/crates/chewing_preferences/Cargo.toml b/crates/chewing_preferences/Cargo.toml
+new file mode 100644
+index 0000000..eec4ed8
+--- /dev/null
++++ b/crates/chewing_preferences/Cargo.toml
+@@ -0,0 +1,21 @@
++[package]
++name = "chewing_preferences"
++version = "26.9.0"
++edition = "2024"
++description = "AI新酷音輸入法設定"
++
++[[bin]]
++name = "ChewingPreferences"
++path = "src/main.rs"
++
++[dependencies]
++windows = { version = "0.62.2", features = [
++  "Win32_Foundation",
++  "Win32_Graphics_Gdi",
++  "Win32_UI_Controls",
++  "Win32_UI_HiDpi",
++  "Win32_UI_WindowsAndMessaging",
++  "Win32_System_LibraryLoader",
++] }
++windows-core = "0.62.2"
++windows-registry = "0.6.1"
+diff --git a/crates/chewing_preferences/src/main.rs b/crates/chewing_preferences/src/main.rs
+new file mode 100644
+index 0000000..e1675ab
+--- /dev/null
++++ b/crates/chewing_preferences/src/main.rs
+@@ -0,0 +1,514 @@
++#![windows_subsystem = "windows"]
++
++use std::process::Command;
++use std::sync::Mutex;
++use windows::core::{HSTRING, PCWSTR, w};
++use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
++use windows::Win32::Graphics::Gdi::{
++    COLOR_WINDOW, CreateFontW, CreateSolidBrush, DeleteObject, FW_BOLD, FW_NORMAL,
++    GetSysColorBrush, HBRUSH, HDC, HFONT, SetBkMode, SetTextColor, SYS_COLOR_INDEX, TRANSPARENT,
++    FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY,
++};
++use windows::Win32::System::LibraryLoader::GetModuleHandleW;
++use windows::Win32::UI::Controls::{
++    InitCommonControlsEx, ICC_STANDARD_CLASSES, ICC_UPDOWN_CLASS, TBM_SETPOS, TBM_SETRANGE,
++    TRACKBAR_CLASSW,
++};
++use windows::Win32::UI::HiDpi::{
++    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
++};
++use windows::Win32::UI::WindowsAndMessaging::{
++    BM_GETCHECK, BM_SETCHECK, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
++    LoadCursorW, MessageBoxW, PostQuitMessage, RegisterClassW, SendMessageW, SetWindowTextW,
++    ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, HMENU, IDC_ARROW, MB_ICONINFORMATION,
++    MB_OK, MSG, SW_SHOW, WINDOW_STYLE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC,
++    WM_DESTROY, WM_HSCROLL, WM_SETFONT, WNDCLASSW, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
++    WS_VISIBLE,
++};
++use windows_registry::CURRENT_USER;
++
++const REG_KEY: &str = r"Software\ChewingTextService";
++
++// Win32 constants
++const TBM_GETPOS: u32 = 1024;
++const TBS_AUTOTICKS: u32 = 1;
++const BS_PUSHBUTTON: u32 = 0;
++const BS_AUTOCHECKBOX: u32 = 3;
++const BS_GROUPBOX: u32 = 7;
++const BST_UNCHECKED: usize = 0;
++const BST_CHECKED: usize = 1;
++const COLOR_BTNFACE: i32 = 15;
++
++// Control IDs
++const IDC_SLIDER_F: isize = 101;
++const IDC_LABEL_F_VAL: isize = 102;
++const IDC_CHK_AI: isize = 103;
++const IDC_CHK_DEFAULT_ZH: isize = 104;
++const IDC_BTN_OPEN_DICT: isize = 105;
++const IDC_BTN_OPEN_EDITOR: isize = 106;
++const IDC_BTN_SAVE: isize = 107;
++const IDC_BTN_RESET: isize = 108;
++const IDC_BTN_CLOSE: isize = 109;
++
++struct AppState {
++    f_delay_ms: i32,
++    h_slider: HWND,
++    h_lbl_f_val: HWND,
++    h_chk_ai: HWND,
++    h_chk_default_zh: HWND,
++    font_title: HFONT,
++    font_bold: HFONT,
++    font_normal: HFONT,
++    font_mono: HFONT,
++    bg_brush: HBRUSH,
++}
++
++unsafe impl Send for AppState {}
++
++static APP_STATE: Mutex<Option<AppState>> = Mutex::new(None);
++
++#[inline]
++unsafe fn send_msg(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> LRESULT {
++    unsafe { SendMessageW(hwnd, msg, Some(WPARAM(wparam)), Some(LPARAM(lparam))) }
++}
++
++unsafe fn make_font(height: i32, bold: bool, name: PCWSTR) -> HFONT {
++    unsafe {
++        CreateFontW(
++            height,
++            0,
++            0,
++            0,
++            if bold { FW_BOLD.0 as i32 } else { FW_NORMAL.0 as i32 },
++            0,
++            0,
++            0,
++            FONT_CHARSET(1),
++            FONT_OUTPUT_PRECISION(0),
++            FONT_CLIP_PRECISION(0),
++            FONT_QUALITY(0),
++            0,
++            name,
++        )
++    }
++}
++
++unsafe fn create_ctrl(
++    class_name: PCWSTR,
++    text: PCWSTR,
++    style: u32,
++    x: i32,
++    y: i32,
++    width: i32,
++    height: i32,
++    parent: HWND,
++    id: isize,
++    hinst: HINSTANCE,
++) -> windows::core::Result<HWND> {
++    unsafe {
++        CreateWindowExW(
++            Default::default(),
++            class_name,
++            text,
++            WINDOW_STYLE(style),
++            x,
++            y,
++            width,
++            height,
++            Some(parent),
++            if id != 0 { Some(HMENU(id as *mut _)) } else { None },
++            Some(hinst),
++            None,
++        )
++    }
++}
++
++fn load_registry_config() -> (i32, bool, bool) {
++    let f_delay = CURRENT_USER
++        .open(REG_KEY)
++        .and_then(|k| k.get_u32("FHoldDelayMs"))
++        .map(|v| (v as i32).clamp(100, 1000))
++        .unwrap_or(350);
++
++    let enable_ai = CURRENT_USER
++        .open(REG_KEY)
++        .and_then(|k| k.get_u32("EnableAI"))
++        .map(|v| v != 0)
++        .unwrap_or(false);
++
++    let default_english = CURRENT_USER
++        .open(REG_KEY)
++        .and_then(|k| k.get_u32("DefaultEnglish"))
++        .map(|v| v != 0)
++        .unwrap_or(false);
++
++    (f_delay, enable_ai, !default_english)
++}
++
++fn save_registry_config(f_delay: i32, enable_ai: bool, default_chinese: bool) {
++    if let Ok(key) = CURRENT_USER.create(REG_KEY) {
++        let _ = key.set_u32("FHoldDelayMs", f_delay as u32);
++        let _ = key.set_u32("EnableAI", if enable_ai { 1 } else { 0 });
++        let _ = key.set_u32("DefaultEnglish", if default_chinese { 0 } else { 1 });
++    }
++}
++
++unsafe extern "system" fn wnd_proc(
++    hwnd: HWND,
++    msg: u32,
++    wparam: WPARAM,
++    lparam: LPARAM,
++) -> LRESULT {
++    match msg {
++        WM_CREATE => {
++            let (f_delay, enable_ai, default_chinese) = load_registry_config();
++            let hinst = unsafe { HINSTANCE(GetModuleHandleW(None).unwrap().0) };
++
++            // Create fonts
++            let font_title = unsafe { make_font(24, true, w!("Microsoft JhengHei UI")) };
++            let font_bold = unsafe { make_font(18, true, w!("Microsoft JhengHei UI")) };
++            let font_normal = unsafe { make_font(16, false, w!("Microsoft JhengHei UI")) };
++            let font_mono = unsafe { make_font(15, false, w!("Consolas")) };
++            let bg_brush = unsafe { CreateSolidBrush(COLORREF(0x00F8F8F8)) };
++
++            // 1. GroupBox: F 鍵分層延遲設定
++            let grp1 = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("【1】F 鍵長按延遲設定 (F-Hold Delay)"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_GROUPBOX,
++                    20, 20, 640, 140,
++                    hwnd, 0, hinst,
++                ).unwrap()
++            };
++            unsafe { send_msg(grp1, WM_SETFONT, font_bold.0 as usize, 1) };
++
++            // Slider
++            let h_slider = unsafe {
++                create_ctrl(
++                    TRACKBAR_CLASSW,
++                    w!(""),
++                    WS_CHILD.0 | WS_VISIBLE.0 | TBS_AUTOTICKS | WS_TABSTOP.0,
++                    40, 55, 380, 40,
++                    hwnd, IDC_SLIDER_F, hinst,
++                ).unwrap()
++            };
++            unsafe {
++                send_msg(h_slider, TBM_SETRANGE, 1, ((1000 << 16) | 100) as isize);
++                send_msg(h_slider, TBM_SETPOS, 1, f_delay as isize);
++            }
++
++            // Label F Value
++            let val_str = HSTRING::from(format!("當前延遲：{} 毫秒", f_delay));
++            let h_lbl_f_val = unsafe {
++                create_ctrl(
++                    w!("STATIC"),
++                    PCWSTR(val_str.as_ptr()),
++                    WS_CHILD.0 | WS_VISIBLE.0,
++                    440, 60, 200, 25,
++                    hwnd, IDC_LABEL_F_VAL, hinst,
++                ).unwrap()
++            };
++            unsafe { send_msg(h_lbl_f_val, WM_SETFONT, font_bold.0 as usize, 1) };
++
++            // Slider Hint
++            let h_lbl_hint = unsafe {
++                create_ctrl(
++                    w!("STATIC"),
++                    w!("💡 說明：預設 350ms。快速連續打注音 (如「ㄑㄧ」、「ㄑㄩ」) 自動保留注音，絕不輸出數字；按住 F 鍵超過此時間後即啟動右側九宮格數字層。"),
++                    WS_CHILD.0 | WS_VISIBLE.0,
++                    40, 100, 600, 45,
++                    hwnd, 0, hinst,
++                ).unwrap()
++            };
++            unsafe { send_msg(h_lbl_hint, WM_SETFONT, font_normal.0 as usize, 1) };
++
++            // 2. GroupBox: F 分層功能展示
++            let grp2 = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("【2】F 分層輸入功能展示 (右手九宮格與算術鍵盤)"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_GROUPBOX,
++                    20, 175, 640, 205,
++                    hwnd, 0, hinst,
++                ).unwrap()
++            };
++            unsafe { send_msg(grp2, WM_SETFONT, font_bold.0 as usize, 1) };
++
++            let cheatsheet_text = w!(
++                "┌── 按住 F 鍵 ──┬── 符號與運算 ──┬────── 數字九宮格 ──────┐\n\
++                 │  F + Esc ➜ `  │  F + Q ➜ /     │  F + Y ➜ 7  |  F + U ➜ 8  |  F + I ➜ 9 │\n\
++                 │  F + [   ➜ [  │  F + W ➜ *     │  F + H ➜ 4  |  F + J ➜ 5  |  F + K ➜ 6 │\n\
++                 │  F + ]   ➜ ]  │  F + E ➜ -     │  F + N ➜ 1  |  F + M ➜ 2  |  F + , ➜ 3 │\n\
++                 │  F + O   ➜ {  │  F + R ➜ +     │             |  F + Space ➜ 0          │\n\
++                 └───────────────┴────────────────┴────────────────────────────────────────┘"
++            );
++            let h_lbl_cheat = unsafe {
++                create_ctrl(
++                    w!("STATIC"),
++                    cheatsheet_text,
++                    WS_CHILD.0 | WS_VISIBLE.0,
++                    40, 205, 600, 130,
++                    hwnd, 0, hinst,
++                ).unwrap()
++            };
++            unsafe { send_msg(h_lbl_cheat, WM_SETFONT, font_mono.0 as usize, 1) };
++
++            let h_lbl_cheat_tip = unsafe {
++                create_ctrl(
++                    w!("STATIC"),
++                    w!("✨ 智慧保護：長按 F 打數字時雙手不離主鍵區；中文模式鍵入「去 (ㄑㄩ)」自動攔截優先，零衝突！"),
++                    WS_CHILD.0 | WS_VISIBLE.0,
++                    40, 345, 600, 25,
++                    hwnd, 0, hinst,
++                ).unwrap()
++            };
++            unsafe { send_msg(h_lbl_cheat_tip, WM_SETFONT, font_normal.0 as usize, 1) };
++
++            // 3. GroupBox: AI 智慧與詞庫設定
++            let grp3 = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("【3】AI 智慧組詞與詞庫選項"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_GROUPBOX,
++                    20, 395, 640, 160,
++                    hwnd, 0, hinst,
++                ).unwrap()
++            };
++            unsafe { send_msg(grp3, WM_SETFONT, font_bold.0 as usize, 1) };
++
++            let h_chk_ai = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("啟用 Ollama 本機 AI 智慧組詞 (僅在英文單字組詞時介入，預設關閉)"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | BS_AUTOCHECKBOX | WS_TABSTOP.0,
++                    40, 425, 600, 25,
++                    hwnd, IDC_CHK_AI, hinst,
++                ).unwrap()
++            };
++            unsafe {
++                send_msg(h_chk_ai, WM_SETFONT, font_normal.0 as usize, 1);
++                send_msg(h_chk_ai, BM_SETCHECK, if enable_ai { BST_CHECKED } else { BST_UNCHECKED }, 0);
++            }
++
++            let h_chk_default_zh = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("開機與切換視窗時預設為「中文注音模式」[中] (雙擊 Shift 可瞬切中英)"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | BS_AUTOCHECKBOX | WS_TABSTOP.0,
++                    40, 455, 600, 25,
++                    hwnd, IDC_CHK_DEFAULT_ZH, hinst,
++                ).unwrap()
++            };
++            unsafe {
++                send_msg(h_chk_default_zh, WM_SETFONT, font_normal.0 as usize, 1);
++                send_msg(h_chk_default_zh, BM_SETCHECK, if default_chinese { BST_CHECKED } else { BST_UNCHECKED }, 0);
++            }
++
++            let h_btn_dict = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("📖 開啟英文專業名詞詞庫 (technical-terms.txt)"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
++                    40, 495, 290, 35,
++                    hwnd, IDC_BTN_OPEN_DICT, hinst,
++                ).unwrap()
++            };
++            unsafe { send_msg(h_btn_dict, WM_SETFONT, font_normal.0 as usize, 1) };
++
++            let h_btn_editor = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("🛠️ 開啟使用者詞庫編輯器 (chewing-editor.exe)"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
++                    340, 495, 300, 35,
++                    hwnd, IDC_BTN_OPEN_EDITOR, hinst,
++                ).unwrap()
++            };
++            unsafe { send_msg(h_btn_editor, WM_SETFONT, font_normal.0 as usize, 1) };
++
++            // Bottom Buttons
++            let h_btn_save = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("💾 套用儲存設定"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
++                    300, 570, 150, 40,
++                    hwnd, IDC_BTN_SAVE, hinst,
++                ).unwrap()
++            };
++            unsafe { send_msg(h_btn_save, WM_SETFONT, font_bold.0 as usize, 1) };
++
++            let h_btn_reset = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("🔄 恢復預設"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
++                    460, 570, 100, 40,
++                    hwnd, IDC_BTN_RESET, hinst,
++                ).unwrap()
++            };
++            unsafe { send_msg(h_btn_reset, WM_SETFONT, font_normal.0 as usize, 1) };
++
++            let h_btn_close = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("關閉"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
++                    570, 570, 90, 40,
++                    hwnd, IDC_BTN_CLOSE, hinst,
++                ).unwrap()
++            };
++            unsafe { send_msg(h_btn_close, WM_SETFONT, font_normal.0 as usize, 1) };
++
++            *APP_STATE.lock().unwrap() = Some(AppState {
++                f_delay_ms: f_delay,
++                h_slider,
++                h_lbl_f_val,
++                h_chk_ai,
++                h_chk_default_zh,
++                font_title,
++                font_bold,
++                font_normal,
++                font_mono,
++                bg_brush,
++            });
++
++            LRESULT(0)
++        }
++        WM_HSCROLL => {
++            if let Ok(mut guard) = APP_STATE.lock() {
++                if let Some(state) = guard.as_mut() {
++                    let pos = unsafe { send_msg(state.h_slider, TBM_GETPOS, 0, 0) }.0 as i32;
++                    state.f_delay_ms = pos;
++                    let val_str = HSTRING::from(format!("當前延遲：{} 毫秒", pos));
++                    let _ = unsafe { SetWindowTextW(state.h_lbl_f_val, PCWSTR(val_str.as_ptr())) };
++                }
++            }
++            LRESULT(0)
++        }
++        WM_COMMAND => {
++            let id = (wparam.0 & 0xFFFF) as isize;
++            if let Ok(mut guard) = APP_STATE.lock() {
++                if let Some(state) = guard.as_mut() {
++                    match id {
++                        IDC_BTN_SAVE => {
++                            let ai_checked = unsafe { send_msg(state.h_chk_ai, BM_GETCHECK, 0, 0) }.0 == BST_CHECKED as isize;
++                            let zh_checked = unsafe { send_msg(state.h_chk_default_zh, BM_GETCHECK, 0, 0) }.0 == BST_CHECKED as isize;
++                            save_registry_config(state.f_delay_ms, ai_checked, zh_checked);
++                            let _ = unsafe {
++                                MessageBoxW(
++                                    Some(hwnd),
++                                    w!("✅ 設定已成功套用並儲存至 Windows 登錄表！\n新設定已即時生效。"),
++                                    w!("AI新酷音輸入法設定"),
++                                    MB_OK | MB_ICONINFORMATION,
++                                )
++                            };
++                        }
++                        IDC_BTN_RESET => {
++                            state.f_delay_ms = 350;
++                            unsafe {
++                                send_msg(state.h_slider, TBM_SETPOS, 1, 350);
++                                let _ = SetWindowTextW(state.h_lbl_f_val, w!("當前延遲：350 毫秒"));
++                                send_msg(state.h_chk_ai, BM_SETCHECK, BST_UNCHECKED, 0);
++                                send_msg(state.h_chk_default_zh, BM_SETCHECK, BST_CHECKED, 0);
++                            }
++                        }
++                        IDC_BTN_OPEN_DICT => {
++                            let appdata = std::env::var("APPDATA").unwrap_or_default();
++                            let p = format!(r"{}\Chewing\technical-terms.txt", appdata);
++                            let _ = Command::new("notepad.exe").arg(p).spawn();
++                        }
++                        IDC_BTN_OPEN_EDITOR => {
++                            let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
++                            let p = format!(r"{}\Programs\ChewingDev\chewing-editor.exe", localappdata);
++                            let _ = Command::new(p).spawn();
++                        }
++                        IDC_BTN_CLOSE => {
++                            unsafe { PostQuitMessage(0) };
++                        }
++                        _ => {}
++                    }
++                }
++            }
++            LRESULT(0)
++        }
++        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
++            let hdc = HDC(wparam.0 as _);
++            unsafe {
++                SetBkMode(hdc, TRANSPARENT);
++                SetTextColor(hdc, COLORREF(0x00202020));
++            }
++            if let Ok(guard) = APP_STATE.lock() {
++                if let Some(state) = guard.as_ref() {
++                    return LRESULT(state.bg_brush.0 as isize);
++                }
++            }
++            LRESULT(unsafe { GetSysColorBrush(SYS_COLOR_INDEX(COLOR_BTNFACE)) }.0 as isize)
++        }
++        WM_DESTROY => {
++            if let Ok(mut guard) = APP_STATE.lock() {
++                if let Some(state) = guard.take() {
++                    unsafe {
++                        let _ = DeleteObject(state.font_title.into());
++                        let _ = DeleteObject(state.font_bold.into());
++                        let _ = DeleteObject(state.font_normal.into());
++                        let _ = DeleteObject(state.font_mono.into());
++                        let _ = DeleteObject(state.bg_brush.into());
++                    }
++                }
++            }
++            unsafe { PostQuitMessage(0) };
++            LRESULT(0)
++        }
++        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
++    }
++}
++
++fn main() -> windows::core::Result<()> {
++    unsafe {
++        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
++        let icce = windows::Win32::UI::Controls::INITCOMMONCONTROLSEX {
++            dwSize: std::mem::size_of::<windows::Win32::UI::Controls::INITCOMMONCONTROLSEX>() as u32,
++            dwICC: ICC_STANDARD_CLASSES | ICC_UPDOWN_CLASS,
++        };
++        let _ = InitCommonControlsEx(&icce);
++
++        let hinstance = HINSTANCE(GetModuleHandleW(None)?.0);
++        let class_name = w!("AiChewingPreferencesClass");
++
++        let wc = WNDCLASSW {
++            style: CS_HREDRAW | CS_VREDRAW,
++            lpfnWndProc: Some(wnd_proc),
++            hInstance: hinstance,
++            hCursor: LoadCursorW(None, IDC_ARROW)?,
++            hbrBackground: HBRUSH(COLOR_WINDOW.0 as *mut _),
++            lpszClassName: class_name,
++            ..Default::default()
++        };
++
++        RegisterClassW(&wc);
++
++        let hwnd = CreateWindowExW(
++            Default::default(),
++            class_name,
++            w!("AI新酷音輸入法設定"),
++            WS_OVERLAPPEDWINDOW & !windows::Win32::UI::WindowsAndMessaging::WS_MAXIMIZEBOX,
++            150, 150, 695, 665,
++            None,
++            None,
++            Some(hinstance),
++            None,
++        )?;
++
++        let _ = ShowWindow(hwnd, SW_SHOW);
++
++        let mut msg = MSG::default();
++        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
++            let _ = TranslateMessage(&msg);
++            DispatchMessageW(&msg);
++        }
++
++        Ok(())
++    }
++}
+diff --git a/crates/chewing_tip_core/src/config.rs b/crates/chewing_tip_core/src/config.rs
+index 8f40ab5..0cd1dfc 100644
+--- a/crates/chewing_tip_core/src/config.rs
++++ b/crates/chewing_tip_core/src/config.rs
+@@ -89,6 +89,8 @@ pub struct ChewingTsfConfig {
+     pub update_info_url: String,
+     pub last_update_check_time: u64,
+     pub modified_timestamp: u64,
++    pub f_hold_delay_ms: i32,
++    pub enable_ai: bool,
+ }
+ 
+ impl Default for ChewingTsfConfig {
+@@ -150,6 +152,8 @@ impl Default for ChewingTsfConfig {
+             update_info_url: "".to_string(),
+             last_update_check_time: 0,
+             modified_timestamp: 0,
++            f_hold_delay_ms: 350,
++            enable_ai: false,
+         }
+     }
+ }
+@@ -248,6 +252,12 @@ impl Config {
+             if let Ok(value) = reg_get_bool(&key, "AutoWrapCursor") {
+                 cfg.auto_wrap_cursor = value;
+             }
++            if let Ok(value) = reg_get_i32(&key, "FHoldDelayMs") {
++                cfg.f_hold_delay_ms = value.clamp(100, 1000);
++            }
++            if let Ok(value) = reg_get_bool(&key, "EnableAI") {
++                cfg.enable_ai = value;
++            }
+             if let Ok(value) = reg_get_i32(&key, "DefFontSize") {
+                 cfg.font_size = value;
+             }
+@@ -411,6 +421,8 @@ impl Config {
+             chewing_tsf.advance_after_selection,
+         );
+         let _ = reg_set_bool(&key, "AutoWrapCursor", chewing_tsf.auto_wrap_cursor);
++        let _ = reg_set_i32(&key, "FHoldDelayMs", chewing_tsf.f_hold_delay_ms);
++        let _ = reg_set_bool(&key, "EnableAI", chewing_tsf.enable_ai);
+         let _ = reg_set_i32(&key, "DefFontSize", chewing_tsf.font_size);
+         let _ = key.set_string("DefFontFamily", &chewing_tsf.font_family);
+         let _ = key.set_string("DefFontFgColor", &chewing_tsf.font_fg_color);
+diff --git a/crates/tsfreg/src/main.rs b/crates/tsfreg/src/main.rs
+index 41df92c..28a1f88 100644
+--- a/crates/tsfreg/src/main.rs
++++ b/crates/tsfreg/src/main.rs
+@@ -60,7 +60,7 @@ fn register(icon_path: String) -> Result<()> {
+             &CHEWING_TSF_CLSID,
+             lcid as u16,
+             &CHEWING_ZH_TW_PROFILE_GUID,
+-            w!("新酷音輸入法").as_wide(),
++            w!("AI新酷音").as_wide(),
+             &pw_icon_path,
+             0,
+             HKL::default(),
+@@ -77,7 +77,7 @@ fn register(icon_path: String) -> Result<()> {
+             &CHEWING_TSF_CLSID,
+             lcid as u16,
+             &CHEWING_ZH_CN_PROFILE_GUID,
+-            w!("新酷音输入法").as_wide(),
++            w!("AI新酷音 (简体)").as_wide(),
+             &pw_icon_path,
+             0,
+             HKL::default(),
+diff --git a/tip/rc/ChewingTextService.rc b/tip/rc/ChewingTextService.rc
+index 22203db..75b2c07 100644
+--- a/tip/rc/ChewingTextService.rc
++++ b/tip/rc/ChewingTextService.rc
+@@ -93,12 +93,12 @@ BEGIN
+         BLOCK "040404b0"
+         BEGIN
+             VALUE "CompanyName", "Chewing"
+-            VALUE "FileDescription", "新酷音輸入法"
++            VALUE "FileDescription", "AI新酷音輸入法"
+             VALUE "FileVersion", VER_FILEVERSION_STR
+             VALUE "InternalName", "ChewingTextService.dll"
+             VALUE "LegalCopyright", "Copyright (C) 2013-2025"
+             VALUE "OriginalFilename", "ChewingTextService.dll"
+-            VALUE "ProductName", "新酷音輸入法"
++            VALUE "ProductName", "AI新酷音輸入法"
+             VALUE "ProductVersion", VER_PRODUCTVERSION_STR
+         END
+     END
+@@ -119,16 +119,16 @@ BEGIN
+     POPUP "POPUP"
+     BEGIN
+         MENUITEM "有新版本可以下載(&U)",                ID_CHECK_NEW_VER
+-        MENUITEM "關於新酷音輸入法(&A)",                ID_ABOUT
+-        MENUITEM "參觀新酷音官方網站(&W)",               ID_WEBSITE
+-        MENUITEM "新酷音線上討論區(&G)",                ID_GROUP
++        MENUITEM "關於AI新酷音輸入法(&A)",                ID_ABOUT
++        MENUITEM "參觀AI新酷音官方網站(&W)",               ID_WEBSITE
++        MENUITEM "AI新酷音線上討論區(&G)",                ID_GROUP
+         MENUITEM SEPARATOR
+         MENUITEM "軟體本身的建議及錯誤回報(&B)",            ID_BUGREPORT
+         MENUITEM "注音及選字選詞錯誤回報 (&P)",            ID_DICT_BUGREPORT
+         MENUITEM SEPARATOR
+-        MENUITEM "新酷音使用說明 (&H)",                ID_CHEWING_HELP
++        MENUITEM "AI新酷音使用說明 (&H)",                ID_CHEWING_HELP
+         MENUITEM "編輯使用者詞庫 (&E)",                 ID_HASHED
+-        MENUITEM "設定新酷音輸入法(&C)",                ID_CONFIG
++        MENUITEM "AIAI新酷音輸入法設定(&C)",                ID_CONFIG
+         MENUITEM SEPARATOR
+         POPUP "網路辭典 (&D)"
+         BEGIN
+@@ -152,11 +152,11 @@ END
+ 
+ STRINGTABLE
+ BEGIN
+-    IDS_CHEWING             "新酷音輸入法"
++    IDS_CHEWING             "AI新酷音輸入法"
+     IDS_SWITCH_SHAPE        "全形/半形切換"
+     IDS_SWITCH_LANG         "中文/英文切換"
+     IDS_SETTINGS            "設定/工具選單"
+-    IDS_CONFIG_TITLE        "設定新酷音輸入法"
++    IDS_CONFIG_TITLE        "AIAI新酷音輸入法設定"
+ END
+ 
+ #endif    // Chinese (Traditional, Taiwan) resources
+diff --git a/tip/rc/resource.h b/tip/rc/resource.h
+index bbb5fe1..e7a6381 100644
+--- a/tip/rc/resource.h
++++ b/tip/rc/resource.h
+@@ -59,6 +59,7 @@
+ #define ID_MOEDICT 40025
+ #define ID_POPUP_40026 40026
+ #define ID_OUTPUT_SIMP_CHINESE 40027
++#define ID_TOGGLE_AI 40028
+ #define IDC_STATIC -1
+ 
+ // Next default values for new objects
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 18f6f14..c72426e 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -24,13 +24,14 @@ use chewing::input::{KeyState, KeyboardEvent, keycode, keysym};
+ use chewing::zhuyin::Syllable;
+ use chewing_tip_core::config::{ChewingTsfConfig, Config};
+ use chewing_tip_core::shell::open_url;
+-use chewing_policy_core::{PolicyContext, PolicyMode, should_bypass_key, transform_commit};
++use chewing_policy_core::{
++    DoubleShiftGesture, PolicyContext, PolicyMode, should_bypass_key, transform_commit,
++};
+ use log::{debug, error, info};
+ use scoped_error::impl_context_error;
+ use scoped_error::{ErrorExt, expect_error};
+ use windows::Win32::Foundation::{GetLastError, HINSTANCE, POINT, RECT};
+ use windows::Win32::System::Variant::VARIANT;
+-use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+ use windows::Win32::UI::TextServices::{
+     GUID_COMPARTMENT_EMPTYCONTEXT, GUID_COMPARTMENT_KEYBOARD_DISABLED,
+     GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, GUID_LBI_INPUTMODE, ITfCompartmentMgr, ITfCompositionSink,
+@@ -42,17 +43,15 @@ use windows::Win32::UI::TextServices::{
+     ITfComposition, ITfLangBarItemButton, ITfLangBarItemMgr, ITfThreadMgr,
+ };
+ use windows::Win32::UI::WindowsAndMessaging::{
+-    CheckMenuItem, EnableMenuItem, GetCursorPos, HICON, HMENU, MF_CHECKED, MF_ENABLED, MF_GRAYED,
+-    MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_LEFTBUTTON, TPM_NONOTIFY, TPM_RETURNCMD,
++    AppendMenuW, CheckMenuItem, EnableMenuItem, GetCursorPos, HICON, HMENU, MF_CHECKED, MF_ENABLED, MF_GRAYED,
++    MF_STRING, MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_LEFTBUTTON, TPM_NONOTIFY, TPM_RETURNCMD,
+     TrackPopupMenu,
+ };
+ use windows_core::{ComObject, ComObjectInner, GUID, HSTRING, Interface};
+ use zhconv::{Variant, zhconv};
+ 
+ use super::CommandType;
+-use super::ai_client::AiRerankerClient;
+ use super::kanata_layer;
+-use chewing_policy_core::grammar_corrector::disambiguate_homophones;
+ use super::GUID_INPUT_DISPLAY_ATTRIBUTE_1;
+ use super::GUID_INPUT_DISPLAY_ATTRIBUTE_2;
+ use super::display_attribute::register_display_attribute;
+@@ -90,13 +89,15 @@ const SEL_KEYS: [&str; 6] = [
+     "1234qweras",
+ ];
+ 
+-#[derive(Debug)]
++#[derive(Debug, PartialEq)]
++#[allow(dead_code)]
+ enum ShiftKeyState {
+     Down(Instant),
+     Consumed,
+     Up,
+ }
+ 
++#[allow(dead_code)]
+ impl ShiftKeyState {
+     fn release(&mut self) -> Option<Duration> {
+         let duration = match self {
+@@ -174,9 +175,8 @@ pub(super) struct ChewingTextService {
+     output_simp_chinese: bool,
+     shift_key_state: ShiftKeyState,
+     f_key_state: kanata_layer::FKeyState,
+-    ai_reranker: AiRerankerClient,
+-    recent_context: std::sync::Mutex<String>,
+-    current_cand_revision: Cell<u64>,
++    double_shift: DoubleShiftGesture,
++    start_time: Instant,
+     cfg: Config,
+     kbtype: KeyboardLayoutCompat,
+     keymap: KeymapOp,
+@@ -218,6 +218,15 @@ impl ChewingTextService {
+ 
+         // Create a small factory to reduce repetition when creating the langbar buttons.
+         let popup_menu = menu.sub_menu(0);
++        unsafe {
++            use windows_core::w;
++            let _ = AppendMenuW(
++                popup_menu,
++                MF_STRING,
++                ID_TOGGLE_AI as usize,
++                w!("AI 智慧輔助 (本機 LLM) (&A)"),
++            );
++        }
+         let factory = LangBarFactory::new(
+             g_hinstance,
+             lang_bar_item_mgr.clone(),
+@@ -289,14 +298,17 @@ impl ChewingTextService {
+             _menu: menu,
+             popup_menu,
+             lang_icons: LangIconSet::load(),
+-            lang_mode: Cell::new(TsfLangMode::English),
++            lang_mode: Cell::new(if cfg.chewing_tsf.default_english {
++                TsfLangMode::English
++            } else {
++                TsfLangMode::Chinese
++            }),
+             has_focus: true,
+             output_simp_chinese: Default::default(),
+             shift_key_state: ShiftKeyState::Up,
+             f_key_state: kanata_layer::FKeyState::Up,
+-            ai_reranker: AiRerankerClient::new(),
+-            recent_context: std::sync::Mutex::new(String::new()),
+-            current_cand_revision: Cell::new(0),
++            double_shift: DoubleShiftGesture::new(),
++            start_time: Instant::now(),
+             cfg,
+             kbtype: KeyboardLayoutCompat::Default,
+             keymap: KeymapOp::None,
+@@ -344,6 +356,7 @@ impl ChewingTextService {
+         debug!("on_kill_focus");
+         self.has_focus = false;
+         self.f_key_state = kanata_layer::FKeyState::Up;
++        self.double_shift.reset();
+         if self.is_composing()
+             && let Some(context) = context
+         {
+@@ -408,23 +421,32 @@ impl ChewingTextService {
+         let is_context_mutable = self.is_context_mutable(context)?;
+         let evt = ev.to_keyboard_event(self.keymap);
+         let simulate_english_layout = self.cfg.chewing_tsf.simulate_english_layout != 0;
++
++        let other_modifiers = evt.is_state_on(KeyState::Control)
++            || evt.is_state_on(KeyState::Alt)
++            || evt.is_state_on(KeyState::Super);
++
+         // Determine shift key state here, this might be our last chance seeing this key.
+         if evt.ksym != SYM_LEFTSHIFT
+             && evt.ksym != SYM_RIGHTSHIFT
+             && evt.is_state_on(KeyState::Shift)
+         {
+             self.shift_key_state = ShiftKeyState::Consumed;
++            self.double_shift.reset();
++        } else if evt.ksym != SYM_LEFTSHIFT && evt.ksym != SYM_RIGHTSHIFT {
++            self.double_shift.reset();
+         }
+         debug!(evt:?, shift_key_state:? = self.shift_key_state; "on_test_keydown");
+ 
+         let mut shift_down = false;
+         if (evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT)
+-            && self.cfg.chewing_tsf.switch_lang_with_shift
+             && matches!(self.shift_key_state, ShiftKeyState::Up)
+         {
+             debug!("shift_key_state = Down");
+             self.shift_key_state = ShiftKeyState::Down(Instant::now());
+             shift_down = true;
++            let time = self.start_time.elapsed();
++            self.double_shift.update(true, other_modifiers, time);
+         }
+         //
+         // Step 1. apply any config changes
+@@ -439,20 +461,28 @@ impl ChewingTextService {
+         if self.lang_mode.get().is_disabled() {
+             return Ok(false);
+         }
+-        //
+-        // Step 2.1 handle switch lang with Shift
+-        //
+-        if shift_down {
+-            return Ok(false);
+-        }
+-        if ev.vk == 0x46 {
++
++        // Kanata Tap-Hold 'f' Number/Symbol Layer interception
++        // 1. If F key is pressed, always intercept so we can track hold / chord / tap
++        if ev.vk == 0x46 && !self.chewing_editor.is_selecting() {
+             return Ok(true);
+         }
+-        if self.f_key_state != kanata_layer::FKeyState::Up {
++        // 2. If F is currently active, intercept any mapped chord keys (except when cancelled)
++        if self.f_key_state != kanata_layer::FKeyState::Up
++            && self.f_key_state != kanata_layer::FKeyState::Cancelled
++        {
+             if kanata_layer::map_kanata_number_layer(ev.vk).is_some() {
+                 return Ok(true);
+             }
+         }
++
++
++        //
++        // Step 2.1 handle switch lang with Shift
++        //
++        if shift_down {
++            return Ok(false);
++        }
+         //
+         // Step 2.2 handle any keybindings
+         //
+@@ -500,7 +530,7 @@ impl ChewingTextService {
+             // need to handle case conversion
+             return Ok(true);
+         }
+-        if !self.is_composing() {
++        if !self.is_composing() && self.lang_mode.get() == TsfLangMode::English {
+             if evt.ksym.is_ascii() {
+                 let ascii_char = evt.ksym.to_unicode();
+                 let policy_ctx = PolicyContext::new(PolicyMode::AsciiFirst);
+@@ -551,27 +581,71 @@ impl ChewingTextService {
+             return Ok(false);
+         }
+         let mut evt = ev.to_keyboard_event(self.keymap);
+-        self.current_cand_revision.set(self.ai_reranker.next_revision());
+         debug!(evt:?; "on_keydown");
+ 
+-        // Kanata Tap-Hold 'f' Number/Symbol Layer
+-        if ev.vk == 0x46 {
++        // 1. Kanata Tap-Hold 'f' Number/Symbol Layer: F key itself
++        let shift_held = evt.is_state_on(KeyState::Shift) || self.shift_key_state != ShiftKeyState::Up;
++        let is_english = self.lang_mode.get() == TsfLangMode::English;
++        if ev.vk == 0x46
++            && !shift_held
++            && !is_english
++            && !self.chewing_editor.is_selecting()
++            && self.chewing_editor.is_empty()
++        {
+             match self.f_key_state {
+                 kanata_layer::FKeyState::Up => {
+                     self.f_key_state = kanata_layer::FKeyState::Down(Instant::now());
+                 }
+                 kanata_layer::FKeyState::Down(instant) => {
+-                    if instant.elapsed() >= Duration::from_millis(180) {
++                    let f_delay = Duration::from_millis(
++                        self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64,
++                    );
++                    if instant.elapsed() >= f_delay {
+                         self.f_key_state = kanata_layer::FKeyState::Held;
+                     }
+                 }
+                 kanata_layer::FKeyState::Held => {}
++                kanata_layer::FKeyState::Cancelled => {}
+             }
+             return Ok(true);
+         }
+ 
+-        if self.f_key_state != kanata_layer::FKeyState::Up {
+-            if let Some(text) = kanata_layer::map_kanata_number_layer(ev.vk) {
++        // 2. Kanata Tap-Hold 'f' Number/Symbol Layer: Active chord keys or flush pending 'f'
++        // AI-Bopomofo 0.6.11 (fix/f-phonetic-overlap):
++        // 快速注音保護：等待長按 (Down) 期間若遇到 U (ㄧ) 或 M (ㄩ)，優先保留注音 ㄑㄧ / ㄑㄩ，
++        // 先將 F (ㄑ) 送入注音引擎，取消本手勢，避免高速打字時誤出數字 8 / 2。
++        if self.f_key_state != kanata_layer::FKeyState::Up
++            && self.f_key_state != kanata_layer::FKeyState::Cancelled
++        {
++            let f_delay = Duration::from_millis(
++                self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64,
++            );
++            let _is_pending = match self.f_key_state {
++                kanata_layer::FKeyState::Down(instant) => {
++                    if instant.elapsed() >= f_delay {
++                        self.f_key_state = kanata_layer::FKeyState::Held;
++                        false
++                    } else {
++                        true
++                    }
++                }
++                kanata_layer::FKeyState::Held => false,
++                _ => false,
++            };
++
++            let other_modifiers = evt.is_state_on(KeyState::Control)
++                || evt.is_state_on(KeyState::Alt)
++                || evt.is_state_on(KeyState::Shift)
++                || evt.is_state_on(KeyState::Super);
++
++            let is_chinese = self.lang_mode.get() == TsfLangMode::Chinese;
++            let prefers_phonetic = is_chinese
++                && !other_modifiers
++                && kanata_layer::is_phonetic_f_overlap(ev.vk);
++
++            let is_mapped = kanata_layer::map_kanata_number_layer(ev.vk);
++
++            if !prefers_phonetic && let Some(text) = is_mapped {
+                 self.f_key_state = kanata_layer::FKeyState::Held;
+                 if !self.chewing_editor.is_empty() {
+                     let _ = self.chewing_editor.commit();
+@@ -585,7 +659,31 @@ impl ChewingTextService {
+                 self.insert_text(context, text)?;
+                 return Ok(true);
+             } else {
+-                self.f_key_state = kanata_layer::FKeyState::Held;
++                // Not a chord key OR prefers phonetic Bopomofo (ㄑㄧ / ㄑㄩ)!
++                // If F was in Down state, flush 'f' FIRST to maintain strict keystroke order!
++                let prev_state = self.f_key_state;
++                self.f_key_state = kanata_layer::FKeyState::Cancelled;
++                if let kanata_layer::FKeyState::Down(_) = prev_state {
++                    let f_sysev = SystemKeyboardEvent {
++                        vk: 0x46,
++                        scan_code: 0x21,
++                        ascii_code: b'f',
++                        key_state: [0; 256],
++                    };
++                    let f_evt = f_sysev.to_keyboard_event(self.keymap);
++                    if is_chinese {
++                        self.chewing_editor.process_keyevent(f_evt);
++                        let last_behavior = self.chewing_editor.last_key_behavior();
++                        if !self.is_composing() && last_behavior == EditorKeyBehavior::Commit {
++                            let text = self.chewing_editor.display_commit().to_owned();
++                            self.chewing_editor.ack();
++                            self.insert_text(context, &text)?;
++                        }
++                    } else {
++                        self.insert_text(context, "f")?;
++                    }
++                }
++                // Continue executing this on_keydown event for `ev` below without returning!
+             }
+         }
+ 
+@@ -782,7 +880,12 @@ impl ChewingTextService {
+             if let Some(param) = text_action {
+                 commit.push_str(&param);
+             }
+-            let policy_ctx = PolicyContext::new(PolicyMode::AsciiFirst);
++            let policy_mode = if self.lang_mode.get() == TsfLangMode::Chinese {
++                PolicyMode::FormalZh
++            } else {
++                PolicyMode::AsciiFirst
++            };
++            let policy_ctx = PolicyContext::new(policy_mode);
+             commit = transform_commit(&commit, &policy_ctx).to_owned();
+             commit
+         } else {
+@@ -819,31 +922,48 @@ impl ChewingTextService {
+             let prev = self.f_key_state;
+             self.f_key_state = kanata_layer::FKeyState::Up;
+             if let kanata_layer::FKeyState::Down(instant) = prev {
+-                if instant.elapsed() < Duration::from_millis(250) {
+-                    // Tap 'f'! Process normal 'f' into chewing editor
++                let f_delay = Duration::from_millis(
++                    self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64,
++                );
++                if instant.elapsed() < f_delay {
+                     let evt = ev.to_keyboard_event(self.keymap);
+-                    self.chewing_editor.process_keyevent(evt);
+-                    let last_behavior = self.chewing_editor.last_key_behavior();
+-                    if !self.is_composing() && last_behavior == EditorKeyBehavior::Commit {
+-                        let text = self.chewing_editor.display_commit().to_owned();
+-                        self.chewing_editor.ack();
+-                        self.insert_text(context, &text)?;
+-                    } else {
+-                        if let Err(error) = self.update_candidates(context) {
+-                            error!("{}", error.report());
+-                        }
+-                        let commit = if last_behavior == EditorKeyBehavior::Commit {
+-                            let c = self.chewing_editor.display_commit().to_owned();
++                    let shift_held = evt.is_state_on(KeyState::Shift) || self.shift_key_state != ShiftKeyState::Up;
++                    if shift_held {
++                        self.insert_text(context, "F")?;
++                    } else if self.lang_mode.get() == TsfLangMode::Chinese {
++                        // Normal tap 'f': synthesize a keydown event for 'f' into chewing_editor!
++                        let f_sysev = SystemKeyboardEvent {
++                            vk: 0x46,
++                            scan_code: 0x21,
++                            ascii_code: b'f',
++                            key_state: [0; 256],
++                        };
++                        let f_evt = f_sysev.to_keyboard_event(self.keymap);
++                        self.chewing_editor.process_keyevent(f_evt);
++                        let last_behavior = self.chewing_editor.last_key_behavior();
++                        if !self.is_composing() && last_behavior == EditorKeyBehavior::Commit {
++                            let text = self.chewing_editor.display_commit().to_owned();
+                             self.chewing_editor.ack();
+-                            c
++                            self.insert_text(context, &text)?;
+                         } else {
+-                            String::new()
+-                        };
+-                        self.update_preedit(context, commit)?;
++                            if let Err(error) = self.update_candidates(context) {
++                                error!("{}", error.report());
++                            }
++                            let commit = if last_behavior == EditorKeyBehavior::Commit {
++                                let c = self.chewing_editor.display_commit().to_owned();
++                                self.chewing_editor.ack();
++                                c
++                            } else {
++                                String::new()
++                            };
++                            self.update_preedit(context, commit)?;
++                        }
++                    } else {
++                        self.insert_text(context, "f")?;
+                     }
+                 }
+             }
+-            return Ok(true);
++            return Ok(false);
+         }
+         let evt = ev.to_keyboard_event(self.keymap);
+         let last_is_shift = evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT;
+@@ -851,32 +971,23 @@ impl ChewingTextService {
+ 
+         debug!(last_is_shift, last_is_capslock; "");
+ 
+-        if last_is_shift
+-            && self.shift_key_state.release().is_some_and(|duration| {
+-                duration < Duration::from_millis(self.cfg.chewing_tsf.shift_key_sensitivity as u64)
+-            })
+-            && self.cfg.chewing_tsf.switch_lang_with_shift
+-        {
+-            // TODO: simplify this
+-            if self.cfg.chewing_tsf.enable_caps_lock {
+-                // Locked by CapsLock
+-                let msg = match self.lang_mode.get() {
+-                    TsfLangMode::English => HSTRING::from("CapsLock 鎖定英數模式"),
+-                    TsfLangMode::Chinese => HSTRING::from("CapsLock 鎖定中文模式"),
+-                    _ => HSTRING::from("輸入法關閉中"), // unreachable
+-                };
+-                if self.cfg.chewing_tsf.show_notification {
+-                    self.show_message(context, &msg, Duration::from_millis(500))?;
+-                }
+-            } else {
+-                self.toggle_lang_mode()?;
++        if last_is_shift {
++            let time = self.start_time.elapsed();
++            let _ = self.shift_key_state.release();
++            let other_modifiers = evt.is_state_on(KeyState::Control)
++                || evt.is_state_on(KeyState::Alt)
++                || evt.is_state_on(KeyState::Super);
++
++            let double_shift_triggered = self.double_shift.update(false, other_modifiers, time);
++            if double_shift_triggered {
++                self.toggle_lang_mode_with_context(context)?;
+                 let msg = match self.lang_mode.get() {
+-                    TsfLangMode::English => HSTRING::from("英數模式"),
+-                    TsfLangMode::Chinese => HSTRING::from("中文模式"),
+-                    _ => HSTRING::from("輸入法關閉中"), // unreachable
++                    TsfLangMode::English => HSTRING::from("英文"),
++                    TsfLangMode::Chinese => HSTRING::from("注音"),
++                    _ => HSTRING::from("關閉"),
+                 };
+                 if self.cfg.chewing_tsf.show_notification {
+-                    self.show_message(context, &msg, Duration::from_millis(500))?;
++                    self.show_message(context, &msg, Duration::from_millis(800))?;
+                 }
+             }
+         }
+@@ -1067,6 +1178,21 @@ impl ChewingTextService {
+                         error!("unable to toggle simplified chinese: {error}");
+                     }
+                 }
++                ID_TOGGLE_AI => {
++                    self.cfg.chewing_tsf.enable_ai = !self.cfg.chewing_tsf.enable_ai;
++                    let _ = self.cfg.save_reg();
++                    unsafe {
++                        let _ = CheckMenuItem(
++                            self.popup_menu,
++                            ID_TOGGLE_AI,
++                            if self.cfg.chewing_tsf.enable_ai {
++                                MF_CHECKED.0
++                            } else {
++                                MF_UNCHECKED.0
++                            },
++                        );
++                    }
++                }
+                 ID_CHECK_NEW_VER => open_url(&self.cfg.chewing_tsf.update_info_url),
+                 ID_ABOUT => open_url("chewing-preferences://about"),
+                 ID_WEBSITE => open_url("https://chewing.im/"),
+@@ -1148,14 +1274,6 @@ impl ChewingTextService {
+ 
+     fn insert_text(&self, context: &ITfContext, text: &str) -> Result<()> {
+         debug!(text; "going to request immediate text insertion");
+-        if let Ok(mut rc) = self.recent_context.lock() {
+-            rc.push_str(text);
+-            let count = rc.chars().count();
+-            if count > 40 {
+-                let skip = count - 40;
+-                *rc = rc.chars().skip(skip).collect();
+-            }
+-        }
+         let htext = text.into();
+         let session = InsertText::new(context.clone(), htext).into_object();
+         request_edit_session(
+@@ -1315,26 +1433,6 @@ impl ChewingTextService {
+                 }
+                 items.truncate(n);
+ 
+-                // --- Grammar & AI Disambiguation Layer ---
+-                let rev = self.current_cand_revision.get();
+-                let mut full_context = self.recent_context.lock().map(|rc| rc.clone()).unwrap_or_default();
+-                if !self.chewing_editor.is_empty() {
+-                    full_context.push_str(self.chewing_editor.display_commit());
+-                }
+-
+-                // 1. Zero-latency deterministic grammar correction (在/再, 的/得/地, 做/作)
+-                disambiguate_homophones(&full_context, &mut items);
+-
+-                // 2. Ollama AI Reranker result check (if finished)
+-                if let Some(ai_chosen) = self.ai_reranker.try_get_result(rev) {
+-                    if let Some(pos) = items.iter().position(|it| it == &ai_chosen) {
+-                        if pos > 0 {
+-                            items[..=pos].rotate_right(1);
+-                        }
+-                    }
+-                } else if items.len() > 1 {
+-                    self.ai_reranker.request_rerank(rev, full_context, items.clone());
+-                }
+                 candidate_list.set_model(Model {
+                     items,
+                     selkeys: sel_keys.chars().take(n).map(|k| k as u16).collect(),
+@@ -1474,6 +1572,24 @@ impl ChewingTextService {
+         Ok(())
+     }
+ 
++    fn toggle_lang_mode_with_context(&mut self, context: &ITfContext) -> Result<()> {
++        let prev = self.lang_mode.get();
++        self.lang_mode.update(|v| match v {
++            TsfLangMode::English => TsfLangMode::Chinese,
++            TsfLangMode::Chinese => TsfLangMode::English,
++            TsfLangMode::DisabledEnglish => TsfLangMode::DisabledChinese,
++            TsfLangMode::DisabledChinese => TsfLangMode::DisabledEnglish,
++        });
++        self.sync_lang_mode(true)?;
++
++        if prev != self.lang_mode.get() {
++            self.chewing_editor.clear_syllable_editor();
++            let _ = self.update_preedit(context, String::new());
++        }
++
++        Ok(())
++    }
++
+     fn toggle_lang_mode(&mut self) -> Result<()> {
+         let prev = self.lang_mode.get();
+         self.lang_mode.update(|v| match v {
+@@ -1486,15 +1602,12 @@ impl ChewingTextService {
+ 
+         if prev != self.lang_mode.get() {
+             unsafe {
+-                let doc_mgr = self
+-                    .thread_mgr
+-                    .GetFocus()
+-                    .context("failed to get current ITfDocumentMgr")?;
+-                let context = doc_mgr
+-                    .GetTop()
+-                    .context("failed to get current ITfContext")?;
+-                self.chewing_editor.clear_syllable_editor();
+-                self.update_preedit(&context, String::new())?;
++                if let Ok(doc_mgr) = self.thread_mgr.GetFocus() {
++                    if let Ok(context) = doc_mgr.GetTop() {
++                        self.chewing_editor.clear_syllable_editor();
++                        let _ = self.update_preedit(&context, String::new());
++                    }
++                }
+             }
+         }
+ 
+@@ -1641,6 +1754,15 @@ impl ChewingTextService {
+                     MF_UNCHECKED.0
+                 },
+             );
++            CheckMenuItem(
++                self.popup_menu,
++                ID_TOGGLE_AI,
++                if self.cfg.chewing_tsf.enable_ai {
++                    MF_CHECKED.0
++                } else {
++                    MF_UNCHECKED.0
++                },
++            );
+         }
+         unsafe {
+             let _ = EnableMenuItem(
+diff --git a/tip/src/text_service/kanata_layer.rs b/tip/src/text_service/kanata_layer.rs
+index 48644d2..ff0c6d9 100644
+--- a/tip/src/text_service/kanata_layer.rs
++++ b/tip/src/text_service/kanata_layer.rs
+@@ -4,11 +4,17 @@
+ 
+ use std::time::Instant;
+ 
++#[allow(unused_imports)]
++pub(crate) use chewing_policy_core::f_hold::{
++    can_start_chord, is_phonetic_f_overlap, prefers_phonetic_f_chord,
++};
++
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum FKeyState {
+     Up,
+     Down(Instant),
+     Held,
++    Cancelled,
+ }
+ 
+ impl Default for FKeyState {
+@@ -20,6 +26,8 @@ impl Default for FKeyState {
+ /// 依據 kanata.original.kbd 的 number layer 定義進行虛擬鍵映射
+ pub(crate) fn map_kanata_number_layer(vk: u16) -> Option<&'static str> {
+     match vk {
++        // AI-Bopomofo QuickSymbolLayer: F + Esc -> `
++        0x1B => Some("`"),  // VK_ESCAPE -> `
+         // Row 1: ` 1 2 3 4 5 6 7 8 9 0 - =
+         0xC0 => Some("`"),  // VK_OEM_3 (`~) -> `
+         0x31 => Some("!"),  // VK_1 -> !
+@@ -102,6 +110,7 @@ mod tests {
+ 
+     #[test]
+     fn test_kanata_number_layer_symbols() {
++        assert_eq!(map_kanata_number_layer(0x1B), Some("`")); // Esc -> `
+         assert_eq!(map_kanata_number_layer(0xDB), Some("[")); // [
+         assert_eq!(map_kanata_number_layer(0xDD), Some("]")); // ]
+         assert_eq!(map_kanata_number_layer(0x4F), Some("{")); // O -> {
+@@ -109,4 +118,30 @@ mod tests {
+         assert_eq!(map_kanata_number_layer(0xBD), Some("_")); // - -> _
+         assert_eq!(map_kanata_number_layer(0x42), Some("°")); // B -> °
+     }
++
++    #[test]
++    fn test_phonetic_overlap_keys() {
++        assert!(is_phonetic_f_overlap(0x55)); // U -> ㄧ (Bopomofo) / 8 (Kanata)
++        assert!(is_phonetic_f_overlap(0x4D)); // M -> ㄩ (Bopomofo) / 2 (Kanata)
++        assert!(!is_phonetic_f_overlap(0x52)); // R -> +
++        assert!(!is_phonetic_f_overlap(0x1B)); // Esc -> `
++        assert!(!is_phonetic_f_overlap(0x59)); // Y -> 7
++    }
++
++    #[test]
++    fn test_prefers_phonetic_f_chord() {
++        // Pending state in Chinese default layout without modifiers -> should prefer phonetic (qi / qu)
++        assert!(prefers_phonetic_f_chord(0x55, true, true, true, false));
++        assert!(prefers_phonetic_f_chord(0x4D, true, true, true, false));
++
++        // When held (not pending) -> should output numbers 8 and 2
++        assert!(!prefers_phonetic_f_chord(0x55, false, true, true, false));
++        assert!(!prefers_phonetic_f_chord(0x4D, false, true, true, false));
++
++        // When in English mode -> should output numbers 8 and 2
++        assert!(!prefers_phonetic_f_chord(0x55, true, false, true, false));
++
++        // When with modifiers (Shift/Ctrl/Alt) -> should not prefer phonetic
++        assert!(!prefers_phonetic_f_chord(0x55, true, true, true, true));
++    }
+ }
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index 29bfcde..269c9e8 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -27,7 +27,7 @@ use self::chewing::ChewingTextService;
+ use self::display_attribute::{EnumTfDisplayAttributeInfo, get_display_attribute_info};
+ use self::key_event::SystemKeyboardEvent;
+ 
+-mod ai_client;
++// mod ai_client;
+ mod chewing;
+ mod display_attribute;
+ mod edit_session;
+diff --git a/tip/src/text_service/resources.rs b/tip/src/text_service/resources.rs
+index 5f556bf..90ed6b4 100644
+--- a/tip/src/text_service/resources.rs
++++ b/tip/src/text_service/resources.rs
+@@ -39,5 +39,6 @@ pub(super) const ID_SIMPDICT: u32 = 40012;
+ pub(super) const ID_LITTLEDICT: u32 = 40013;
+ pub(super) const ID_PROVERBDICT: u32 = 40014;
+ pub(super) const ID_CHEWING_HELP: u32 = 40015;
++pub(super) const ID_TOGGLE_AI: u32 = 40028;
+ 
+ pub(super) const IDR_MENU: u32 = 109;
