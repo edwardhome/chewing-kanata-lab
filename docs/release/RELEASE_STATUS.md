@@ -1,13 +1,25 @@
-# 目前發布狀態：NOT_READY
+# 目前發布狀態：PREVIEW_REGISTERED
 
-更新時間：2026-11-05T01:54:11+08:00
+更新時間：2026-11-05T03:08:36+08:00
 
-Windows 既有安裝腳本與 TSF 來源的產品身分、私人詞庫及偏好隔離尚未完成。原有「RC-READY」是歷史宣告，不能作為目前可安全安裝的依據。Codex 已在獨立分支修正候選契約與安裝前檢查；原生套件、安裝與實鍵驗收仍待完成。
+Windows 獨立預覽版 `1.0.0-preview.20261105.3` 已完成建置、封裝、前置驗證與 WorkstationX 實際註冊。它不是正式穩定版，也尚未追平 AI-Bopomofo 0.6.14 全部功能。
 
-- [隔離缺口與新套件契約](PACKAGE_SAFETY.md)
-- [本輪 30 個無介面案例及驗證限制](../verification/runs/RUN-20261105-CODEX-SAFETY-01.md)
+- 94 個無介面案例通過，0 失敗、0 跳過；四個交付元件 release build 與 workspace check 通過。
+- 九份原生修補可從固定基準重現相同完整 tree；最終套件來源與檔案摘要可驗證。
+- 名稱為「AI新酷音（預覽版）」；保留原有新酷音註冊、預設輸入法、語言清單、私人詞庫與 Kanata。未強制切換或重啟應用。
+- 本輪重點為 F 組字／退格、Shift 英文編輯、工程詞庫候選、產品隔離及可靠安裝。實體鍵盤、密碼欄與應用相容性為 NOT_RUN。
+- Ollama 原生整合與學習詞庫尚未完成，AI 預設關閉。不能將歷史 AI patch 名稱解讀為功能已可用。
+- 套件未簽署。來源留在開發分支與 Draft PR，不合併 main；尚未建立公開 Release。
 
-以下原文僅作歷史紀錄，不代表新修改的建置或驗收結果。
+Windows 套件位於 `Documents\AI-Chewing\1.0.0-preview.20261105.3`；Mac 留有同版 Windows zip 備份於 `Documents/AI Chewing/1.0.0-preview.20261105.3/`，並非 Mac 安裝包。前兩個未交付候選包已撤出交付目錄。
+
+- [驗證報告、版本與套件摘要](../verification/runs/RUN-20261105-CODEX-PARITY-01.md)
+- [功能對齊與未完成範圍](../development/PARITY_MATRIX.md)
+- [套件隔離與交付條件](PACKAGE_SAFETY.md)
+
+## 歷史報告（不代表目前狀態）
+
+以下原文保留作歷史紀錄；其中 RC-READY、AI 整合及跨平台宣告不能替代上方本輪驗證結果。
 
 ---
 
