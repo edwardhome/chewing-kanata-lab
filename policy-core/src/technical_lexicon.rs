@@ -3,6 +3,7 @@
 //! 移植自 edwardhome/AI-Bopomofo (TechnicalLexicon.swift)
 
 use std::collections::BTreeSet;
+use crate::engineering_lexicon::{EngineeringLexicon, TechnicalCandidate};
 use std::path::PathBuf;
 
 pub const BUILTIN_TERMS: &[&str] = &[
@@ -30,94 +31,6 @@ pub const BUILTIN_TERMS: &[&str] = &[
     "Xcode",
     "branch",
     "module",
-    // 跨領域工程與自然科學學術規範詞彙 (NAER / IEEE / IUPAP 標準)
-    "I²C",
-    "I³C",
-    "MOSFET",
-    "FinFET",
-    "GAAFET",
-    "CMOS",
-    "BJT",
-    "Op-Amp",
-    "PCB",
-    "PCBA",
-    "S₁₁",
-    "S₂₁",
-    "Z₀",
-    "RDS(on)",
-    "Laser",
-    "FBG",
-    "FWHM",
-    "TEM₀₀",
-    "M²",
-    "cm⁻¹",
-    "iPhone",
-    "macOS",
-    "iOS",
-    "eBay",
-    "Wi-Fi",
-    "Ethernet",
-    "IPv4",
-    "IPv6",
-    "Wi-Fi 6",
-    "Wi-Fi 7",
-    "gRPC",
-    "MQTT",
-    "QoS",
-    "PoE",
-    "SiO₂",
-    "Si₃N₄",
-    "GaAs",
-    "GaN",
-    "InP",
-    "SiC",
-    "Al₂O₃",
-    "HfO₂",
-    "ZrO₂",
-    "TiO₂",
-    "Ta₂O₅",
-    "ITO",
-    "FTO",
-    "MoS₂",
-    "WSe₂",
-    "h-BN",
-    "LiCoO₂",
-    "LiFePO₄",
-    "LiMn₂O₄",
-    "Li₄Ti₅O₁₂",
-    "YBCO",
-    "MAPbI₃",
-    "SiH₄",
-    "NH₃",
-    "SF₆",
-    "CF₄",
-    "HF",
-    "H₂O₂",
-    "Li⁺",
-    "OH⁻",
-    "H⁺",
-    "H₃O⁺",
-    "SO₄²⁻",
-    "CO₃²⁻",
-    "Cu²⁺",
-    "DLP",
-    "HUD",
-    "LiDAR",
-    "MicroLED",
-    "OLED",
-    "QD-OLED",
-    "VCSEL",
-    "DFB",
-    "DBR",
-    "HEMT",
-    "IGBT",
-    "MEMS",
-    "ASIC",
-    "DAC",
-    "ADC",
-    "PLL",
-    "VCO",
-    "LDO",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,7 +70,8 @@ impl TechnicalLexicon {
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.len() > 128 {
             return false;
         }
-        if trimmed.chars().any(char::is_whitespace) {
+        if trimmed != word || trimmed.chars().any(|c| c.is_whitespace() || c.is_control()
+            || matches!(c, '\u{00ad}' | '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')) {
             return false;
         }
         // 不能為純 ASCII 數字
@@ -196,11 +110,11 @@ impl TechnicalLexicon {
         terms
     }
 
-    /// 取得 Windows %APPDATA%\Chewing\technical-terms.txt 檔案路徑
+    /// 取得 Windows %APPDATA%\ChewingDev\technical-terms.txt 檔案路徑
     pub fn default_user_lexicon_path() -> Option<PathBuf> {
         std::env::var_os("APPDATA").map(|appdata| {
             let mut p = PathBuf::from(appdata);
-            p.push("Chewing");
+            p.push("ChewingDev");
             p.push("technical-terms.txt");
             p
         })
@@ -220,90 +134,31 @@ impl TechnicalLexicon {
     }
 
     /// 前綴補全查詢：
-    /// - 前綴字元數 >= 2
+    /// - 傳統詞庫前綴 >= 2；工程別名兩字元僅精確匹配，三字元起才展開
     /// - 不包含空白
-    /// - 支援大小寫不敏感匹配與 Unicode 拓撲字符歸一化匹配（如 i2c 匹配 I²C、sio2 匹配 SiO₂、wifi 匹配 Wi-Fi）
+    /// - 工程詞條使用已校對的 ASCII 別名，輸出 Unicode 不做相容性正規化
     /// - 排除與前綴完全一致之項目
     /// - 最多回傳 8 個結果
     pub fn completions(&self, prefix: &str) -> Vec<String> {
-        if prefix.len() < 2 || prefix.chars().any(char::is_whitespace) {
-            return Vec::new();
-        }
-        let lower_prefix = prefix.to_lowercase();
-        let norm_prefix = normalize_key(prefix);
-        let clean_prefix: String = norm_prefix.chars().filter(|c| c.is_alphanumeric()).collect();
+        self.candidate_items(prefix).into_iter().map(|c| c.text).collect()
+    }
 
-        self.words
-            .iter()
-            .filter(|w| {
-                if *w == prefix {
-                    return false;
-                }
-                let lower_w = w.to_lowercase();
-                if lower_w.starts_with(&lower_prefix) {
-                    return true;
-                }
-                let norm_w = normalize_key(w);
-                if norm_w.starts_with(&norm_prefix) {
-                    return true;
-                }
-                if !clean_prefix.is_empty() {
-                    let clean_w: String = norm_w.chars().filter(|c| c.is_alphanumeric()).collect();
-                    if clean_w.starts_with(&clean_prefix) {
-                        return true;
-                    }
-                }
-                false
-            })
-            .take(8)
-            .cloned()
-            .collect()
+    pub fn candidate_items(&self, prefix: &str) -> Vec<TechnicalCandidate> {
+        if !(2..=64).contains(&prefix.len()) || !prefix.bytes().all(|b| (33..=126).contains(&b)) {
+            return vec![];
+        }
+        let lower = prefix.to_ascii_lowercase();
+        let (exact, engineering_prefix) = EngineeringLexicon::bundled().matches(prefix);
+        let legacy = self.words.iter().filter(|w| w.to_ascii_lowercase().starts_with(&lower))
+            .map(|w| TechnicalCandidate { text: w.clone(), annotation: None });
+        let mut seen = BTreeSet::from([prefix.to_string()]);
+        exact.into_iter().chain(legacy).chain(engineering_prefix)
+            .filter(|c| seen.insert(c.text.clone())).take(8).collect()
     }
 
     pub fn words(&self) -> &[String] {
         &self.words
     }
-}
-
-/// 將特殊上下標與拓撲字符映射為標準 ASCII 鍵，便於快速補全查詢
-fn normalize_symbol(c: char) -> String {
-    match c {
-        '⁰' => "0".to_string(),
-        '¹' => "1".to_string(),
-        '²' => "2".to_string(),
-        '³' => "3".to_string(),
-        '⁴' => "4".to_string(),
-        '⁵' => "5".to_string(),
-        '⁶' => "6".to_string(),
-        '⁷' => "7".to_string(),
-        '⁸' => "8".to_string(),
-        '⁹' => "9".to_string(),
-        '₀' => "0".to_string(),
-        '₁' => "1".to_string(),
-        '₂' => "2".to_string(),
-        '₃' => "3".to_string(),
-        '₄' => "4".to_string(),
-        '₅' => "5".to_string(),
-        '₆' => "6".to_string(),
-        '₇' => "7".to_string(),
-        '₈' => "8".to_string(),
-        '₉' => "9".to_string(),
-        '⁺' => "+".to_string(),
-        '⁻' => "-".to_string(),
-        'μ' | 'µ' => "u".to_string(),
-        'ħ' => "h".to_string(),
-        'Å' => "A".to_string(),
-        '℃' => "C".to_string(),
-        other => other.to_lowercase().to_string(),
-    }
-}
-
-fn normalize_key(text: &str) -> String {
-    let mut s = String::with_capacity(text.len());
-    for c in text.chars() {
-        s.push_str(&normalize_symbol(c));
-    }
-    s
 }
 
 #[cfg(test)]
@@ -335,6 +190,8 @@ mod tests {
         assert!(!TechnicalLexicon::is_valid("#comment"));
         assert!(!TechnicalLexicon::is_valid("12345")); // 純數字
         assert!(!TechnicalLexicon::is_valid("with space"));
+        assert!(!TechnicalLexicon::is_valid("name\u{202e}txt"));
+        assert!(!TechnicalLexicon::is_valid("name\0"));
     }
 
     #[test]
@@ -371,7 +228,7 @@ Invalid line with multiple items
         assert!(!lexicon.completions("FPGA").contains(&"FPGA".to_string()));
 
         // 學術拓撲符號補全驗證
-        let comps_i2c = lexicon.completions("i2");
+        let comps_i2c = lexicon.completions("i2c");
         assert!(comps_i2c.contains(&"I²C".to_string()));
 
         let comps_sio = lexicon.completions("sio");

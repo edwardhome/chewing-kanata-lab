@@ -173,3 +173,5 @@ mod tests {
         assert_eq!(transform_commit("新酷音", &ctx), "新酷音");
     }
 }
+
+pub mod engineering_lexicon;

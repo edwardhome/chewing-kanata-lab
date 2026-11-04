@@ -30,6 +30,12 @@ impl ASCIIComposition {
             .take(256)
             .collect();
 
+        Self::accepted(text, cursor, selected_index, lexicon)
+    }
+
+    // Only verified candidate selections and edits of existing composition reach
+    // this constructor; arbitrary keyboard input remains ASCII-filtered above.
+    fn accepted(text: String, cursor: Option<usize>, selected_index: usize, lexicon: &TechnicalLexicon) -> Self {
         let char_count = text.chars().count();
         let cur = match cursor {
             Some(c) => c.min(char_count),
@@ -79,22 +85,22 @@ impl ASCIIComposition {
     }
 
     pub fn applying(&self, action: CompositionAction, lexicon: &TechnicalLexicon) -> CompositionResult {
-        let chars: Vec<char> = self.raw.chars().collect();
-        let cur = self.cursor;
+        let chars: Vec<char> = self.display().chars().collect();
+        let cur = self.display_cursor();
 
         match action {
             CompositionAction::Escape => {
                 if self.selected_index == 0 {
                     CompositionResult::Cancel
                 } else {
-                    CompositionResult::Updated(Self::new(&self.raw, Some(self.cursor), 0, lexicon))
+                    CompositionResult::Updated(Self::accepted(self.raw.clone(), Some(self.cursor), 0, lexicon))
                 }
             }
             CompositionAction::Enter => CompositionResult::Commit(self.display().to_string()),
             CompositionAction::Shortcut => CompositionResult::PassThrough(self.display().to_string()),
             CompositionAction::Select(idx) => {
                 if idx < self.candidates.len() {
-                    CompositionResult::Updated(Self::new(&self.raw, Some(self.cursor), idx, lexicon))
+                    CompositionResult::Updated(Self::accepted(self.raw.clone(), Some(self.cursor), idx, lexicon))
                 } else {
                     CompositionResult::Rejected
                 }
@@ -107,7 +113,7 @@ impl ASCIIComposition {
                     } else {
                         (self.selected_index + 1) % count
                     };
-                    CompositionResult::Updated(Self::new(&self.raw, Some(self.cursor), new_idx, lexicon))
+                    CompositionResult::Updated(Self::accepted(self.raw.clone(), Some(self.cursor), new_idx, lexicon))
                 } else {
                     CompositionResult::Updated(self.clone())
                 }
@@ -128,7 +134,7 @@ impl ASCIIComposition {
                 new_chars.extend_from_slice(&chars[cur..]);
                 let new_raw: String = new_chars.into_iter().collect();
                 let new_cursor = cur + literal.chars().count();
-                CompositionResult::Updated(Self::new(&new_raw, Some(new_cursor), 0, lexicon))
+                CompositionResult::Updated(Self::accepted(new_raw, Some(new_cursor), 0, lexicon))
             }
             CompositionAction::Backspace => {
                 if cur > 0 {
@@ -136,7 +142,7 @@ impl ASCIIComposition {
                     new_chars.extend_from_slice(&chars[..cur - 1]);
                     new_chars.extend_from_slice(&chars[cur..]);
                     let new_raw: String = new_chars.into_iter().collect();
-                    CompositionResult::Updated(Self::new(&new_raw, Some(cur - 1), 0, lexicon))
+                    CompositionResult::Updated(Self::accepted(new_raw, Some(cur - 1), 0, lexicon))
                 } else {
                     CompositionResult::Updated(self.clone())
                 }
@@ -147,24 +153,24 @@ impl ASCIIComposition {
                     new_chars.extend_from_slice(&chars[..cur]);
                     new_chars.extend_from_slice(&chars[cur + 1..]);
                     let new_raw: String = new_chars.into_iter().collect();
-                    CompositionResult::Updated(Self::new(&new_raw, Some(cur), 0, lexicon))
+                    CompositionResult::Updated(Self::accepted(new_raw, Some(cur), 0, lexicon))
                 } else {
                     CompositionResult::Updated(self.clone())
                 }
             }
             CompositionAction::Left => {
                 let new_cur = cur.saturating_sub(1);
-                CompositionResult::Updated(Self::new(&self.raw, Some(new_cur), 0, lexicon))
+                CompositionResult::Updated(Self::accepted(self.display().to_string(), Some(new_cur), 0, lexicon))
             }
             CompositionAction::Right => {
                 let new_cur = (cur + 1).min(chars.len());
-                CompositionResult::Updated(Self::new(&self.raw, Some(new_cur), 0, lexicon))
+                CompositionResult::Updated(Self::accepted(self.display().to_string(), Some(new_cur), 0, lexicon))
             }
             CompositionAction::Home => {
-                CompositionResult::Updated(Self::new(&self.raw, Some(0), 0, lexicon))
+                CompositionResult::Updated(Self::accepted(self.display().to_string(), Some(0), 0, lexicon))
             }
             CompositionAction::End => {
-                CompositionResult::Updated(Self::new(&self.raw, Some(chars.len()), 0, lexicon))
+                CompositionResult::Updated(Self::accepted(self.display().to_string(), Some(chars.len()), 0, lexicon))
             }
         }
     }
@@ -252,7 +258,7 @@ impl ShiftLetterSession {
         repeating: bool,
         lexicon: &TechnicalLexicon,
     ) -> SessionResult {
-        if action == CompositionAction::Escape {
+        if action == CompositionAction::Escape && self.composition.selected_index == 0 {
             return SessionResult::Cancel;
         }
         if action == CompositionAction::Shortcut {
@@ -411,5 +417,105 @@ mod tests {
         let selected_term = comp2.display().to_string();
         let res = comp2.applying(CompositionAction::Enter, &lexicon);
         assert_eq!(res, CompositionResult::Commit(selected_term));
+    }
+    #[test]
+    fn selected_engineering_unicode_survives_editing() {
+        let lexicon = TechnicalLexicon::default();
+        let comp = ASCIIComposition::new("sio2", None, 1, &lexicon);
+        assert_eq!(comp.display(), "SiO₂");
+        let CompositionResult::Updated(edited) = comp.applying(CompositionAction::Insert("X".into()), &lexicon) else { panic!("edit"); };
+        assert_eq!(edited.raw, "SiO₂X");
+        let CompositionResult::Updated(edited) = edited.applying(CompositionAction::Backspace, &lexicon) else { panic!("delete"); };
+        assert_eq!(edited.raw, "SiO₂");
+    }
+
+    #[test]
+    fn escape_restores_preview_before_canceling_session() {
+        let lexicon = TechnicalLexicon::default();
+        let session = ShiftLetterSession::new(ASCIIComposition::new("i2c", None, 1, &lexicon), ShiftMode::Word);
+        let SessionResult::Updated(next) = session.applying(CompositionAction::Escape, false, false, &lexicon) else { panic!("restore"); };
+        assert_eq!(next.composition.display(), "i2c");
+        assert_eq!(next.applying(CompositionAction::Escape, false, false, &lexicon), SessionResult::Cancel);
+    }
+
+    #[test]
+    fn deleting_initial_letter_retains_explicit_english() {
+        let lexicon = TechnicalLexicon::default();
+        let session = ShiftLetterSession::start_with_letter('M', &lexicon);
+        let SessionResult::Updated(next) = session.applying(CompositionAction::Backspace, false, false, &lexicon) else { panic!("edit"); };
+        assert_eq!(next.mode, ShiftMode::Word);
+        assert_eq!(next.composition.raw, "");
+        let SessionResult::Updated(next) = next.applying(CompositionAction::Insert("mm".into()), false, false, &lexicon) else { panic!("edit"); };
+        assert_eq!(next.composition.display(), "mm");
+    }
+
+}
+
+/// An F gesture owns only its newly entered symbols. Backspace must never delete
+/// the application text or the English composition that preceded the gesture.
+#[derive(Debug, Clone)]
+pub struct FCompositionBuffer {
+    pub base: Option<ShiftLetterSession>,
+    symbols: String,
+}
+
+impl FCompositionBuffer {
+    pub fn new(mut base: Option<ShiftLetterSession>, lexicon: &TechnicalLexicon) -> Self {
+        if let Some(session) = &mut base {
+            session.composition = ASCIIComposition::accepted(session.composition.raw.clone(),
+                Some(session.composition.cursor), 0, lexicon);
+        }
+        Self { base, symbols: String::new() }
+    }
+    pub fn append(&mut self, symbol: &str) {
+        let base_len = self.base.as_ref().map_or(0, |s| s.composition.raw.chars().count());
+        if base_len + self.symbols.chars().count() + symbol.chars().count() <= 256
+            && symbol.chars().all(|c| c.is_ascii_graphic() || c == '°') {
+            self.symbols.push_str(symbol);
+        }
+    }
+    pub fn backspace(&mut self) { self.symbols.pop(); }
+    pub fn symbols(&self) -> &str { &self.symbols }
+    pub fn preview(&self, lexicon: &TechnicalLexicon) -> ASCIIComposition {
+        let base = self.base.as_ref().map(|s| s.composition.clone())
+            .unwrap_or_else(|| ASCIIComposition::new("", None, 0, lexicon));
+        if self.symbols.is_empty() { return base; }
+        match base.applying(CompositionAction::Insert(self.symbols.clone()), lexicon) {
+            CompositionResult::Updated(next) => next,
+            _ => base,
+        }
+    }
+}
+
+#[cfg(test)]
+mod f_buffer_tests {
+    use super::*;
+    #[test]
+    fn held_f_backspace_never_deletes_existing_word() {
+        let lexicon = TechnicalLexicon::default();
+        let base = ShiftLetterSession::new(ASCIIComposition::new("abc", Some(1), 0, &lexicon), ShiftMode::Word);
+        let mut buffer = FCompositionBuffer::new(Some(base), &lexicon);
+        buffer.append("+"); buffer.append("8");
+        assert_eq!(buffer.preview(&lexicon).raw, "a+8bc");
+        buffer.backspace(); assert_eq!(buffer.preview(&lexicon).raw, "a+bc");
+        buffer.backspace(); buffer.backspace();
+        assert_eq!(buffer.preview(&lexicon).raw, "abc");
+        assert_eq!(buffer.preview(&lexicon).cursor, 1);
+    }
+    #[test]
+    fn f_gesture_restores_raw_instead_of_accepting_a_preview() {
+        let lexicon = TechnicalLexicon::default();
+        let base = ShiftLetterSession::new(ASCIIComposition::new("i2c", None, 1, &lexicon), ShiftMode::Word);
+        let mut buffer = FCompositionBuffer::new(Some(base), &lexicon);
+        buffer.append("+");
+        assert_eq!(buffer.preview(&lexicon).raw, "i2c+");
+    }
+    #[test]
+    fn direct_english_symbols_are_buffered_until_release() {
+        let lexicon = TechnicalLexicon::default();
+        let mut buffer = FCompositionBuffer::new(None, &lexicon);
+        buffer.append("°"); buffer.append("+"); buffer.backspace();
+        assert_eq!(buffer.symbols(), "°");
+        assert_eq!(buffer.preview(&lexicon).display(), "°");
     }
 }
