@@ -47,7 +47,7 @@ if (Test-Path -LiteralPath $targetDir) {
 # 只寫獨立的 HKCU COM 身分，不修改正式新酷音、詞庫、設定或系統預設來源。
 try {
     New-Item -Path $regBase -Force | Out-Null
-    Set-Item -LiteralPath $regBase -Value 'AI新酷音'
+    Set-Item -LiteralPath $regBase -Value 'AI新酷音（預覽版）'
     New-Item -Path (Join-Path $regBase 'ProgID') -Force | Out-Null
     Set-Item -LiteralPath (Join-Path $regBase 'ProgID') -Value 'AI-Chewing.TextService'
     New-Item -Path (Join-Path $progId 'CLSID') -Force | Out-Null

@@ -1,0 +1,37 @@
+From 85d61746c11f25f83db9c04826354e73a4398536 Mon Sep 17 00:00:00 2001
+From: CKAI Dev <ckai-dev@local>
+Date: Thu, 5 Nov 2026 03:03:35 +0800
+Subject: [PATCH] fix(registration): distinguish isolated preview input
+ profiles
+
+---
+ crates/tsfreg/src/main.rs | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/crates/tsfreg/src/main.rs b/crates/tsfreg/src/main.rs
+index 5580082..8b44745 100644
+--- a/crates/tsfreg/src/main.rs
++++ b/crates/tsfreg/src/main.rs
+@@ -50,8 +50,8 @@ fn register(icon_path: String) -> Result<()> {
+             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)?;
+ 
+         let pw_icon_path = icon_path.encode_utf16().collect::<Vec<_>>();
+-        let desc_zh_tw = "AI新酷音".encode_utf16().collect::<Vec<_>>();
+-        let desc_zh_cn = "AI新酷音（簡體）".encode_utf16().collect::<Vec<_>>();
++        let desc_zh_tw = "AI新酷音（預覽版）".encode_utf16().collect::<Vec<_>>();
++        let desc_zh_cn = "AI新酷音（簡體預覽版）".encode_utf16().collect::<Vec<_>>();
+ 
+         // Register for zh_TW
+         let mut lcid = LocaleNameToLCID(w!("zh-TW"), 0);
+@@ -95,7 +95,7 @@ fn register(icon_path: String) -> Result<()> {
+         }
+ 
+         let key = CURRENT_USER.create(r"Software\Classes\CLSID\{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}")?;
+-        key.set_string("", "AI新酷音")?;
++        key.set_string("", "AI新酷音（預覽版）")?;
+     }
+ 
+     Ok(())
+-- 
+2.55.0.windows.3
+
