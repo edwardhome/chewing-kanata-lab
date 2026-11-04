@@ -106,7 +106,7 @@ chewing-kanata-lab/
   * Windows 11 / Linux Fcitx5：**RC-READY (Gate-A 已通過)**
   * macOS：**Pre-Alpha (腳本就緒，待實體 macOS 驗證)**
 
-## 6363 上游版權與致敬聲明 (Upstream Credits & Attribution)
+## 上游版權與致敬聲明 (Upstream Credits & Attribution)
 
 本專案衍生自 **新酷音輸入法（Windows-Chewing-TSF）** 核心架構，並完全保留其原始核心與 GPL-3.0 開源授權協議。
 
