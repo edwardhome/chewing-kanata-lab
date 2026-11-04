@@ -1,3 +1,16 @@
+# 目前發布狀態：NOT_READY
+
+更新時間：2026-11-05T01:54:11+08:00
+
+Windows 既有安裝腳本與 TSF 來源的產品身分、私人詞庫及偏好隔離尚未完成。原有「RC-READY」是歷史宣告，不能作為目前可安全安裝的依據。Codex 已在獨立分支修正候選契約與安裝前檢查；原生套件、安裝與實鍵驗收仍待完成。
+
+- [隔離缺口與新套件契約](PACKAGE_SAFETY.md)
+- [本輪 30 個無介面案例及驗證限制](../verification/runs/RUN-20261105-CODEX-SAFETY-01.md)
+
+以下原文僅作歷史紀錄，不代表新修改的建置或驗收結果。
+
+---
+
 # 產品發布狀態報告 (Release Status)
 
 - **產品名稱**：Chewing × Kanata × Context-Aware AI IME
