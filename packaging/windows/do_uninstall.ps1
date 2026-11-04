@@ -25,5 +25,7 @@ if (Test-Path -LiteralPath $inproc) {
 if ($ValidateOnly) { Write-Output 'Uninstall preflight passed; no changes made.'; return }
 Invoke-ChewingDevRegistration -Executable (Join-Path $directory 'tsfreg.exe') -Arguments @('-u')
 if (Test-Path -LiteralPath $regBase) { Remove-Item -LiteralPath $regBase -Recurse -Force }
+$progId = 'HKCU:\Software\Classes\AI-Chewing.TextService'
+if (Test-Path -LiteralPath $progId) { Remove-Item -LiteralPath $progId -Recurse -Force }
 Remove-Item -LiteralPath $pointer
 Write-Output '已解除 AI新酷音隔離註冊，保留詞庫、偏好與版本檔案。'

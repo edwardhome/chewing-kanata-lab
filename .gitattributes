@@ -1,0 +1,3 @@
+# Preserve exact patch bytes for the source-series SHA-256 manifest.
+docs/patches-windows-tsf/*.patch -text
+docs/patches-windows-tsf/series.json text eol=lf

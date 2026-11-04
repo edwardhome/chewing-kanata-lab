@@ -13,7 +13,8 @@ function New-Fixture {
     $guid = [Guid]'{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}'
     $bytes = [byte[]](@(0x4d, 0x5a) + $guid.ToByteArray())
     $files = @{}
-    foreach ($name in @('chewing_tip.dll', 'tsfreg.exe', 'chewing.ico')) {
+    foreach ($name in @('chewing_tip.dll', 'tsfreg.exe', 'chewing.ico', 'ChewingPreferences.exe', 'Dictionary/swkb.dat', 'Dictionary/symbols.dat', 'Dictionary/static_dict.bin', 'Dictionary/rare_dict.bin', 'Dictionary/static_words.bin', 'Dictionary/static_lm.bin')) {
+        New-Item -ItemType Directory -Path (Split-Path -Parent (Join-Path $dir $name)) -Force | Out-Null
         [IO.File]::WriteAllBytes((Join-Path $dir $name), $bytes)
         $files[$name] = (Get-FileHash (Join-Path $dir $name)).Hash.ToLowerInvariant()
     }
@@ -79,6 +80,10 @@ try {
         $f = New-Fixture; $f.Manifest.files.Remove('tsfreg.exe')
         Expect-Rejection $f 'Missing required package file'
     }
+    Case 'Missing runtime dictionary rejected' {
+        $f = New-Fixture; $f.Manifest.files.Remove('Dictionary/static_dict.bin')
+        Expect-Rejection $f 'Missing required package file'
+    }
     Case 'Modified payload rejected' {
         $f = New-Fixture
         [IO.File]::WriteAllText((Join-Path $f.Directory 'chewing_tip.dll'), 'tampered')
@@ -109,7 +114,7 @@ try {
     }
     Case 'Bundled dictionary allowed without deploying to private data' {
         $f = New-Fixture
-        New-Item -ItemType Directory (Join-Path $f.Directory 'Dictionary') | Out-Null
+        New-Item -ItemType Directory (Join-Path $f.Directory 'Dictionary') -Force | Out-Null
         $path = Join-Path $f.Directory 'Dictionary/technical-terms.txt'
         [IO.File]::WriteAllText($path, 'synthetic')
         $f.Manifest.files['Dictionary/technical-terms.txt'] = (Get-FileHash $path).Hash.ToLowerInvariant()

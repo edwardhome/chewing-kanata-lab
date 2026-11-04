@@ -1,0 +1,16 @@
+libchewing-data v2026.10.17
+Copyright: libchewing contributors / libchewing Core Team.
+
+This package reproduces the six public dictionary/model files from the upstream
+Generic distribution without content modifications. No user dictionaries or
+history files are included.
+
+Source: https://codeberg.org/chewing/libchewing-data/src/tag/v2026.10.17
+Distribution: https://codeberg.org/chewing/libchewing-data/releases/download/v2026.10.17/libchewing-data-2026.10.17-Generic.zip
+Distribution SHA-256: 4e0ef8e9316db5ccea0aa0ebca98c70abbef3af5f493f254996736ce6cd7c8fb
+
+The v4 dictionary/language-model documentation declares CC BY 4.0:
+https://codeberg.org/chewing/libchewing-data/src/tag/v2026.10.17/dict/chewing_v4/README.md
+The complete CC BY 4.0 text is provided in libchewing-data-CC-BY-4.0.txt.
+Attribution and upstream notices remain with the source above. This derivative
+input-method integration is not endorsed by upstream contributors.

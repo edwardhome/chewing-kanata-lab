@@ -15,6 +15,7 @@ $baseDir = Join-Path $env:LOCALAPPDATA 'Programs\ChewingDev'
 $targetDir = Join-Path $baseDir ('versions\' + $manifest.version + '-' + $manifest.windows_source_commit.Substring(0, 12))
 $regBase = 'HKCU:\Software\Classes\CLSID\{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}'
 $inproc = Join-Path $regBase 'InProcServer32'
+$progId = 'HKCU:\Software\Classes\AI-Chewing.TextService'
 $previousDll = $null
 if (Test-Path -LiteralPath $inproc) { $previousDll = (Get-Item -LiteralPath $inproc).GetValue('') }
 
@@ -47,6 +48,10 @@ if (Test-Path -LiteralPath $targetDir) {
 try {
     New-Item -Path $regBase -Force | Out-Null
     Set-Item -LiteralPath $regBase -Value 'AI新酷音'
+    New-Item -Path (Join-Path $regBase 'ProgID') -Force | Out-Null
+    Set-Item -LiteralPath (Join-Path $regBase 'ProgID') -Value 'AI-Chewing.TextService'
+    New-Item -Path (Join-Path $progId 'CLSID') -Force | Out-Null
+    Set-Item -LiteralPath (Join-Path $progId 'CLSID') -Value '{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}'
     New-Item -Path $inproc -Force | Out-Null
     Set-Item -LiteralPath $inproc -Value (Join-Path $targetDir 'chewing_tip.dll')
     New-ItemProperty -LiteralPath $inproc -Name ThreadingModel -Value Apartment -PropertyType String -Force | Out-Null
@@ -67,6 +72,7 @@ try {
         try { Invoke-ChewingDevRegistration -Executable (Join-Path $targetDir 'tsfreg.exe') -Arguments @('-u') }
         catch { Write-Warning 'Unable to remove the incomplete ChewingDev profile.' }
         if (Test-Path -LiteralPath $regBase) { Remove-Item -LiteralPath $regBase -Recurse -Force }
+        if (Test-Path -LiteralPath $progId) { Remove-Item -LiteralPath $progId -Recurse -Force }
     }
     throw $failure
 }

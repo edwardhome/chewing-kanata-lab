@@ -25,7 +25,7 @@ function Assert-ChewingDevPackage {
         $manifest.windows_source_commit -cnotmatch '^[a-f0-9]{40}$') {
         throw 'Package version or source provenance is invalid.'
     }
-    foreach ($required in @('chewing_tip.dll', 'tsfreg.exe', 'chewing.ico')) {
+    foreach ($required in @('chewing_tip.dll', 'tsfreg.exe', 'chewing.ico', 'ChewingPreferences.exe', 'Dictionary/swkb.dat', 'Dictionary/symbols.dat', 'Dictionary/static_dict.bin', 'Dictionary/rare_dict.bin', 'Dictionary/static_words.bin', 'Dictionary/static_lm.bin')) {
         if ($null -eq $manifest.files.PSObject.Properties[$required]) {
             throw "Missing required package file: $required"
         }
