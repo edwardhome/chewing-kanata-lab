@@ -24,7 +24,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/apply_patches.ps1 -C
 Push-Location upstream/windows-chewing-tsf
 cargo test -p chewing_tip -p chewing_tip_core --lib --locked
 cargo test -p tsfreg --locked
-cargo build -p chewing_tip -p chewing_tip_core -p tsfreg -p chewing_preferences --locked
+cargo build --release -p chewing_tip -p chewing_tip_core -p tsfreg --locked
 Pop-Location
 cargo test --manifest-path policy-core/Cargo.toml --locked
 powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/test_package_guard.ps1
@@ -42,3 +42,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/test_packa
 
 Linux/Fcitx5 adapter patch 為歷史草稿，目前未驗證。macOS AI-Bopomofo 0.6.14 是行為參考，不是本專案的建置或安裝目標。
 最後更新：2026-11-05T02:30:16+08:00
+
+1.0.1 的完整設定頁為獨立 Tauri 元件，依 [原生設定頁建置說明](NATIVE_PREFERENCES.md) 準備；不要使用舊 Win32 簡化設定面板。

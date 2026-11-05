@@ -22,3 +22,11 @@
 5. **不可將未經授權之打字資料送往外部**：
    - 零雲端依賴；AI Reranker 預設關閉且僅允許本機 Loopback (`127.0.0.1:11434`)。
    - 密碼欄、安全桌面與敏感視窗一律停用 AI 與政策攔截。
+
+
+## Windows 共用工作目錄
+
+- 使用者指定 `C:\Users\Defu\Documents\gis-code\chewing-kanata-lab` 為 Codex 與 Agy 的共用 Windows 開發目錄；不再於 `ckai-codex` 或 `ckai-package-source` 啟動新的修改，那些目錄只保留歷史建置與驗證。
+- 共用目錄中的分支切換、提交與同一檔案修改必須先協調；不得在另一代理編輯時切換工作樹。當前分工與來源見 `docs/development/SHARED_WINDOWS_WORKSPACE.md`。
+- `upstream/windows-chewing-tsf` 與 `upstream/windows-chewing-preferences` 是獨立 Git 儲存庫；對齊各自 patch series，不要僅更新外層就宣稱完成同步。
+- 原生設定頁含 F 延遲滑桿。舊 Explorer 載入舊 DLL 時仍可能開啟舊設定頁；先核對模組路徑，不要覆寫舊版套件或強制終止使用者應用。

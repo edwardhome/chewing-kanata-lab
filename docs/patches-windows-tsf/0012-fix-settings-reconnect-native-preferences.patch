@@ -1,0 +1,394 @@
+From b5dc92e1fb8f974ed40c79b8bd31907fd2b2dd28 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Thu, 5 Nov 2026 18:25:41 +0800
+Subject: [PATCH] fix(settings): reconnect native preferences and preserve
+ imported defaults
+
+---
+ Cargo.lock                            |  17 +--
+ Cargo.toml                            |   5 +-
+ crates/chewing_tip_core/src/config.rs | 166 ++++++++++++++------------
+ tip/rc/version.rc                     |  14 +--
+ tip/src/text_service/chewing.rs       |  12 +-
+ 5 files changed, 113 insertions(+), 101 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index b803411..2dae976 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -309,18 +309,9 @@ dependencies = [
+  "serde_json",
+ ]
+ 
+-[[package]]
+-name = "chewing_preferences"
+-version = "1.0.0"
+-dependencies = [
+- "windows",
+- "windows-core",
+- "windows-registry",
+-]
+-
+ [[package]]
+ name = "chewing_tip"
+-version = "1.0.0"
++version = "1.0.1"
+ dependencies = [
+  "anyhow",
+  "cc",
+@@ -343,7 +334,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.0.0"
++version = "1.0.1"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+@@ -364,7 +355,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_host"
+-version = "1.0.0"
++version = "1.0.1"
+ dependencies = [
+  "anyhow",
+  "chewing",
+@@ -2665,7 +2656,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
+ 
+ [[package]]
+ name = "tsfreg"
+-version = "1.0.0"
++version = "1.0.1"
+ dependencies = [
+  "chewing_tip_core",
+  "scoped-error",
+diff --git a/Cargo.toml b/Cargo.toml
+index 4e8b0bd..bd08c1e 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -5,12 +5,11 @@ members = [
+   "crates/chewing_tip_host",
+   "crates/tsfreg",
+   "tip",
+-  "xtask",
+-  "crates/chewing_preferences"
++  "xtask"
+ ]
+ 
+ [workspace.package]
+-version = "1.0.0"
++version = "1.0.1"
+ 
+ [workspace.dependencies]
+ anyhow = "1"
+diff --git a/crates/chewing_tip_core/src/config.rs b/crates/chewing_tip_core/src/config.rs
+index 95b4225..f44f48d 100644
+--- a/crates/chewing_tip_core/src/config.rs
++++ b/crates/chewing_tip_core/src/config.rs
+@@ -43,6 +43,7 @@ pub struct Config {
+ }
+ 
+ #[derive(Debug, PartialEq, Serialize, Deserialize)]
++#[serde(default)]
+ pub struct ChewingTsfConfig {
+     pub switch_lang_with_shift: bool,
+     pub shift_key_sensitivity: i32,
+@@ -358,128 +359,121 @@ impl Config {
+             })
+         })
+     }
+-    pub fn save_reg(&self) {
++    pub fn try_save_reg(&self) -> Result<(), ConfigError> {
++        expect_error("Unable to save AI Chewing settings", || {
+         let chewing_tsf = &self.chewing_tsf;
+ 
+-        let Ok(key) = CURRENT_USER
+-            .options()
+-            .create()
+-            .access(KEY_WOW64_64KEY.0)
+-            .write()
+-            .open("Software\\ChewingDev")
+-        else {
+-            error!("Unable to open registry for write");
+-            return;
+-        };
+-
+-        let _ = reg_set_i32(&key, "KeyboardLayout", chewing_tsf.keyboard_layout);
+-        let _ = reg_set_i32(
++        let key = CURRENT_USER.options().create().access(KEY_WOW64_64KEY.0)
++            .write().open("Software\\ChewingDev")?;
++
++        reg_set_i32(&key, "KeyboardLayout", chewing_tsf.keyboard_layout)?;
++        reg_set_i32(
+             &key,
+             "SimulateEnglishLayout",
+             chewing_tsf.simulate_english_layout,
+-        );
+-        let _ = reg_set_bool(
++        )?;
++        reg_set_bool(
+             &key,
+             "SyncLangModeOpenclose",
+             chewing_tsf.sync_lang_mode_openclose,
+-        );
+-        let _ = reg_set_i32(&key, "CandPerRow", chewing_tsf.cand_per_row);
+-        let _ = reg_set_bool(&key, "DefaultEnglish", chewing_tsf.default_english);
+-        let _ = reg_set_bool(&key, "DefaultFullSpace", chewing_tsf.default_full_space);
+-        let _ = reg_set_bool(
++        )?;
++        reg_set_i32(&key, "CandPerRow", chewing_tsf.cand_per_row)?;
++        reg_set_bool(&key, "DefaultEnglish", chewing_tsf.default_english)?;
++        reg_set_bool(&key, "DefaultFullSpace", chewing_tsf.default_full_space)?;
++        reg_set_bool(
+             &key,
+             "ShowCandWithSpaceKey",
+             chewing_tsf.show_cand_with_space_key,
+-        );
+-        let _ = reg_set_bool(
++        )?;
++        reg_set_bool(
+             &key,
+             "SwitchLangWithShift",
+             chewing_tsf.switch_lang_with_shift,
+-        );
+-        let _ = reg_set_i32(
++        )?;
++        reg_set_i32(
+             &key,
+             "ShiftKeySensitivity",
+             chewing_tsf.shift_key_sensitivity,
+-        );
+-        let _ = reg_set_bool(
++        )?;
++        reg_set_bool(
+             &key,
+             "EnableFullwidthToggleKey",
+             chewing_tsf.enable_fullwidth_toggle_key,
+-        );
+-        let _ = reg_set_bool(&key, "ShowNotification", chewing_tsf.show_notification);
+-        let _ = reg_set_bool(&key, "OutputSimpChinese", chewing_tsf.output_simp_chinese);
+-        let _ = reg_set_bool(&key, "AddPhraseForward", chewing_tsf.add_phrase_forward);
+-        let _ = reg_set_bool(
++        )?;
++        reg_set_bool(&key, "ShowNotification", chewing_tsf.show_notification)?;
++        reg_set_bool(&key, "OutputSimpChinese", chewing_tsf.output_simp_chinese)?;
++        reg_set_bool(&key, "AddPhraseForward", chewing_tsf.add_phrase_forward)?;
++        reg_set_bool(
+             &key,
+             "PhraseChoiceRearward",
+             chewing_tsf.phrase_choice_rearward,
+-        );
+-        let _ = reg_set_bool(
++        )?;
++        reg_set_bool(
+             &key,
+             "AdvanceAfterSelection",
+             chewing_tsf.advance_after_selection,
+-        );
+-        let _ = reg_set_bool(&key, "AutoWrapCursor", chewing_tsf.auto_wrap_cursor);
+-        let _ = reg_set_i32(&key, "FHoldDelayMs", chewing_tsf.f_hold_delay_ms);
+-        let _ = reg_set_bool(&key, "EnableAI", chewing_tsf.enable_ai);
+-        let _ = reg_set_i32(&key, "DefFontSize", chewing_tsf.font_size);
+-        let _ = key.set_string("DefFontFamily", &chewing_tsf.font_family);
+-        let _ = key.set_string("DefFontFgColor", &chewing_tsf.font_fg_color);
+-        let _ = key.set_string("DefFontBgColor", &chewing_tsf.font_bg_color);
+-        let _ = key.set_string(
++        )?;
++        reg_set_bool(&key, "AutoWrapCursor", chewing_tsf.auto_wrap_cursor)?;
++        reg_set_i32(&key, "FHoldDelayMs", chewing_tsf.f_hold_delay_ms)?;
++        reg_set_bool(&key, "EnableAI", chewing_tsf.enable_ai)?;
++        reg_set_i32(&key, "DefFontSize", chewing_tsf.font_size)?;
++        key.set_string("DefFontFamily", &chewing_tsf.font_family)?;
++        key.set_string("DefFontFgColor", &chewing_tsf.font_fg_color)?;
++        key.set_string("DefFontBgColor", &chewing_tsf.font_bg_color)?;
++        key.set_string(
+             "DefFontHighlightFgColor",
+             &chewing_tsf.font_highlight_fg_color,
+-        );
+-        let _ = key.set_string(
++        )?;
++        key.set_string(
+             "DefFontHighlightBgColor",
+             &chewing_tsf.font_highlight_bg_color,
+-        );
+-        let _ = key.set_string("DefFontNumberFgColor", &chewing_tsf.font_number_fg_color);
+-        let _ = key.set_string(
++        )?;
++        key.set_string("DefFontNumberFgColor", &chewing_tsf.font_number_fg_color)?;
++        key.set_string(
+             "DefCandListBorderColor",
+             &chewing_tsf.cand_list_border_color,
+-        );
+-        let _ = key.set_string("DefNotifyFgColor", &chewing_tsf.notify_fg_color);
+-        let _ = key.set_string("DefNotifyBgColor", &chewing_tsf.notify_bg_color);
+-        let _ = key.set_string("DefNotifyBorderColor", &chewing_tsf.notify_border_color);
+-        let _ = reg_set_i32(&key, "SelKeyType", chewing_tsf.sel_key_type);
+-        let _ = reg_set_i32(&key, "ConvEngine", chewing_tsf.conv_engine);
+-        let _ = reg_set_i32(&key, "SelAreaLen", chewing_tsf.cand_per_page);
+-        let _ = reg_set_bool(&key, "CursorCandList", chewing_tsf.cursor_cand_list);
+-        let _ = reg_set_bool(
++        )?;
++        key.set_string("DefNotifyFgColor", &chewing_tsf.notify_fg_color)?;
++        key.set_string("DefNotifyBgColor", &chewing_tsf.notify_bg_color)?;
++        key.set_string("DefNotifyBorderColor", &chewing_tsf.notify_border_color)?;
++        reg_set_i32(&key, "SelKeyType", chewing_tsf.sel_key_type)?;
++        reg_set_i32(&key, "ConvEngine", chewing_tsf.conv_engine)?;
++        reg_set_i32(&key, "SelAreaLen", chewing_tsf.cand_per_page)?;
++        reg_set_bool(&key, "CursorCandList", chewing_tsf.cursor_cand_list)?;
++        reg_set_bool(
+             &key,
+             "SortCandidatesByFrequency",
+             chewing_tsf.sort_candidates_by_frequency,
+-        );
+-        let _ = reg_set_bool(&key, "EnableCapsLock", chewing_tsf.enable_caps_lock);
+-        let _ = reg_set_bool(
++        )?;
++        reg_set_bool(&key, "EnableCapsLock", chewing_tsf.enable_caps_lock)?;
++        reg_set_bool(
+             &key,
+             "LockChineseOnCapsLock",
+             chewing_tsf.lock_chinese_on_caps_lock,
+-        );
+-        let _ = reg_set_bool(&key, "FullShapeSymbols", chewing_tsf.full_shape_symbols);
+-        let _ = reg_set_bool(&key, "EscCleanAllBuf", chewing_tsf.esc_clean_all_buf);
+-        let _ = reg_set_bool(
++        )?;
++        reg_set_bool(&key, "FullShapeSymbols", chewing_tsf.full_shape_symbols)?;
++        reg_set_bool(&key, "EscCleanAllBuf", chewing_tsf.esc_clean_all_buf)?;
++        reg_set_bool(
+             &key,
+             "EasySymbolsWithShift",
+             chewing_tsf.easy_symbols_with_shift,
+-        );
+-        let _ = reg_set_bool(
++        )?;
++        reg_set_bool(
+             &key,
+             "EasySymbolsWithShiftCtrl",
+             chewing_tsf.easy_symbols_with_shift_ctrl,
+-        );
+-        let _ = reg_set_bool(
++        )?;
++        reg_set_bool(
+             &key,
+             "UpperCaseWithShift",
+             chewing_tsf.upper_case_with_shift,
+-        );
+-        let _ = reg_set_bool(&key, "EnableAutoLearn", chewing_tsf.enable_auto_learn);
+-        let _ = key.set_string(
++        )?;
++        reg_set_bool(&key, "EnableAutoLearn", chewing_tsf.enable_auto_learn)?;
++        key.set_string(
+             "AutoCheckUpdateChannel",
+             &chewing_tsf.auto_check_update_channel,
+-        );
+-        let _ = key.set_multi_string(
++        )?;
++        key.set_multi_string(
+             "Keybind".to_string(),
+             chewing_tsf
+                 .keybind
+@@ -487,15 +481,22 @@ impl Config {
+                 .map(|kb| kb.to_string())
+                 .collect::<Vec<String>>()
+                 .as_slice(),
+-        );
+-        let _ = key.set_u64(
++        )?;
++        key.set_u64(
+             "ModifiedTimestamp",
+             SystemTime::now()
+                 .duration_since(SystemTime::UNIX_EPOCH)
+                 .unwrap_or_default()
+                 .as_secs(),
+-        );
++        )?;
++        Ok(())
++        })
++    }
++
++    pub fn save_reg(&self) {
++        if let Err(err) = self.try_save_reg() { error!("Unable to save settings: {err}"); }
+     }
++
+ }
+ 
+ #[derive(Debug, PartialEq, Deserialize, Serialize)]
+@@ -735,3 +736,16 @@ mod test {
+         assert_eq!(keybind, value.to_string());
+     }
+ }
++
++#[cfg(test)]
++mod legacy_preferences_tests {
++    use super::ChewingTsfConfig;
++    #[test]
++    fn older_preferences_keep_missing_fields_at_safe_defaults() {
++        let cfg: ChewingTsfConfig = serde_json::from_str(r#"{"font_size":24,"show_cand_with_space_key":true}"#).unwrap();
++        assert_eq!(cfg.font_size,24);
++        assert!(cfg.show_cand_with_space_key);
++        assert_eq!(cfg.f_hold_delay_ms,150);
++        assert!(!cfg.enable_ai);
++    }
++}
+diff --git a/tip/rc/version.rc b/tip/rc/version.rc
+index 3a124d4..83aaacf 100644
+--- a/tip/rc/version.rc
++++ b/tip/rc/version.rc
+@@ -1,8 +1,8 @@
+-#define VER_FILEVERSION             1,0,0,0
+-#define VER_FILEVERSION_STR         "1.0.0.0\0"
+-#define VER_PRODUCTVERSION          1,0,0,0
+-#define VER_PRODUCTVERSION_STR      "1.0.0.0\0"
+-#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.0.0.0)\0"
+-#define ABOUT_VERSION_STR           "版本：1.0.0.0\0"
++#define VER_FILEVERSION             1,0,1,0
++#define VER_FILEVERSION_STR         "1.0.1.0\0"
++#define VER_PRODUCTVERSION          1,0,1,0
++#define VER_PRODUCTVERSION_STR      "1.0.1.0\0"
++#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.0.1.0)\0"
++#define ABOUT_VERSION_STR           "版本：1.0.1.0\0"
+ #define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 11 月 05 日\0"
+-#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.0.0.0)\0"
++#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.0.1.0)\0"
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index fda6cc0..6417b26 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -459,7 +459,11 @@ impl ChewingTextService {
+             self.shift_key_state = ShiftKeyState::Down(Instant::now());
+             shift_down = true;
+             let time = self.start_time.elapsed();
+-            self.double_shift.update(true, other_modifiers, time);
++            if self.cfg.chewing_tsf.switch_lang_with_shift {
++                self.double_shift.update(true, other_modifiers, time);
++            } else {
++                self.double_shift.reset();
++            }
+         }
+         //
+         // Step 1. apply any config changes
+@@ -1007,7 +1011,8 @@ impl ChewingTextService {
+                 return Ok(false);
+             }
+ 
+-            let double_shift_triggered = self.double_shift.update(false, other_modifiers, time);
++            let double_shift_triggered = self.cfg.chewing_tsf.switch_lang_with_shift
++                && self.double_shift.update(false, other_modifiers, time);
+             if double_shift_triggered {
+                 self.toggle_lang_mode_with_context(context)?;
+                 let msg = match self.lang_mode.get() {
+@@ -1874,6 +1879,9 @@ impl ChewingTextService {
+ 
+     /// Applys config changes that should be effective at runtime
+     fn apply_runtime_config(&mut self) -> Result<()> {
++        self.double_shift.reset();
++        self.double_shift.tap_limit = Duration::from_millis(
++            self.cfg.chewing_tsf.shift_key_sensitivity.clamp(100, 1000) as u64);
+         let cfg = &self.cfg.chewing_tsf;
+         self.kbtype = KeyboardLayoutCompat::try_from(cfg.keyboard_layout as u8)
+             .unwrap_or(KeyboardLayoutCompat::Default);
+-- 
+2.55.0.windows.3
+

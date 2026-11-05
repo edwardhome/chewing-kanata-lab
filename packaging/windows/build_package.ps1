@@ -3,6 +3,8 @@ param(
     [Parameter(Mandatory=$true)][string]$NativeDirectory,
     [Parameter(Mandatory=$true)][string]$BinaryDirectory,
     [Parameter(Mandatory=$true)][string]$DictionaryDirectory,
+    [Parameter(Mandatory=$true)][string]$PreferencesDirectory,
+    [Parameter(Mandatory=$true)][string]$PreferencesExecutable,
     [Parameter(Mandatory=$true)][string]$OutputDirectory,
     [Parameter(Mandatory=$true)][ValidatePattern('^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')][string]$Version
 )
@@ -18,11 +20,17 @@ function Get-CleanCommit([string]$Root) {
 }
 $sourceCommit = Get-CleanCommit $sourceRoot
 $nativeCommit = Get-CleanCommit $NativeDirectory
+$preferencesCommit = Get-CleanCommit $PreferencesDirectory
 if (Test-Path -LiteralPath $OutputDirectory) { throw 'Output directory must be new.' }
 $payload = [ordered]@{}
-foreach ($name in @('chewing_tip.dll', 'tsfreg.exe', 'ChewingPreferences.exe')) {
+foreach ($name in @('chewing_tip.dll', 'tsfreg.exe')) {
     $payload[$name] = Join-Path $BinaryDirectory $name
 }
+$payload['ChewingPreferences.exe'] = $PreferencesExecutable
+foreach ($name in @('GPL-3.0-or-later.txt', '0BSD.txt', 'CC-BY-SA-4.0.txt')) {
+    $payload['preferences-' + $name] = Join-Path $PreferencesDirectory ('LICENSES\' + $name)
+}
+$payload['preferences-REUSE.toml'] = Join-Path $PreferencesDirectory 'REUSE.toml'
 $payload['chewing.ico'] = Join-Path $NativeDirectory 'tip\rc\im.chewing.Chewing.ico'
 $payload['libchewing-data-CC-BY-4.0.txt'] = Join-Path $PSScriptRoot 'licenses\libchewing-data-CC-BY-4.0.txt'
 $payload['libchewing-data-NOTICE.txt'] = Join-Path $PSScriptRoot 'licenses\libchewing-data-NOTICE.txt'
@@ -65,6 +73,8 @@ $manifest = [ordered]@{
     data_directory = 'ChewingDev'
     source_commit = $sourceCommit
     windows_source_commit = $nativeCommit
+    preferences_source_commit = $preferencesCommit
+    preferences_runtime = 'WebView2'
     files = $hashes
 }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $OutputDirectory 'package-manifest.json')

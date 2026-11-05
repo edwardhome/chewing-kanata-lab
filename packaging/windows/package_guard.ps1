@@ -25,6 +25,14 @@ function Assert-ChewingDevPackage {
         $manifest.windows_source_commit -cnotmatch '^[a-f0-9]{40}$') {
         throw 'Package version or source provenance is invalid.'
     }
+    if ($manifest.PSObject.Properties['preferences_source_commit'] -or $manifest.PSObject.Properties['preferences_runtime']) {
+        if (-not $manifest.PSObject.Properties['preferences_source_commit'] -or
+            -not $manifest.PSObject.Properties['preferences_runtime'] -or
+            $manifest.preferences_source_commit -cnotmatch '^[a-f0-9]{40}$' -or
+            $manifest.preferences_runtime -cne 'WebView2') {
+            throw 'Preferences provenance or runtime is invalid.'
+        }
+    }
     foreach ($required in @('chewing_tip.dll', 'tsfreg.exe', 'chewing.ico', 'ChewingPreferences.exe', 'Dictionary/swkb.dat', 'Dictionary/symbols.dat', 'Dictionary/static_dict.bin', 'Dictionary/rare_dict.bin', 'Dictionary/static_words.bin', 'Dictionary/static_lm.bin')) {
         if ($null -eq $manifest.files.PSObject.Properties[$required]) {
             throw "Missing required package file: $required"

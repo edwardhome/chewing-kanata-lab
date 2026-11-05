@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
+  "tree": "841bb5fc12ca24cf77d1f379ae7500d54f1b75d0",
+  "preferences_commit": "ed957f4c6dc2fea261e608ead9589cd0719577a4",
+  "patches": [
+    {
+      "file": "0001-fix-preferences-restore-native-settings.patch",
+      "sha256": "cfeb4983355461a59fb0c9dbdc23d55cb12eea8c01e742b8ece83b7eff8fcf01"
+    }
+  ]
+}
