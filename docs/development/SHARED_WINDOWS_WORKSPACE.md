@@ -20,4 +20,4 @@ Agy 原有四個未提交檔案已保存於原生分支 `research/agy-ai-before-
 
 ## 目前工作：Ollama 詞組預測
 
-使用者指定 AGY 負責獨立分支的實作與編譯，Codex 負責驗收；詳見 [開發任務](../tasks/OLLAMA_PHRASE_PREDICTION_AGY.md)。AGY 開始後，Codex 不在相同檔案平行修改或切換分支。已安裝的 1.0.1 保持不變。
+使用者指定 AGY 與 Codex 分工實作、以 Git 協作；詳見 [開發任務](../tasks/OLLAMA_PHRASE_PREDICTION_AGY.md) 及 [第一批分工](../tasks/OLLAMA_PARALLEL_CHECKPOINT_01.md)。AGY 負責續寫驗證，Codex 負責請求生命週期及整合；不在相同檔案平行修改或切換分支。2026-11-06T01:32:06+08:00，整合程式版本 `1dcd371` 已同步到 Windows 共用分支，93 個核心測試通過。後續 HTTP／TSF／設定頁仍待實作，已安裝的 1.0.1 保持不變。

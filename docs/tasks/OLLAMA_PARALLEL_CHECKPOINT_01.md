@@ -1,6 +1,6 @@
 # Ollama 詞組預測：第一批分工
 
-更新時間：2026-11-06T01:16:43+08:00
+更新時間：2026-11-06T01:32:06+08:00
 
 本文件縮小並取代舊任務中「AGY 一次實作所有模組」的本輪分工；功能與隱私規格仍以 [原始任務](OLLAMA_PHRASE_PREDICTION_AGY.md) 為準。使用者授權 Codex 與 AGY 分工實作、以 Git 協作。這一批只交付可測試的核心，不代表已能在輸入法中使用 Ollama。
 
@@ -38,3 +38,7 @@ Codex 提供純邏輯 `PredictionSession`。時間由呼叫者傳入單調毫秒
 ## 協作方式
 
 AGY 沿用已驗證的常駐互動式 SSH 終端與同一對話，不每次另開 print 程序。Codex 以日誌與 Git 查驗進度，不操作瀏覽器 GUI；不把連線成功當成程式或測試完成。
+
+## 本批驗收
+
+AGY source `74dc146` 經審查修正為 `ec0d287`，與 Codex `207ffc4` 保留歷史合併；整合程式版本 `1dcd371`。Windows 共用目錄已同步。獨立驗收 88 個單元測試與 5 個跨模組測試通過，詳細證據見 [Codex 驗證紀錄](../verification/runs/RUN-20261106-OLLAMA-CODEX-LIFECYCLE.md)。本批完成，後續 transport／TSF／設定頁仍待實作。
