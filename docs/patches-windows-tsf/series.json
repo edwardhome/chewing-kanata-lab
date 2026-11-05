@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "ba627a7f65306a57615cf8bce1ac2b664652741f",
+  "tree": "2d0f4bf0e865969ac4704ab8e87448ca4a4f762b",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -38,7 +38,11 @@
     {
       "file": "0009-fix-registration-distinguish-isolated-preview-input-.patch",
       "sha256": "046300aee6ff03695a55dafea1379f33b456c10afac6c75b754f5ee86f7ea127"
+    },
+    {
+      "file": "0010-fix-input-restore-idle-editing-keys-and-release-sett.patch",
+      "sha256": "b37f1212b4a4fcb63a64589c873a01392d6fd4933aa0d5f82df336e40f85e872"
     }
   ],
-  "native_commit": "85d61746c11f25f83db9c04826354e73a4398536"
+  "native_commit": "4a38766f59a96cb4c3eb5d34dde1c122db0a6d5d"
 }

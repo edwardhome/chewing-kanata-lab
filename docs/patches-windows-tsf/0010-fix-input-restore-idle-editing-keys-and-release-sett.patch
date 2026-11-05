@@ -1,0 +1,209 @@
+From 4a38766f59a96cb4c3eb5d34dde1c122db0a6d5d Mon Sep 17 00:00:00 2001
+From: CKAI Dev <ckai-dev@local>
+Date: Thu, 5 Nov 2026 14:18:31 +0800
+Subject: [PATCH] fix(input): restore idle editing keys and release settings
+ lock before UI calls
+
+---
+ crates/chewing_preferences/src/main.rs | 85 +++++++++++++++++++-------
+ tip/src/text_service/chewing.rs        |  6 ++
+ tip/src/text_service/key_event.rs      | 30 +++++++++
+ 3 files changed, 99 insertions(+), 22 deletions(-)
+
+diff --git a/crates/chewing_preferences/src/main.rs b/crates/chewing_preferences/src/main.rs
+index a2b59b6..5d3a9ab 100644
+--- a/crates/chewing_preferences/src/main.rs
++++ b/crates/chewing_preferences/src/main.rs
+@@ -52,6 +52,7 @@ const IDC_BTN_SAVE: isize = 110;
+ const IDC_BTN_RESET: isize = 111;
+ const IDC_BTN_CLOSE: isize = 112;
+ 
++#[derive(Clone, Copy)]
+ struct AppState {
+     f_delay_ms: i32,
+     h_slider: HWND,
+@@ -68,6 +69,20 @@ unsafe impl Send for AppState {}
+ 
+ static APP_STATE: Mutex<Option<AppState>> = Mutex::new(None);
+ 
++// Win32 calls may synchronously reenter wnd_proc. Never carry the mutex
++// into a callback that sends messages, changes controls, or shows a dialog.
++fn with_app_state(action: impl FnOnce(AppState)) {
++    let snapshot = APP_STATE.lock().ok().and_then(|state| *state);
++    if let Some(state) = snapshot { action(state); }
++}
++
++fn set_f_delay(value: i32) {
++    if let Ok(mut state) = APP_STATE.lock() {
++        if let Some(state) = state.as_mut() { state.f_delay_ms = value.clamp(100, 1000); }
++    }
++}
++
++
+ #[inline]
+ unsafe fn send_msg(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> LRESULT {
+     unsafe { SendMessageW(hwnd, msg, Some(WPARAM(wparam)), Some(LPARAM(lparam))) }
+@@ -419,20 +434,18 @@ unsafe extern "system" fn wnd_proc(
+             LRESULT(0)
+         }
+         WM_HSCROLL => {
+-            if let Ok(mut guard) = APP_STATE.lock() {
+-                if let Some(state) = guard.as_mut() {
+-                    let pos = unsafe { send_msg(state.h_slider, TBM_GETPOS, 0, 0) }.0 as i32;
+-                    state.f_delay_ms = pos;
+-                    let val_str = HSTRING::from(format!("當前延遲：{} 毫秒", pos));
+-                    let _ = unsafe { SetWindowTextW(state.h_lbl_f_val, PCWSTR(val_str.as_ptr())) };
+-                }
+-            }
++            with_app_state(|state| {
++                if lparam.0 != state.h_slider.0 as isize { return; }
++                let pos = (unsafe { send_msg(state.h_slider, TBM_GETPOS, 0, 0) }.0 as i32).clamp(100, 1000);
++                set_f_delay(pos);
++                let val_str = HSTRING::from(format!("當前延遲：{} 毫秒", pos));
++                let _ = unsafe { SetWindowTextW(state.h_lbl_f_val, PCWSTR(val_str.as_ptr())) };
++            });
+             LRESULT(0)
+         }
+         WM_COMMAND => {
+             let id = (wparam.0 & 0xFFFF) as isize;
+-            if let Ok(mut guard) = APP_STATE.lock() {
+-                if let Some(state) = guard.as_mut() {
++            with_app_state(|state| {
+                     match id {
+                         IDC_BTN_SAVE => {
+                             let zh_checked = unsafe { send_msg(state.h_chk_default_zh, BM_GETCHECK, 0, 0) }.0 == BST_CHECKED as isize;
+@@ -447,7 +460,7 @@ unsafe extern "system" fn wnd_proc(
+                             };
+                         }
+                         IDC_BTN_RESET => {
+-                            state.f_delay_ms = 150;
++                            set_f_delay(150);
+                             unsafe {
+                                 send_msg(state.h_slider, TBM_SETPOS, 1, 150);
+                                 let _ = SetWindowTextW(state.h_lbl_f_val, w!("當前延遲：150 毫秒"));
+@@ -485,8 +498,7 @@ unsafe extern "system" fn wnd_proc(
+                         }
+                         _ => {}
+                     }
+-                }
+-            }
++            });
+             LRESULT(0)
+         }
+         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
+@@ -503,15 +515,14 @@ unsafe extern "system" fn wnd_proc(
+             LRESULT(unsafe { GetSysColorBrush(SYS_COLOR_INDEX(COLOR_BTNFACE)) }.0 as isize)
+         }
+         WM_DESTROY => {
+-            if let Ok(mut guard) = APP_STATE.lock() {
+-                if let Some(state) = guard.take() {
+-                    unsafe {
+-                        let _ = DeleteObject(state.font_title.into());
+-                        let _ = DeleteObject(state.font_bold.into());
+-                        let _ = DeleteObject(state.font_normal.into());
+-                        let _ = DeleteObject(state.font_mono.into());
+-                        let _ = DeleteObject(state.bg_brush.into());
+-                    }
++            let state = APP_STATE.lock().ok().and_then(|mut state| state.take());
++            if let Some(state) = state {
++                unsafe {
++                    let _ = DeleteObject(state.font_title.into());
++                    let _ = DeleteObject(state.font_bold.into());
++                    let _ = DeleteObject(state.font_normal.into());
++                    let _ = DeleteObject(state.font_mono.into());
++                    let _ = DeleteObject(state.bg_brush.into());
+                 }
+             }
+             unsafe { PostQuitMessage(0) };
+@@ -568,3 +579,33 @@ fn main() -> windows::core::Result<()> {
+         Ok(())
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn ui_callback_can_reenter_and_update_state_without_holding_mutex() {
++        *APP_STATE.lock().unwrap() = Some(AppState {
++            f_delay_ms: 150,
++            h_slider: HWND::default(), h_lbl_f_val: HWND::default(),
++            h_chk_default_zh: HWND::default(), font_title: HFONT::default(),
++            font_bold: HFONT::default(), font_normal: HFONT::default(),
++            font_mono: HFONT::default(), bg_brush: HBRUSH::default(),
++        });
++        let mut nested_called = false;
++        with_app_state(|snapshot| {
++            assert_eq!(snapshot.f_delay_ms, 150);
++            assert!(APP_STATE.try_lock().is_ok(), "UI callback must not retain the mutex");
++            set_f_delay(300);
++            with_app_state(|nested| {
++                nested_called = true;
++                assert_eq!(nested.f_delay_ms, 300);
++                assert!(APP_STATE.try_lock().is_ok());
++            });
++            set_f_delay(150);
++        });
++        assert!(nested_called);
++        assert_eq!(APP_STATE.lock().unwrap().take().unwrap().f_delay_ms, 150);
++    }
++}
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index a28cf98..fda6cc0 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -531,6 +531,12 @@ impl ChewingTextService {
+             return Ok(true);
+         }
+         //
++        // Idle editing keys belong to the application, in Chinese mode too.
++        // Custom F/ASCII sessions and explicit bindings were handled above.
++        if super::key_event::forward_idle_edit_key(
++            evt.ksym, self.chewing_editor.is_empty(), self.is_composing(),
++        ) { return Ok(false); }
++        //
+         // Step 2.3 ignore CapsLock if disabled
+         if evt.ksym == SYM_CAPSLOCK && !self.cfg.chewing_tsf.enable_caps_lock {
+             return Ok(false);
+diff --git a/tip/src/text_service/key_event.rs b/tip/src/text_service/key_event.rs
+index b068342..77226ff 100644
+--- a/tip/src/text_service/key_event.rs
++++ b/tip/src/text_service/key_event.rs
+@@ -316,3 +316,33 @@ const VKEY_MAP: &[(u16, Keysym)] = &[
+     (0xA4, SYM_LEFTALT),
+     (0xA5, SYM_RIGHTALT),
+ ];
++
++// Editing an application's existing document is not an IME composition.
++// Decide this in OnTestKeyDown so TSF never reserves an idle editing key.
++pub(super) fn forward_idle_edit_key(keysym: Keysym, editor_empty: bool, composing: bool) -> bool {
++    editor_empty && !composing && !keysym.is_unicode()
++}
++
++#[cfg(test)]
++mod idle_edit_tests {
++    use super::*;
++
++    #[test]
++    fn idle_enter_backspace_delete_belong_to_application() {
++        for key in [SYM_BACKSPACE, SYM_RETURN, SYM_DELETE, SYM_LEFT, SYM_TAB, SYM_F1] {
++            assert!(forward_idle_edit_key(key, true, false));
++        }
++        for key in [SYM_SPACE, Keysym::from('a'), Keysym::from('f')] {
++            assert!(!forward_idle_edit_key(key, true, false));
++        }
++    }
++
++    #[test]
++    fn editor_or_tsf_composition_keeps_editing_keys() {
++        for key in [SYM_BACKSPACE, SYM_RETURN, SYM_DELETE] {
++            for (empty, composing) in [(false, false), (false, true), (true, true)] {
++                assert!(!forward_idle_edit_key(key, empty, composing));
++            }
++        }
++    }
++}
+-- 
+2.55.0.windows.3
+
