@@ -176,4 +176,5 @@ mod tests {
 
 pub mod engineering_lexicon;
 pub mod prediction;
+pub mod prediction_session;
 pub use prediction::{validate_and_extract_continuation, PredictionLanguage};

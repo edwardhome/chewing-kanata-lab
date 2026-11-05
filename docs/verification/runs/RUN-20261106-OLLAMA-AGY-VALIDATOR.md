@@ -1,8 +1,8 @@
 # RUN-20261106-OLLAMA-AGY-VALIDATOR
 
 狀態: PASS（含修正提交）
-日時（初次）：2026-11-06T01:22:56+08:00
-日時（修正）：2026-11-06T01:27:56+08:00
+時間（初次）：2026-11-06T01:22:56+08:00
+時間（修正）：2026-11-06T01:27:56+08:00
 分支：feature/ollama-phrase-prediction
 作者/提交者：AGY <ckai-dev@local>
 
@@ -48,7 +48,7 @@
 
 **問題：** 初次報告誤稱新增 29 個 prediction 測試；實際為 33 個（初次提交即如此）。
 
-**更正：** prediction 模組測試 33 個；本次修正後整體 73 個。
+**更正：** prediction 模組初次 33 個，修正後 36 個；既有測試 37 個，本次修正後整體 73 個。
 
 ---
 
@@ -56,21 +56,21 @@
 
 | 規格要求 | 實作方式 | 狀態 |
 |----------|----------|------|
-| `PredictionLanguage` enum，`#[derive(Debug, Clone, Copy, PartialEq, Eq)]` | 完整實作 | ✅ |
-| `validate_and_extract_continuation<'a>(prefix, candidate, language) -> Option<&'a str>` | 完整實作，零複製回傳子切片 | ✅ |
-| 拒絕空 prefix | `prefix.is_empty()` | ✅ |
-| 拒絕 prefix > 256 Unicode scalars | `prefix.chars().count() > 256` | ✅ |
-| 拒絕 prefix 不符（byte-exact）| `!candidate.starts_with(prefix)` | ✅ |
-| 拒絕空 suffix | `suffix.is_empty()` | ✅ |
-| 拒絕純空白 suffix | `suffix.chars().all(char::is_whitespace)` | ✅ |
-| 拒絕所有 Unicode 控制字元 | `ch.is_control()`（涵蓋 C0、DEL、C1） | ✅（修正後）|
-| 拒絕 U+2028 / U+2029 | 明確比對 `LINE_SEP`, `PARA_SEP` | ✅ |
-| 英文：僅 ASCII 字母與普通空格 | `c.is_ascii_alphabetic() \|\| c == ' '` | ✅ |
-| 英文：≤ 32 字元 | `suffix.len() > 32` | ✅ |
-| 英文：≤ 4 個單字 | `word_count > 4` | ✅ |
-| 英文：前導空格原樣保留 | 不 trim；word_count 計算非空段落 | ✅（修正後）|
-| 繁中：≤ 8 Unicode scalars | `suffix.chars().count() > 8` | ✅ |
-| 不 trim / normalize / 改大小寫 | 整條路徑無任何此類操作 | ✅ |
+| `PredictionLanguage` enum，`#[derive(Debug, Clone, Copy, PartialEq, Eq)]` | 完整實作 | PASS |
+| `validate_and_extract_continuation<'a>(prefix, candidate, language) -> Option<&'a str>` | 完整實作，零複製回傳子切片 | PASS |
+| 拒絕空 prefix | `prefix.is_empty()` | PASS |
+| 拒絕 prefix > 256 Unicode scalars | `prefix.chars().count() > 256` | PASS |
+| 拒絕 prefix 不符（byte-exact）| `!candidate.starts_with(prefix)` | PASS |
+| 拒絕空 suffix | `suffix.is_empty()` | PASS |
+| 拒絕純空白 suffix | `suffix.chars().all(char::is_whitespace)` | PASS |
+| 拒絕所有 Unicode 控制字元 | `ch.is_control()`（涵蓋 C0、DEL、C1） | PASS（修正後）|
+| 拒絕 U+2028 / U+2029 | 明確比對 `LINE_SEP`, `PARA_SEP` | PASS |
+| 英文：僅 ASCII 字母與普通空格 | `c.is_ascii_alphabetic() \|\| c == ' '` | PASS |
+| 英文：≤ 32 字元 | `suffix.len() > 32` | PASS |
+| 英文：≤ 4 個單字 | `word_count > 4` | PASS |
+| 英文：前導空格原樣保留 | 不 trim；word_count 計算非空段落 | PASS（修正後）|
+| 繁中：≤ 8 Unicode scalars | `suffix.chars().count() > 8` | PASS |
+| 不 trim / normalize / 改大小寫 | 整條路徑無任何此類操作 | PASS |
 
 ---
 

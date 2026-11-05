@@ -18,7 +18,7 @@ Windows 唯一來源目錄仍為 `C:\Users\Defu\Documents\gis-code\chewing-kanat
 
 共同起點為外層 `5a44293`。AGY 不切換 Windows 工作分支，只提交自己的檔案，作者與提交者名稱均為 AGY，沿用既有 email，不簽署、不推送、不修改 global 設定。保留既有未追蹤舊驗證紀錄。
 
-Codex 提交自己的模組後，以 Git bundle 讀回 AGY commit，審查再 cherry-pick，保留 AGY 作者。整合完成並確認 AGY 已停止修改後，再把驗收過的 Git 歷史同步回 Windows 共用目錄；不在代理編輯時切分支、不以檔案覆蓋代替 Git 整合。本輪不合併 main、不發布或安裝。
+Codex 提交自己的模組後，以 Git bundle 讀回 AGY commit，審查再 merge 到功能分支，保留 AGY 原始 commit、作者及提交者。整合完成並確認 AGY 已停止修改後，再以 fast-forward 把驗收過的 Git 歷史同步回 Windows 共用目錄；不在代理編輯時切分支、不以檔案覆蓋代替 Git 整合。本輪不合併 main、不發布或安裝。
 
 ## 模組契約
 
