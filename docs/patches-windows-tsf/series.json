@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "b26d821e9c80cc3db39eaa21b36be25207adf487",
+  "tree": "a80531d814906541b7a50b194b15a6b600f8592c",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -46,7 +46,11 @@
     {
       "file": "0011-feat-release-promote-AI-Chewing-to-1.0.0-and-unregis.patch",
       "sha256": "175dfde23ce1950c5226045172eeb6ca84495e17e28aa2d35d91f32c36592dfe"
+    },
+    {
+      "file": "0012-fix-settings-reconnect-native-preferences.patch",
+      "sha256": "f8cc87aae0104f3a6433f936ccb07e5af973b605ef72ee4cbbb9b025bdad890b"
     }
   ],
-  "native_commit": "6da145987b815480b3dc892446feaf4562986cfd"
+  "native_commit": "b5dc92e1fb8f974ed40c79b8bd31907fd2b2dd28"
 }

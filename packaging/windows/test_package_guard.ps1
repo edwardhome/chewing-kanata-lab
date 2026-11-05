@@ -50,6 +50,24 @@ try {
         $f = New-Fixture; Save-Fixture $f
         $null = Assert-ChewingDevPackage -Directory $f.Directory
     }
+    Case 'Restored preferences provenance is accepted' {
+        $f = New-Fixture
+        $f.Manifest.preferences_source_commit = ('c' * 40)
+        $f.Manifest.preferences_runtime = 'WebView2'
+        Save-Fixture $f
+        $null = Assert-ChewingDevPackage -Directory $f.Directory
+    }
+    Case 'Incomplete preferences provenance is rejected' {
+        $f = New-Fixture
+        $f.Manifest.preferences_runtime = 'WebView2'
+        Expect-Rejection $f 'Preferences provenance'
+    }
+    Case 'Unknown preferences runtime is rejected' {
+        $f = New-Fixture
+        $f.Manifest.preferences_source_commit = ('c' * 40)
+        $f.Manifest.preferences_runtime = 'unknown'
+        Expect-Rejection $f 'Preferences provenance'
+    }
     Case 'Missing manifest never reaches executable' {
         $f = New-Fixture; $rejected = $false
         try { $null = Assert-ChewingDevPackage -Directory $f.Directory }

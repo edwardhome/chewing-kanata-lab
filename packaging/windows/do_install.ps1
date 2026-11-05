@@ -12,6 +12,14 @@ Assert-ChewingInstallUser $ExpectedUserSid
 # 必須在任何登錄、複製、程序操作之前完成。舊套件沒有 manifest，直接拒絕。
 $manifest = Assert-ChewingDevPackage -Directory $PackageDirectory
 if ($ValidateOnly) { Write-Output 'Package preflight passed; no changes made.'; return }
+if ($manifest.PSObject.Properties['preferences_runtime'] -and $manifest.preferences_runtime -eq 'WebView2') {
+    $webView = @('HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients',
+        'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients',
+        'HKCU:\Software\Microsoft\EdgeUpdate\Clients') | ForEach-Object {
+        Get-ChildItem $_ -ErrorAction SilentlyContinue | Get-ItemProperty -ErrorAction SilentlyContinue
+    } | Where-Object { $_.PSObject.Properties['name'] -and $_.PSObject.Properties['pv'] -and $_.name -like '*WebView2*' -and $_.pv -and $_.pv -ne '0.0.0.0' }
+    if (-not $webView) { throw 'AI新酷音設定需要 Microsoft Edge WebView2 執行階段；請先安裝後再重試。尚未變更輸入法註冊。' }
+}
 if (Invoke-ChewingElevationIfNeeded -ScriptPath $PSCommandPath -Parameters @{PackageDirectory = (Resolve-Path -LiteralPath $PackageDirectory).Path}) { return }
 
 $baseDir = Join-Path $env:LOCALAPPDATA 'Programs\ChewingDev'

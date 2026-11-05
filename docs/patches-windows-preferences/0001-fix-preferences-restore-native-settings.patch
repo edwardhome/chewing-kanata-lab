@@ -1,0 +1,1037 @@
+From ed957f4c6dc2fea261e608ead9589cd0719577a4 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Thu, 5 Nov 2026 18:25:41 +0800
+Subject: [PATCH] fix(preferences): restore native settings in isolated AI
+ Chewing
+
+---
+ package-lock.json         |   4 +-
+ package.json              |   2 +-
+ src-tauri/Cargo.lock      | 303 ++++++++++++++++++++++++++++++++++++--
+ src-tauri/Cargo.toml      |   9 +-
+ src-tauri/src/config.rs   | 116 +++++++++------
+ src-tauri/src/lib.rs      |   4 +-
+ src-tauri/src/version.rs  |  26 +---
+ src-tauri/tauri.conf.json |  22 ++-
+ src/About.tsx             |   2 +-
+ src/App.tsx               |  60 +++-----
+ src/config.tsx            |   2 +
+ src/version.tsx           |   4 +-
+ 12 files changed, 419 insertions(+), 135 deletions(-)
+
+diff --git a/package-lock.json b/package-lock.json
+index bffea33..13e99b2 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "chewing-preferences",
+-  "version": "26.4.1",
++  "version": "1.0.1",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "chewing-preferences",
+-      "version": "26.4.1",
++      "version": "1.0.1",
+       "dependencies": {
+         "@fluentui/react-components": "^9.70.0",
+         "@fluentui/react-icons": "^2.0.323",
+diff --git a/package.json b/package.json
+index 35b2b23..58aa7b8 100644
+--- a/package.json
++++ b/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "chewing-preferences",
+   "private": true,
+-  "version": "26.6.0",
++  "version": "1.0.1",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index 4cfa449..26175a1 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -225,6 +225,12 @@ version = "0.22.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+ 
++[[package]]
++name = "base64"
++version = "0.23.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
++
+ [[package]]
+ name = "base64-serde"
+ version = "0.8.0"
+@@ -322,6 +328,17 @@ dependencies = [
+  "tinyvec",
+ ]
+ 
++[[package]]
++name = "bstr"
++version = "1.13.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
++dependencies = [
++ "memchr",
++ "regex-automata",
++ "serde_core",
++]
++
+ [[package]]
+ name = "bumpalo"
+ version = "3.20.3"
+@@ -461,19 +478,19 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+ 
+ [[package]]
+ name = "chewing"
+-version = "0.13.0-alpha.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ddcdf6011c5ddaf3de15ca1bf2469eec154678d9e61f9478c2c4f5d3daac1b8d"
++version = "0.14.0-alpha.4"
++source = "git+https://codeberg.org/chewing/libchewing.git?rev=ec7f595ea7726fa06a9493e819b81669eba605a5#ec7f595ea7726fa06a9493e819b81669eba605a5"
+ dependencies = [
++ "bstr",
+  "der",
+  "log",
++ "scoped-error",
+ ]
+ 
+ [[package]]
+ name = "chewing-preferences"
+-version = "26.6.0"
++version = "1.0.1"
+ dependencies = [
+- "chewing",
+  "chewing_tip_core",
+  "log",
+  "scoped-error",
+@@ -486,12 +503,12 @@ dependencies = [
+  "tauri-plugin-process",
+  "toml 0.9.12+spec-1.1.0",
+  "windows 0.61.3",
++ "windows-registry",
+ ]
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "26.5.2"
+-source = "git+https://codeberg.org/chewing/windows-chewing-tsf#355c3eedcd605735a7441e84657139e7fe44d43b"
++version = "1.0.1"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+@@ -499,9 +516,11 @@ dependencies = [
+  "fnv",
+  "interprocess",
+  "log",
++ "roxmltree",
+  "scoped-error",
+  "serde",
+  "serde_json",
++ "ureq",
+  "uuid",
+  "widestring",
+  "windows 0.62.2",
+@@ -1873,6 +1892,36 @@ dependencies = [
+  "windows-sys 0.45.0",
+ ]
+ 
++[[package]]
++name = "jni"
++version = "0.22.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5efd9a482cf3a427f00d6b35f14332adc7902ce91efb778580e180ff90fa3498"
++dependencies = [
++ "cfg-if",
++ "combine",
++ "jni-macros",
++ "jni-sys 0.4.1",
++ "log",
++ "simd_cesu8",
++ "thiserror 2.0.18",
++ "walkdir",
++ "windows-link 0.2.1",
++]
++
++[[package]]
++name = "jni-macros"
++version = "0.22.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a00109accc170f0bdb141fed3e393c565b6f5e072365c3bd58f5b062591560a3"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "rustc_version",
++ "simd_cesu8",
++ "syn 2.0.117",
++]
++
+ [[package]]
+ name = "jni-sys"
+ version = "0.3.1"
+@@ -2392,6 +2441,12 @@ dependencies = [
+  "pathdiff",
+ ]
+ 
++[[package]]
++name = "openssl-probe"
++version = "0.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
++
+ [[package]]
+ name = "option-ext"
+ version = "0.2.0"
+@@ -2865,6 +2920,29 @@ dependencies = [
+  "windows-sys 0.60.2",
+ ]
+ 
++[[package]]
++name = "ring"
++version = "0.17.14"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
++dependencies = [
++ "cc",
++ "cfg-if",
++ "getrandom 0.2.17",
++ "libc",
++ "untrusted",
++ "windows-sys 0.52.0",
++]
++
++[[package]]
++name = "roxmltree"
++version = "0.21.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9da7f59328b09405b181fee1018925fad50f157afb43c0c0f5c522c256dd5907"
++dependencies = [
++ "memchr",
++]
++
+ [[package]]
+ name = "rustc-hash"
+ version = "2.1.2"
+@@ -2893,6 +2971,80 @@ dependencies = [
+  "windows-sys 0.61.2",
+ ]
+ 
++[[package]]
++name = "rustls"
++version = "0.23.46"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
++dependencies = [
++ "log",
++ "once_cell",
++ "ring",
++ "rustls-pki-types",
++ "rustls-webpki",
++ "subtle",
++ "zeroize",
++]
++
++[[package]]
++name = "rustls-native-certs"
++version = "0.8.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4a073f5dc7469f984c52ad2752b63b0807745133b6de880b7b64c1ac4c48aec4"
++dependencies = [
++ "openssl-probe",
++ "rustls-pki-types",
++ "schannel",
++ "security-framework",
++]
++
++[[package]]
++name = "rustls-pki-types"
++version = "1.15.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
++dependencies = [
++ "zeroize",
++]
++
++[[package]]
++name = "rustls-platform-verifier"
++version = "0.7.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1167586491e2b18b8bfbb293e8180ec17c201c4f076d7cb3070ca964e7598f98"
++dependencies = [
++ "core-foundation",
++ "core-foundation-sys",
++ "jni 0.22.4",
++ "log",
++ "once_cell",
++ "rustls",
++ "rustls-native-certs",
++ "rustls-platform-verifier-android",
++ "rustls-webpki",
++ "security-framework",
++ "security-framework-sys",
++ "webpki-root-certs",
++ "windows-sys 0.61.2",
++]
++
++[[package]]
++name = "rustls-platform-verifier-android"
++version = "0.2.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "eec689c0bc40ff2458a5977b6619cb718087084a18e02a131c599b62d05e1a5f"
++
++[[package]]
++name = "rustls-webpki"
++version = "0.103.16"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
++dependencies = [
++ "ring",
++ "rustls-pki-types",
++ "untrusted",
++]
++
+ [[package]]
+ name = "rustversion"
+ version = "1.0.22"
+@@ -2908,6 +3060,15 @@ dependencies = [
+  "winapi-util",
+ ]
+ 
++[[package]]
++name = "schannel"
++version = "0.1.30"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9cb23c424d8ee841bb4d813677ca237e2a610067d594fec130f87d6093495ab5"
++dependencies = [
++ "windows-sys 0.61.2",
++]
++
+ [[package]]
+ name = "schemars"
+ version = "0.8.22"
+@@ -2961,9 +3122,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "scoped-error"
+-version = "0.1.4"
++version = "0.1.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "554ff5495427a6a8669f579aced171cc96234aed185d1eb0fb94925a880bfc06"
++checksum = "47c92e5e30389ba745a4f472dfffe4825408e97290fdf72f1788b96c2c6c5629"
+ 
+ [[package]]
+ name = "scopeguard"
+@@ -2971,6 +3132,29 @@ version = "1.2.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+ 
++[[package]]
++name = "security-framework"
++version = "3.7.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
++dependencies = [
++ "bitflags 2.13.0",
++ "core-foundation",
++ "core-foundation-sys",
++ "libc",
++ "security-framework-sys",
++]
++
++[[package]]
++name = "security-framework-sys"
++version = "2.17.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
++dependencies = [
++ "core-foundation-sys",
++ "libc",
++]
++
+ [[package]]
+ name = "selectors"
+ version = "0.36.1"
+@@ -3191,6 +3375,22 @@ version = "0.3.9"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
+ 
++[[package]]
++name = "simd_cesu8"
++version = "1.2.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "11031e251abf8611c80f460e19dbdeb54a66db918e49c65a7065b46ac7aec520"
++dependencies = [
++ "rustc_version",
++ "simdutf8",
++]
++
++[[package]]
++name = "simdutf8"
++version = "0.1.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
++
+ [[package]]
+ name = "siphasher"
+ version = "1.0.3"
+@@ -3303,6 +3503,12 @@ version = "0.11.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+ 
++[[package]]
++name = "subtle"
++version = "2.6.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
++
+ [[package]]
+ name = "swift-rs"
+ version = "1.0.7"
+@@ -3386,7 +3592,7 @@ dependencies = [
+  "gdkwayland-sys",
+  "gdkx11-sys",
+  "gtk",
+- "jni",
++ "jni 0.21.1",
+  "libc",
+  "log",
+  "ndk",
+@@ -3442,7 +3648,7 @@ dependencies = [
+  "gtk",
+  "heck 0.5.0",
+  "http",
+- "jni",
++ "jni 0.21.1",
+  "libc",
+  "log",
+  "mime",
+@@ -3638,7 +3844,7 @@ dependencies = [
+  "dpi",
+  "gtk",
+  "http",
+- "jni",
++ "jni 0.21.1",
+  "objc2",
+  "objc2-ui-kit",
+  "objc2-web-kit",
+@@ -3661,7 +3867,7 @@ checksum = "b83849ee63ecb27a8e8d0fe51915ca215076914aca43f96db1179f0f415f6cd9"
+ dependencies = [
+  "gtk",
+  "http",
+- "jni",
++ "jni 0.21.1",
+  "log",
+  "objc2",
+  "objc2-app-kit",
+@@ -4180,6 +4386,42 @@ version = "0.2.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+ 
++[[package]]
++name = "untrusted"
++version = "0.9.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
++
++[[package]]
++name = "ureq"
++version = "3.5.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e7be76686bdf7198002062423ca0d8cf9b75a27c8e1de804513b97e97b555d9d"
++dependencies = [
++ "base64 0.23.1",
++ "flate2",
++ "log",
++ "percent-encoding",
++ "rustls",
++ "rustls-pki-types",
++ "rustls-platform-verifier",
++ "ureq-proto",
++ "utf8-zero",
++ "webpki-roots",
++]
++
++[[package]]
++name = "ureq-proto"
++version = "0.7.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "622dce33c252115466d83f63e9744a18f12b4406aae51a01c15ad8fcf1185eb3"
++dependencies = [
++ "base64 0.23.1",
++ "http",
++ "httparse",
++ "log",
++]
++
+ [[package]]
+ name = "url"
+ version = "2.5.8"
+@@ -4211,6 +4453,12 @@ version = "0.7.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
+ 
++[[package]]
++name = "utf8-zero"
++version = "0.8.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b8c0a043c9540bae7c578c88f91dda8bd82e59ae27c21baca69c8b191aaf5a6e"
++
+ [[package]]
+ name = "utf8_iter"
+ version = "1.0.4"
+@@ -4472,6 +4720,24 @@ dependencies = [
+  "system-deps",
+ ]
+ 
++[[package]]
++name = "webpki-root-certs"
++version = "1.0.11"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e49d0e65abc00c142e8f9428da991da9f1a250c39be97459901eb12b9b49f62a"
++dependencies = [
++ "rustls-pki-types",
++]
++
++[[package]]
++name = "webpki-roots"
++version = "1.0.11"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
++dependencies = [
++ "rustls-pki-types",
++]
++
+ [[package]]
+ name = "webview2-com"
+ version = "0.38.2"
+@@ -4761,6 +5027,15 @@ dependencies = [
+  "windows-targets 0.42.2",
+ ]
+ 
++[[package]]
++name = "windows-sys"
++version = "0.52.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
++dependencies = [
++ "windows-targets 0.52.6",
++]
++
+ [[package]]
+ name = "windows-sys"
+ version = "0.59.0"
+@@ -5153,7 +5428,7 @@ dependencies = [
+  "gtk",
+  "http",
+  "javascriptcore-rs",
+- "jni",
++ "jni 0.21.1",
+  "libc",
+  "ndk",
+  "objc2",
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+index bde8308..256ad48 100644
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -4,7 +4,7 @@
+ 
+ [package]
+ name = "chewing-preferences"
+-version = "26.6.0"
++version = "1.0.1"
+ edition = "2024"
+ license = "GPL-3.0-or-later"
+ 
+@@ -20,8 +20,8 @@ name = "ChewingPreferences"
+ path = "src/main.rs"
+ 
+ [dependencies]
+-chewing = "0.13.0-alpha.2"
+-chewing_tip_core = { git = "https://codeberg.org/chewing/windows-chewing-tsf" }
++chewing_tip_core = { path = "../../windows-chewing-tsf/crates/chewing_tip_core" }
++windows-registry = "0.6.1"
+ log = "0.4"
+ scoped-error = "0.1.4"
+ serde = { version = "1", features = ["derive"] }
+@@ -51,3 +51,6 @@ opt-level = 3
+ opt-level = "s"
+ lto = true
+ panic = "abort"
++
++[patch.crates-io]
++chewing = { git = "https://codeberg.org/chewing/libchewing.git", rev = "ec7f595ea7726fa06a9493e819b81669eba605a5" }
+diff --git a/src-tauri/src/config.rs b/src-tauri/src/config.rs
+index 299e664..96a93fd 100644
+--- a/src-tauri/src/config.rs
++++ b/src-tauri/src/config.rs
+@@ -2,48 +2,38 @@
+ //
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+-use std::{env, fs, path::PathBuf};
++use std::{fs, path::PathBuf};
+ 
+-use chewing::path::data_dir;
++use chewing_tip_core::shell::{user_dir, program_dir};
+ use chewing_tip_core::config::Config;
+ use scoped_error::{Error, ErrorExt, expect_error};
+ 
+-fn default_user_path_for_file(file: &str) -> PathBuf {
+-    let user_profile = env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\unknown".into());
+-    let user_data_dir = PathBuf::from(user_profile).join("ChewingTextService");
+-    data_dir().unwrap_or(user_data_dir).join(file)
++fn default_user_path_for_file(file: &str) -> Result<PathBuf, Error> {
++    expect_error("無法取得 AI新酷音使用者目錄", || Ok(user_dir()?.join(file)))
+ }
+ 
+ fn user_path_for_file(file: &str) -> Result<PathBuf, Error> {
+-    expect_error("Failed to find user file", || {
+-        let user_file = default_user_path_for_file(file);
+-        if user_file.exists() {
+-            return Ok(user_file);
+-        }
+-        Err(format!("使用者檔案 {file} 不存在").into())
++    expect_error("無法讀取使用者符號檔", || {
++        let path = default_user_path_for_file(file)?;
++        if path.exists() { Ok(path) } else { Err(format!("使用者檔案 {file} 不存在").into()) }
+     })
+ }
+ 
+-// FIXME: provide path info from libchewing
+ fn system_path_for_file(file: &str) -> Result<PathBuf, Error> {
+-    expect_error("Failed to find system file", || {
+-        let progfiles_x86 =
+-            env::var("ProgramFiles(x86)").unwrap_or_else(|_| "C:\\Program Files(x86)".into());
+-        let progfiles = env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
+-        let path_x86 = PathBuf::from(progfiles_x86)
+-            .join("ChewingTextService\\Dictionary")
+-            .join(file);
+-        let path = PathBuf::from(progfiles)
+-            .join("ChewingTextService\\Dictionary")
+-            .join(file);
+-        if path_x86.exists() {
+-            return Ok(path_x86);
+-        }
+-        if path.exists() {
+-            return Ok(path);
++    expect_error("無法取得 AI新酷音安裝目錄", || Ok(program_dir()?.join("Dictionary").join(file)))
++}
++
++fn save_override(path: &std::path::Path, content: &str, system_content: &str) -> std::io::Result<()> {
++    if content == system_content {
++        match fs::remove_file(path) {
++            Ok(()) => Ok(()),
++            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
++            Err(e) => Err(e),
+         }
+-        Err(format!("系統詞庫 {file} 不存在").into())
+-    })
++    } else {
++        fs::create_dir_all(path.parent().ok_or_else(|| std::io::Error::other("Missing parent"))?)?;
++        fs::write(path, content)
++    }
+ }
+ 
+ #[tauri::command]
+@@ -74,6 +64,9 @@ pub(crate) fn export_config(path: String, config: Config) -> Result<(), String>
+ pub(crate) fn load_config() -> Result<Config, String> {
+     fn inner() -> Result<Config, Error> {
+         expect_error("無法讀取設定檔", || {
++            // Create only our own empty namespace on first use; never copy private data.
++            let _key = windows_registry::CURRENT_USER.options().create().read().write()
++                .open("Software\\ChewingDev")?;
+             let mut cfg = Config::from_reg()?;
+ 
+             if let Ok(path) = user_path_for_file("symbols.dat") {
+@@ -96,21 +89,17 @@ pub(crate) fn load_config() -> Result<Config, String> {
+ }
+ 
+ #[tauri::command]
+-pub fn save_config(config: Config) -> Result<(), String> {
++pub fn save_config(mut config: Config) -> Result<(), String> {
+     fn inner(config: &Config) -> Result<(), Error> {
+         expect_error("無法儲存設定", || {
+-            config.save_reg();
++            config.try_save_reg()?;
+ 
+             let sys_symbols_dat = system_path_for_file("symbols.dat")
+                 .and_then(|path| {
+                     expect_error("無法讀取符號檔", || Ok(fs::read_to_string(path)?))
+                 })
+                 .unwrap_or_default();
+-            if config.symbols_dat != sys_symbols_dat {
+-                let user_symbols_dat_path = default_user_path_for_file("symbols.dat");
+-                fs::create_dir_all(user_symbols_dat_path.parent().unwrap())?;
+-                fs::write(user_symbols_dat_path, &config.symbols_dat)?;
+-            }
++            save_override(&default_user_path_for_file("symbols.dat")?, &config.symbols_dat, &sys_symbols_dat)?;
+ 
+             let sys_swkb_dat = system_path_for_file("swkb.dat")
+                 .and_then(|path| {
+@@ -119,15 +108,58 @@ pub fn save_config(config: Config) -> Result<(), String> {
+                     })
+                 })
+                 .unwrap_or_default();
+-            if config.swkb_dat != sys_swkb_dat {
+-                let user_swkb_dat_path = default_user_path_for_file("swkb.dat");
+-                fs::create_dir_all(user_swkb_dat_path.parent().unwrap())?;
+-                fs::write(user_swkb_dat_path, &config.swkb_dat)?;
+-            }
++            save_override(&default_user_path_for_file("swkb.dat")?, &config.swkb_dat, &sys_swkb_dat)?;
+ 
+             Ok(())
+         })
+     }
+ 
++    validate_config(&config)?;
++    // This build does not enable AI or the upstream updater.
++    config.chewing_tsf.enable_ai = false;
++    config.chewing_tsf.auto_check_update_channel = "none".into();
+     inner(&config).map_err(|e| e.report().to_string())
+ }
++
++fn validate_config(config: &Config) -> Result<(), String> {
++    let c = &config.chewing_tsf;
++    if !(1..=10).contains(&c.cand_per_row) || !(1..=10).contains(&c.cand_per_page) {
++        return Err("每列與每頁候選字數必須介於 1 到 10。".into());
++    }
++    if !(1..=256).contains(&c.font_size) {
++        return Err("字體大小必須介於 1 到 256。".into());
++    }
++    if !(100..=1000).contains(&c.f_hold_delay_ms) || !(100..=1000).contains(&c.shift_key_sensitivity) {
++        return Err("按鍵延遲必須介於 100 到 1000 ms。".into());
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn invalid_candidate_geometry_is_rejected_before_save() {
++        let mut cfg = Config::default();
++        assert!(validate_config(&cfg).is_ok());
++        cfg.chewing_tsf.cand_per_row = 0;
++        assert!(validate_config(&cfg).is_err());
++        cfg.chewing_tsf.cand_per_row = 9;
++        cfg.chewing_tsf.font_size = -1;
++        assert!(validate_config(&cfg).is_err());
++    }
++    #[test]
++    fn restoring_default_symbols_removes_only_the_override() {
++        let root = std::env::temp_dir().join(format!("ckai-prefs-test-{}", std::process::id()));
++        fs::create_dir_all(&root).unwrap();
++        let path = root.join("symbols.dat");
++        let other = root.join("unrelated.txt");
++        fs::write(&other, "keep").unwrap();
++        save_override(&path, "custom", "default").unwrap();
++        assert_eq!(fs::read_to_string(&path).unwrap(), "custom");
++        save_override(&path, "default", "default").unwrap();
++        assert!(!path.exists());
++        assert_eq!(fs::read_to_string(&other).unwrap(), "keep");
++        fs::remove_dir_all(&root).unwrap();
++    }
++}
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index 401b5d8..bfb4c87 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -24,14 +24,14 @@ pub fn run() {
+         .plugin(tauri_plugin_opener::init())
+         .setup(|app| {
+             let hide_main = std::env::args().any(|arg| {
+-                ["/about", "--about", "chewing-preferences://about/"].contains(&arg.as_str())
++                ["/about", "--about", "ai-chewing-preferences://about/"].contains(&arg.as_str())
+             });
+             let file_menu = SubmenuBuilder::new(app, "檔案")
+                 .text("import", "匯入設定檔...")
+                 .text("export", "匯出設定檔...")
+                 .build()?;
+             let about_menu = SubmenuBuilder::new(app, "關於")
+-                .text("about", "關於新酷音輸入法")
++                .text("about", "關於 AI新酷音")
+                 .build()?;
+             let menu = MenuBuilder::new(app)
+                 .items(&[&file_menu, &about_menu])
+diff --git a/src-tauri/src/version.rs b/src-tauri/src/version.rs
+index 0b6b6d6..89a5fae 100644
+--- a/src-tauri/src/version.rs
++++ b/src-tauri/src/version.rs
+@@ -2,7 +2,7 @@
+ //
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+-use std::{env, fs, path::PathBuf};
++use std::{fs, path::PathBuf};
+ 
+ use scoped_error::{Error, ErrorExt, expect_error};
+ use serde::{Deserialize, Serialize};
+@@ -18,7 +18,7 @@ pub fn chewing_version() -> Result<Version, String> {
+     let res: Result<_, Error> = expect_error("Failed to get installed chewing version", || {
+         let version_path = system_path_for_file("version.json")?;
+         let version_json = fs::read_to_string(&version_path).unwrap_or_else(|_| {
+-            r#"{{ "product_version": "unknown", "build_date": "unknown" }}"#.to_string()
++            r#"{ "product_version": "unknown", "build_date": "unknown" }"#.to_string()
+         });
+         Ok(serde_json::from_str(&version_json)?)
+     });
+@@ -26,25 +26,5 @@ pub fn chewing_version() -> Result<Version, String> {
+ }
+ 
+ fn system_path_for_file(file: &str) -> Result<PathBuf, Error> {
+-    expect_error(
+-        format!("Failed to determine system path for {file}"),
+-        || {
+-            let progfiles_x86 =
+-                env::var("ProgramFiles(x86)").unwrap_or_else(|_| "C:\\Program Files(x86)".into());
+-            let progfiles = env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
+-            let path_x86 = PathBuf::from(progfiles_x86)
+-                .join("ChewingTextService")
+-                .join(file);
+-            let path = PathBuf::from(progfiles)
+-                .join("ChewingTextService")
+-                .join(file);
+-            if path_x86.exists() {
+-                return Ok(path_x86);
+-            }
+-            if path.exists() {
+-                return Ok(path);
+-            }
+-            return Err(format!("檔案 {file} 不存在").into());
+-        },
+-    )
++    expect_error("無法取得 AI新酷音版本", || Ok(chewing_tip_core::shell::program_dir()?.join(file)))
+ }
+diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+index f1f3cc8..5cff60e 100644
+--- a/src-tauri/tauri.conf.json
++++ b/src-tauri/tauri.conf.json
+@@ -1,8 +1,8 @@
+ {
+   "$schema": "https://schema.tauri.app/config/2",
+-  "productName": "新酷音輸入法設定",
+-  "version": "26.6.0",
+-  "identifier": "im.chewing.Chewing.Preferences",
++  "productName": "AI新酷音設定",
++  "version": "1.0.1",
++  "identifier": "org.aichewing.preferences",
+   "build": {
+     "beforeDevCommand": "npm run dev",
+     "devUrl": "http://localhost:1420",
+@@ -13,19 +13,23 @@
+   "app": {
+     "windows": [
+       {
+-        "title": "新酷音輸入法設定",
++        "title": "AI新酷音設定",
+         "width": 670,
+         "height": 750,
+         "resizable": true,
+         "visible": false,
+         "maximizable": false,
+-        "windowEffects": { "effects": ["mica"] }
++        "windowEffects": {
++          "effects": [
++            "mica"
++          ]
++        }
+       },
+       {
+         "label": "about",
+         "parent": "main",
+         "url": "index.html#about",
+-        "title": "關於新酷音輸入法",
++        "title": "關於 AI新酷音",
+         "width": 430,
+         "height": 400,
+         "resizable": true,
+@@ -33,7 +37,11 @@
+         "closable": false,
+         "maximizable": false,
+         "minimizable": false,
+-        "windowEffects": { "effects": ["mica"] }
++        "windowEffects": {
++          "effects": [
++            "mica"
++          ]
++        }
+       }
+     ],
+     "security": {
+diff --git a/src/About.tsx b/src/About.tsx
+index bc7ae9d..a6299fe 100644
+--- a/src/About.tsx
++++ b/src/About.tsx
+@@ -87,7 +87,7 @@ function About() {
+           </figure>
+         </div>
+         <div className={styles.column}>
+-          <Body1>新酷音 － 智慧型注音輸入法</Body1>
++          <Body1>AI新酷音 － 基於新酷音的延伸版本</Body1>
+           <Body1>酷音版本：{chewingVersion.product_version}</Body1>
+           <Body1>酷音發行日期：{chewingVersion.build_date}</Body1>
+           <Body1>設定程式版本：{version.productVersion}</Body1>
+diff --git a/src/App.tsx b/src/App.tsx
+index 7a02034..3326be9 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -180,19 +180,6 @@ function keyboard_layout_to_value(layout: number): string {
+   }
+ }
+ 
+-function update_channel_to_value(channel: string): string {
+-  switch (channel) {
+-    case "none":
+-      return "停用";
+-    case "stable":
+-      return "穩定版";
+-    case "development":
+-      return "預覽版";
+-    default:
+-      return "穩定版";
+-  }
+-}
+-
+ function App() {
+   const styles = useStyles();
+ 
+@@ -256,7 +243,7 @@ function App() {
+       setConfig(config.chewing_tsf);
+       setSwkbDat(config.swkb_dat);
+       setSymbolsDat(config.symbols_dat);
+-    });
++    }).catch((error) => message(String(error), { title: "無法讀取設定", kind: "error" }));
+   }, []);
+ 
+   useEffect(() => {
+@@ -314,10 +301,17 @@ function App() {
+     } as ChewingTsfConfig);
+   };
+ 
+-  const save_config = () =>
+-    invoke("save_config", {
++  const save_config = async () => {
++    try {
++      await invoke("save_config", {
+       config: { chewing_tsf: config, symbols_dat, swkb_dat },
+-    });
++      });
++      return true;
++    } catch (error) {
++      await message(String(error), { title: "無法儲存設定", kind: "error" });
++      return false;
++    }
++  };
+ 
+   return (
+     <form className={styles.root} name="configs">
+@@ -383,14 +377,15 @@ function App() {
+       )}
+       <div className={styles.action}>
+         <Button
++          disabled={!config}
+           onClick={() => {
+-            save_config().then(() => exit(0));
++            save_config().then((saved) => { if (saved) exit(0); });
+           }}
+         >
+           確定
+         </Button>
+         <Button onClick={() => exit(0)}>取消</Button>
+-        <Button onClick={save_config}>套用</Button>
++        <Button disabled={!config} onClick={save_config}>套用</Button>
+       </div>
+     </form>
+   );
+@@ -411,7 +406,7 @@ const InputBehaviors = ({
+   >
+     <div className={styles.column}>
+       <Checkbox
+-        label="使用 Shift 快速切換中英文"
++        label="雙擊 Shift 切換中英文"
+         name="switch_lang_with_shift"
+         disabled={config?.enable_caps_lock}
+         checked={config?.switch_lang_with_shift}
+@@ -719,7 +714,7 @@ const Appearance = ({
+             onChange={setNumberConfig("cand_per_row", 3)}
+           />
+         </Field>
+-        <Field label="每頁顯示後選字個數：">
++        <Field label="每頁顯示候選字個數：">
+           <SpinButton
+             value={config?.cand_per_page}
+             min={1}
+@@ -731,6 +726,8 @@ const Appearance = ({
+         <Field label="選字及訊息視窗文字大小：">
+           <SpinButton
+             value={config?.font_size}
++            min={1}
++            max={256}
+             step={1}
+             onChange={setNumberConfig("font_size", 16)}
+           />
+@@ -983,24 +980,11 @@ const Shortcut = ({ styles, swkb_dat, setSwkbDat }) => (
+ const Others = ({ config, styles, setConfig }) => (
+   <div className={styles.content} role="tabpanel" aria-labelledby="Others">
+     <div className={styles.column}>
+-      <Field label="自動檢查更新：">
+-        <Dropdown
+-          value={update_channel_to_value(
+-            config?.auto_check_update_channel || "stable",
+-          )}
+-          selectedOptions={[config?.auto_check_update_channel || "stable"]}
+-          onOptionSelect={(_ev, data) => {
+-            setConfig({
+-              ...config,
+-              auto_check_update_channel: data.optionValue || "stable",
+-            } as ChewingTsfConfig);
+-          }}
+-        >
+-          <Option value="none">停用</Option>
+-          <Option value="stable">穩定版</Option>
+-          <Option value="development">預覽版</Option>
+-        </Dropdown>
++      <Field label={`F 長按延遲：${config?.f_hold_delay_ms ?? 150} ms`}>
++        <Slider value={config?.f_hold_delay_ms ?? 150} min={100} max={1000} step={10}
++          onChange={(_ev, data) => setConfig({ ...config, f_hold_delay_ms: data.value } as ChewingTsfConfig)} />
+       </Field>
++      <Text>設定會在按下「套用」或「確定」後儲存。AI 建議與自動更新目前停用。</Text>
+     </div>
+   </div>
+ );
+diff --git a/src/config.tsx b/src/config.tsx
+index c80bc01..7a527c5 100644
+--- a/src/config.tsx
++++ b/src/config.tsx
+@@ -3,6 +3,8 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ export type ChewingTsfConfig = {
++  f_hold_delay_ms: number;
++  enable_ai: boolean;
+   switch_lang_with_shift: boolean;
+   shift_key_sensitivity: number;
+   enable_fullwidth_toggle_key: boolean;
+diff --git a/src/version.tsx b/src/version.tsx
+index 0c5a76c..50e87d5 100644
+--- a/src/version.tsx
++++ b/src/version.tsx
+@@ -3,7 +3,7 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ const version = {
+-  productVersion: "26.6.0.1",
+-  buildDate: "2026 年 06 月 10 日",
++  productVersion: "1.0.1",
++  buildDate: "2026-11-05T18:19:42+08:00",
+ };
+ export default version;
+-- 
+2.55.0.windows.3
+
