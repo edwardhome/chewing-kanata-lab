@@ -1,6 +1,6 @@
 # 目前發布狀態：PREVIEW_REGISTERED
 
-更新時間：2026-11-05T14:23:04+08:00
+更新時間：2026-11-05T14:31:16+08:00
 
 Windows 獨立預覽版 `1.0.0-preview.20261105.4` 已完成建置、封裝、前置驗證與 WorkstationX 實際註冊。它不是正式穩定版，也尚未追平 AI-Bopomofo 0.6.14 全部功能。
 
@@ -10,7 +10,7 @@ Windows 獨立預覽版 `1.0.0-preview.20261105.4` 已完成建置、封裝、�
 - 名稱為「AI新酷音（預覽版）」；保留原有新酷音註冊、預設輸入法、語言清單、私人詞庫與 Kanata。未強制切換或重啟應用。
 - 本輪重點為 F 組字／退格、Shift 英文編輯、工程詞庫候選、產品隔離及可靠安裝。實體鍵盤、密碼欄與應用相容性為 NOT_RUN。
 - Ollama 原生整合與學習詞庫尚未完成，AI 預設關閉。不能將歷史 AI patch 名稱解讀為功能已可用。
-- 套件未簽署。來源留在開發分支與 Draft PR，不合併 main；尚未建立公開 Release。
+- 套件未簽署。來源留在開發分支與 Draft PR，未合併 main；已依使用者授權發布 [GitHub 預覽版](https://github.com/edwardhome/chewing-kanata-lab/releases/tag/v1.0.0-preview.20261105.4)，附 Windows 安裝包、完整原生與共用政策來源、manifest 及 SHA-256。四個附件均已比對 GitHub 摘要與本機檔案。
 
 Windows 套件位於 `Documents\AI-Chewing\1.0.0-preview.20261105.4`；Mac 留有同版 Windows zip 備份於 `Documents/AI Chewing/1.0.0-preview.20261105.4/`，並非 Mac 安裝包。前兩個未交付候選包已撤出交付目錄。
 
