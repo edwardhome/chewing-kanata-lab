@@ -1,22 +1,20 @@
-# 目前發布狀態：PREVIEW_REGISTERED
+# 目前發布版本：v1.0.0
 
-更新時間：2026-11-05T14:31:16+08:00
+更新時間：2026-11-05T17:50:35+08:00
 
-Windows 獨立預覽版 `1.0.0-preview.20261105.4` 已完成建置、封裝、前置驗證與 WorkstationX 實際註冊。它不是正式穩定版，也尚未追平 AI-Bopomofo 0.6.14 全部功能。
+使用者指定將已驗收的 Windows 修正版定為 v1.0.0。WorkstationX 已完成升級、實際解除安裝、確認註冊移除與重新安裝；現在顯示「AI新酷音」，不再使用預覽版名稱。
 
-- .4 修正中文無組字 Enter／Backspace 與設定滑桿重入死鎖；本輪 46 個案例通過；使用者已確認 Enter／Backspace 與滑桿兩項恢復正常，其餘實鍵／GUI 項目仍未驗收，詳見 [回歸報告](../verification/runs/RUN-20261105-INPUT-SETTINGS-02.md)。
-- 前一輪 94 個無介面案例通過，0 失敗、0 跳過；四個交付元件 release build 與 workspace check 通過。
-- 十份原生修補可從固定基準重現相同完整 tree；最終套件來源與檔案摘要可驗證。
-- 名稱為「AI新酷音（預覽版）」；保留原有新酷音註冊、預設輸入法、語言清單、私人詞庫與 Kanata。未強制切換或重啟應用。
-- 本輪重點為 F 組字／退格、Shift 英文編輯、工程詞庫候選、產品隔離及可靠安裝。實體鍵盤、密碼欄與應用相容性為 NOT_RUN。
-- Ollama 原生整合與學習詞庫尚未完成，AI 預設關閉。不能將歷史 AI patch 名稱解讀為功能已可用。
-- 套件未簽署。來源留在開發分支與 Draft PR，未合併 main；已依使用者授權發布 [GitHub 預覽版](https://github.com/edwardhome/chewing-kanata-lab/releases/tag/v1.0.0-preview.20261105.4)，附 Windows 安裝包、完整原生與共用政策來源、manifest 及 SHA-256。四個附件均已比對 GitHub 摘要與本機檔案。
+- 98 個無介面案例通過，0 失敗、0 跳過；release build 與 workspace check 通過。
+- 十一份原生修補可重現相同完整 tree，DLL 檔案／產品版本為 1.0.0.0。
+- Windows「已安裝的應用程式」加入 AI新酷音 1.0.0 解除安裝入口；保留偏好、使用者詞庫與版本備份。
+- 同一獨立 GUID 升級，不建立另一個產品；其他 TSF 名稱／profile 清單與 ChewingDev 偏好比對未變。
+- 使用者已在前版確認中文閒置 Enter／Backspace 與滑桿正常；本輪不修改這些行為。其他應用與完整實鍵驗收未完成。
+- Ollama 原生整合、糾正／預測與學習詞庫尚未完成；AI 預設關閉。版號不代表這些功能已完成。
+- 套件未簽署；發布附件包含 Windows 安裝包、完整原生與共用政策來源、manifest 與 SHA-256。
 
-Windows 套件位於 `Documents\AI-Chewing\1.0.0-preview.20261105.4`；Mac 留有同版 Windows zip 備份於 `Documents/AI Chewing/1.0.0-preview.20261105.4/`，並非 Mac 安裝包。前兩個未交付候選包已撤出交付目錄。
+[下載 v1.0.0](https://github.com/edwardhome/chewing-kanata-lab/releases/tag/v1.0.0)；[本輪驗證報告](../verification/runs/RUN-20261105-V1-RELEASE-03.md)；[功能對齊與未完成範圍](../development/PARITY_MATRIX.md)。
 
-- [驗證報告、版本與套件摘要](../verification/runs/RUN-20261105-CODEX-PARITY-01.md)
-- [功能對齊與未完成範圍](../development/PARITY_MATRIX.md)
-- [套件隔離與交付條件](PACKAGE_SAFETY.md)
+前版 .4 的紀錄保留於 [回歸報告](../verification/runs/RUN-20261105-INPUT-SETTINGS-02.md)。版本備份保留是為了追溯與回復，不代表仍有另一個預覽版註冊。
 
 ## 歷史報告（不代表目前狀態）
 
