@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "2d0f4bf0e865969ac4704ab8e87448ca4a4f762b",
+  "tree": "b26d821e9c80cc3db39eaa21b36be25207adf487",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -42,7 +42,11 @@
     {
       "file": "0010-fix-input-restore-idle-editing-keys-and-release-sett.patch",
       "sha256": "b37f1212b4a4fcb63a64589c873a01392d6fd4933aa0d5f82df336e40f85e872"
+    },
+    {
+      "file": "0011-feat-release-promote-AI-Chewing-to-1.0.0-and-unregis.patch",
+      "sha256": "175dfde23ce1950c5226045172eeb6ca84495e17e28aa2d35d91f32c36592dfe"
     }
   ],
-  "native_commit": "4a38766f59a96cb4c3eb5d34dde1c122db0a6d5d"
+  "native_commit": "6da145987b815480b3dc892446feaf4562986cfd"
 }

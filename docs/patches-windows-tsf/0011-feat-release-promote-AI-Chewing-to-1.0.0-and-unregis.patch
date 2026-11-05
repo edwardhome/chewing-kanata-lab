@@ -1,0 +1,193 @@
+From 6da145987b815480b3dc892446feaf4562986cfd Mon Sep 17 00:00:00 2001
+From: CKAI Dev <ckai-dev@local>
+Date: Thu, 5 Nov 2026 17:44:37 +0800
+Subject: [PATCH] feat(release): promote AI Chewing to 1.0.0 and unregister its
+ complete TSF service
+
+---
+ Cargo.lock                             | 10 ++++----
+ Cargo.toml                             |  2 +-
+ crates/chewing_preferences/Cargo.toml  |  2 +-
+ crates/chewing_preferences/src/main.rs |  4 ++--
+ crates/tsfreg/src/main.rs              | 33 +++++++-------------------
+ tip/rc/version.rc                      | 16 ++++++-------
+ 6 files changed, 25 insertions(+), 42 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 7987760..b803411 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -311,7 +311,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_preferences"
+-version = "26.9.0"
++version = "1.0.0"
+ dependencies = [
+  "windows",
+  "windows-core",
+@@ -320,7 +320,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip"
+-version = "26.9.0"
++version = "1.0.0"
+ dependencies = [
+  "anyhow",
+  "cc",
+@@ -343,7 +343,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "26.9.0"
++version = "1.0.0"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+@@ -364,7 +364,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_host"
+-version = "26.9.0"
++version = "1.0.0"
+ dependencies = [
+  "anyhow",
+  "chewing",
+@@ -2665,7 +2665,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
+ 
+ [[package]]
+ name = "tsfreg"
+-version = "26.9.0"
++version = "1.0.0"
+ dependencies = [
+  "chewing_tip_core",
+  "scoped-error",
+diff --git a/Cargo.toml b/Cargo.toml
+index e3d905f..4e8b0bd 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -10,7 +10,7 @@ members = [
+ ]
+ 
+ [workspace.package]
+-version = "26.9.0"
++version = "1.0.0"
+ 
+ [workspace.dependencies]
+ anyhow = "1"
+diff --git a/crates/chewing_preferences/Cargo.toml b/crates/chewing_preferences/Cargo.toml
+index eec4ed8..7c6b1c9 100644
+--- a/crates/chewing_preferences/Cargo.toml
++++ b/crates/chewing_preferences/Cargo.toml
+@@ -1,6 +1,6 @@
+ [package]
+ name = "chewing_preferences"
+-version = "26.9.0"
++version = "1.0.0"
+ edition = "2024"
+ description = "AI新酷音輸入法設定"
+ 
+diff --git a/crates/chewing_preferences/src/main.rs b/crates/chewing_preferences/src/main.rs
+index 5d3a9ab..4eed6f0 100644
+--- a/crates/chewing_preferences/src/main.rs
++++ b/crates/chewing_preferences/src/main.rs
+@@ -454,7 +454,7 @@ unsafe extern "system" fn wnd_proc(
+                                 MessageBoxW(
+                                     Some(hwnd),
+                                     w!(" 設定已成功套用並儲存至 Windows 登錄表！\n新設定已即時生效。\n\n（AI 智慧功能已依需求暫緩開發並安全停用）"),
+-                                    w!("AI新酷音輸入法設定"),
++                                    w!("AI新酷音輸入法設定 v1.0.0"),
+                                     MB_OK | MB_ICONINFORMATION,
+                                 )
+                             };
+@@ -559,7 +559,7 @@ fn main() -> windows::core::Result<()> {
+         let hwnd = CreateWindowExW(
+             Default::default(),
+             class_name,
+-            w!("AI新酷音輸入法設定"),
++            w!("AI新酷音輸入法設定 v1.0.0"),
+             WS_OVERLAPPEDWINDOW & !windows::Win32::UI::WindowsAndMessaging::WS_MAXIMIZEBOX,
+             150, 150, 695, 680,
+             None,
+diff --git a/crates/tsfreg/src/main.rs b/crates/tsfreg/src/main.rs
+index 8b44745..e162ea2 100644
+--- a/crates/tsfreg/src/main.rs
++++ b/crates/tsfreg/src/main.rs
+@@ -50,8 +50,8 @@ fn register(icon_path: String) -> Result<()> {
+             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)?;
+ 
+         let pw_icon_path = icon_path.encode_utf16().collect::<Vec<_>>();
+-        let desc_zh_tw = "AI新酷音（預覽版）".encode_utf16().collect::<Vec<_>>();
+-        let desc_zh_cn = "AI新酷音（簡體預覽版）".encode_utf16().collect::<Vec<_>>();
++        let desc_zh_tw = "AI新酷音".encode_utf16().collect::<Vec<_>>();
++        let desc_zh_cn = "AI新酷音（簡體）".encode_utf16().collect::<Vec<_>>();
+ 
+         // Register for zh_TW
+         let mut lcid = LocaleNameToLCID(w!("zh-TW"), 0);
+@@ -95,7 +95,7 @@ fn register(icon_path: String) -> Result<()> {
+         }
+ 
+         let key = CURRENT_USER.create(r"Software\Classes\CLSID\{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}")?;
+-        key.set_string("", "AI新酷音（預覽版）")?;
++        key.set_string("", "AI新酷音")?;
+     }
+ 
+     Ok(())
+@@ -116,28 +116,11 @@ fn unregister() -> Result<()> {
+             }
+         }
+ 
+-        // Unregister zh_TW profile
+-        let mut lcid = LocaleNameToLCID(w!("zh-TW"), 0);
+-        if matches!(lcid, 0 | 0x0C00 | 0x1000) {
+-            lcid = 0x404;
+-        }
+-        input_processor_profile_mgr.UnregisterProfile(
+-            &CHEWING_TSF_CLSID,
+-            lcid as u16,
+-            &CHEWING_ZH_TW_PROFILE_GUID,
+-            0,
+-        )?;
+-        // Unregister zh_CN profile
+-        let mut lcid = LocaleNameToLCID(w!("zh-CN"), 0);
+-        if matches!(lcid, 0 | 0x0C00 | 0x1000) {
+-            lcid = 0x804;
+-        }
+-        input_processor_profile_mgr.UnregisterProfile(
+-            &CHEWING_TSF_CLSID,
+-            lcid as u16,
+-            &CHEWING_ZH_CN_PROFILE_GUID,
+-            0,
+-        )?;
++        // Remove the entire isolated TSF service, including every language
++        // profile. Never leave a selectable preview profile behind.
++        let profiles: ITfInputProcessorProfiles =
++            CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)?;
++        profiles.Unregister(&CHEWING_TSF_CLSID)?;
+     }
+ 
+     Ok(())
+diff --git a/tip/rc/version.rc b/tip/rc/version.rc
+index e19e228..3a124d4 100644
+--- a/tip/rc/version.rc
++++ b/tip/rc/version.rc
+@@ -1,8 +1,8 @@
+-#define VER_FILEVERSION             26,9,0,0
+-#define VER_FILEVERSION_STR         "26.9.0.0\0"
+-#define VER_PRODUCTVERSION          26,9,0,0
+-#define VER_PRODUCTVERSION_STR      "26.9.0.0\0"
+-#define ABOUT_CAPTION_WITH_VER      "關於新酷音輸入法 (26.9.0.0)\0"
+-#define ABOUT_VERSION_STR           "版本：26.9.0.0\0"
+-#define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 09 月 26 日\0"
+-#define PREFS_TITLE_WITH_VER        "設定新酷音輸入法 (26.9.0.0)\0"
++#define VER_FILEVERSION             1,0,0,0
++#define VER_FILEVERSION_STR         "1.0.0.0\0"
++#define VER_PRODUCTVERSION          1,0,0,0
++#define VER_PRODUCTVERSION_STR      "1.0.0.0\0"
++#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.0.0.0)\0"
++#define ABOUT_VERSION_STR           "版本：1.0.0.0\0"
++#define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 11 月 05 日\0"
++#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.0.0.0)\0"
+-- 
+2.55.0.windows.3
+

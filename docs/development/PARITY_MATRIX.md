@@ -24,4 +24,4 @@
 | 舊更新與 MSI | 停用啟用輸入法時的同步上游更新；拒絕會產生上游身分 MSI 的兩個舊入口 | 專案自身更新管道尚未實作 |
 | Linux/Fcitx5 | 歷史草稿 | 本輪未建置、未交付 |
 
-完整計數、來源版本與命令放在 [驗證報告](../verification/runs/RUN-20261105-CODEX-PARITY-01.md)。目前未達 AI-Bopomofo 0.6.14 全功能對齊，也未通過正式發布的實鍵驗收。
+最新版本與解除安裝驗證見 [v1.0.0 報告](../verification/runs/RUN-20261105-V1-RELEASE-03.md)；原始功能驗證見 [首次報告](../verification/runs/RUN-20261105-CODEX-PARITY-01.md)。目前未達 AI-Bopomofo 0.6.14 全功能對齊，完整應用／鍵盤驗收仍未完成；v1.0.0 版號由使用者指定。

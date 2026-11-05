@@ -50,6 +50,12 @@ foreach ($entry in $payload.GetEnumerator()) {
     Copy-Item -LiteralPath $entry.Value -Destination $destination
     $hashes[$entry.Key] = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
 }
+$versionPath = Join-Path $OutputDirectory 'version.json'
+@{
+    product_version = $Version
+    build_date = [DateTimeOffset]::Now.ToOffset([TimeSpan]::FromHours(8)).ToString('yyyy-MM-ddTHH:mm:sszzz')
+} | ConvertTo-Json | Set-Content -LiteralPath $versionPath -Encoding UTF8
+$hashes['version.json'] = (Get-FileHash -LiteralPath $versionPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $manifest = [ordered]@{
     schema_version = 1
     product = 'AI-Chewing'
