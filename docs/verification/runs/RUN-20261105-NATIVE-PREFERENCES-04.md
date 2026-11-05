@@ -1,5 +1,7 @@
 # 原生設定頁恢復驗證
 
+更新時間：2026-11-05T18:34:45+08:00
+
 ## 原因與修復
 
 1.0.0 的 `ChewingPreferences.exe` 是簡化 Win32 面板，只提供少量選項；核心仍支援空白鍵選字、字型與大小，但 UI 沒有入口。獨立登錄設定區也未帶入使用者既有值。WorkstationX 原設定的 ShowCandWithSpaceKey=1、DefFontSize=16、DefFontFamily=Segoe UI、CandPerRow=9，在 ChewingDev 區原先皆不存在。
@@ -38,4 +40,14 @@ GUI、實體按鍵、候選字大小與滑桿互動：NOT_RUN，須使用者驗�
 
 ## 交付狀態
 
-完整來源重現、套件驗證、安裝與使用者驗收結果待本輪後續補記。1.0.0 發布資產保持不變，尚未發布 1.0.1。
+十二份原生 patch 與一份設定頁 patch 已在 Windows 的新 worktree 從各自基準套用，完整 tree 均一致；兩組 -Check：PASS。過程抓到 Windows checkout 換行轉換造成設定頁 patch SHA 不符，已新增 -text 屬性並重新取出正確檔案後通過，未略過雜湊檢查。
+
+Windows workspace check --locked、真實套件 preflight：PASS。已安裝 1.0.1；COM 與 current.json 指向 `versions/1.0.1-b5dc92e1fb8f`，DLL 版本 1.0.1.0，已安裝應用顯示 1.0.1。安裝前後 ChewingDev 偏好匯出 SHA-256 相同。安裝驗證 runner 最後曾因未載入檢查函式而報錯；另行載入 package guard 後，已完成安裝檔案雜湊與偏好保留檢查，沒有重複安裝。
+
+- 封裝外層來源：`c5e30ca`。
+- Windows ZIP SHA-256：`146ed216daeb78400b580dbf1df357056860054b6c4011428e172c1883c95a75`。
+- 完整來源 ZIP SHA-256：`63e441f817f42ac7342571fc013c0f8a6c973fcfd49d6f4454d852ff82103101`。
+- Windows 交付：`Documents\AI-Chewing\1.0.1`；備份：`Documents\AI-Chewing\verification-1.0.1`。
+- Mac 保存：`/Users/defu/Documents/AI Chewing/1.0.1/`；只存 Windows 成品，未改動 Mac 輸入法。
+
+已請使用者直接開啟新版 ChewingPreferences.exe 驗收設定頁、儲存與空白鍵選字。GUI／實體按鍵結果仍待回覆；不將自動測試視為 GUI 通過。1.0.0 發布資產保持不變，尚未發布 1.0.1。
