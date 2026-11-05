@@ -1,6 +1,6 @@
 # 原生設定頁恢復驗證
 
-更新時間：2026-11-05T18:34:45+08:00
+更新時間：2026-11-05T18:55:22+08:00
 
 ## 原因與修復
 
@@ -30,7 +30,7 @@
 
 前端 TypeScript／Vite production build、Windows Tauri release build（custom-protocol）、原生 DLL／tsfreg release build：PASS。前端仍有 bundle 大小提示；原生仍有 dead-code／unused-variable／LNK4104 警告，不宣稱無警告。Mac 未安裝 Cargo，policy 測試在 Windows 執行並通過，未宣稱 Mac policy 測試通過。
 
-GUI、實體按鍵、候選字大小與滑桿互動：NOT_RUN，須使用者驗收。未執行 GUI、自動打字或音效測試。
+使用者已回覆「設定頁與選字都正常」，確認本輪設定頁與選字驗收通過。這是使用者實際操作回報；未由代理執行 GUI、自動打字或音效測試，也不擴張為所有應用／按鍵情境皆通過。
 
 ## Agy 分工與驗收
 
@@ -50,4 +50,8 @@ Windows workspace check --locked、真實套件 preflight：PASS。已安裝 1.0
 - Windows 交付：`Documents\AI-Chewing\1.0.1`；備份：`Documents\AI-Chewing\verification-1.0.1`。
 - Mac 保存：`/Users/defu/Documents/AI Chewing/1.0.1/`；只存 Windows 成品，未改動 Mac 輸入法。
 
-已請使用者直接開啟新版 ChewingPreferences.exe 驗收設定頁、儲存與空白鍵選字。GUI／實體按鍵結果仍待回覆；不將自動測試視為 GUI 通過。1.0.0 發布資產保持不變，尚未發布 1.0.1。
+使用者已確認新版設定頁與選字正常。另回報右下角仍開啟簡化滑桿視窗；實際檢查發現 Explorer PID 1720 載入的是 preview.20261105.4 的 DLL，而安裝指標已是 1.0.1。已說明儲存工作後登出再登入以載入新版；未強制終止 Explorer。新版 ID_CONFIG 直接開啟同版本的完整 ChewingPreferences.exe，F 延遲位於「其他設定」。右下角入口在重新登入後的實際結果尚未回報。1.0.0 發布資產保留。
+
+## 共用 Windows 工作目錄
+
+依使用者要求，改用 `C:\Users\Defu\Documents\gis-code\chewing-kanata-lab` 與 Agy 共用。原有 AI 修改先以完整 Git bundle、binary diff 與未追蹤檔備份，再保存在原生研究分支 `research/agy-ai-before-settings-20261105`（commit `e66ef6c`）；未混入已驗收版本。備份為 `Documents\AI-Chewing\shared-workspace-backup-20261105T185040`。共用外層、原生及設定頁各使用 `fix/shared-native-settings` 分支，檔案與本輪驗收來源一致。Agy 交接通知使用既有 CLI 對話；第一次回覆 503，未宣稱已收到確認。

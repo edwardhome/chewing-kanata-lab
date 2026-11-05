@@ -1,20 +1,18 @@
-# 目前發布版本：v1.0.0
+# 目前發布版本：v1.0.1
 
-更新時間：2026-11-05T17:50:35+08:00
+更新時間：2026-11-05T18:55:22+08:00
 
-使用者指定將已驗收的 Windows 修正版定為 v1.0.0。WorkstationX 已完成升級、實際解除安裝、確認註冊移除與重新安裝；現在顯示「AI新酷音」，不再使用預覽版名稱。
+1.0.1 恢復原生完整設定頁、空白鍵選字、候選字型／大小與相關選項，保留 F 延遲滑桿。使用者已確認「設定頁與選字都正常」。
 
-- 98 個無介面案例通過，0 失敗、0 跳過；release build 與 workspace check 通過。
-- 十一份原生修補可重現相同完整 tree，DLL 檔案／產品版本為 1.0.0.0。
-- Windows「已安裝的應用程式」加入 AI新酷音 1.0.0 解除安裝入口；保留偏好、使用者詞庫與版本備份。
-- 同一獨立 GUID 升級，不建立另一個產品；其他 TSF 名稱／profile 清單與 ChewingDev 偏好比對未變。
-- 使用者已在前版確認中文閒置 Enter／Backspace 與滑桿正常；本輪不修改這些行為。其他應用與完整實鍵驗收未完成。
-- Ollama 原生整合、糾正／預測與學習詞庫尚未完成；AI 預設關閉。版號不代表這些功能已完成。
-- 套件未簽署；發布附件包含 Windows 安裝包、完整原生與共用政策來源、manifest 與 SHA-256。
+- 89 項無介面測試通過；前端與 Windows release build、workspace check、來源完整 tree 重現、套件雜湊與安裝檢查通過。
+- 以同一獨立身分升級，安裝前後偏好相同。保留 1.0.0 檔案與發布附件。
+- 右下角若仍顯示舊滑桿視窗，請儲存工作後登出再登入；已查證 Explorer 仍載入 .4 預覽版 DLL，不是 1.0.1 未安裝。
+- 設定程式需要 WebView2。套件附完整來源、原版授權、manifest 與 SHA-256；未簽署。
+- Ollama 原生整合、AI 糾正／預測與學習詞庫尚未完成，AI 維持關閉；獨立詞庫 GUI 編輯器不包含於本次。
 
-[下載 v1.0.0](https://github.com/edwardhome/chewing-kanata-lab/releases/tag/v1.0.0)；[本輪驗證報告](../verification/runs/RUN-20261105-V1-RELEASE-03.md)；[功能對齊與未完成範圍](../development/PARITY_MATRIX.md)。
+[下載 v1.0.1](https://github.com/edwardhome/chewing-kanata-lab/releases/tag/v1.0.1)；[驗證與使用者回報](../verification/runs/RUN-20261105-NATIVE-PREFERENCES-04.md)；[共用 Windows 工作目錄](../development/SHARED_WINDOWS_WORKSPACE.md)。
 
-前版 .4 的紀錄保留於 [回歸報告](../verification/runs/RUN-20261105-INPUT-SETTINGS-02.md)。版本備份保留是為了追溯與回復，不代表仍有另一個預覽版註冊。
+前版：[v1.0.0 驗證報告](../verification/runs/RUN-20261105-V1-RELEASE-03.md)。
 
 ## 歷史報告（不代表目前狀態）
 
