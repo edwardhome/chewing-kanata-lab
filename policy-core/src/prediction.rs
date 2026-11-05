@@ -9,7 +9,7 @@
 //! * Only the **suffix** (the part after the prefix) is returned, as a sub-slice.
 //! * Empty prefix, prefix > 256 Unicode scalars, or prefix mismatch → `None`.
 //! * Empty / whitespace-only suffix → `None`.
-//! * Suffix must not contain ASCII control characters (< 0x20) or DEL (0x7F),
+//! * Suffix must not contain any Unicode control character (`char::is_control()`)
 //!   nor Unicode line/paragraph separators (U+2028 / U+2029).
 //! * **English**: suffix ≤ 32 chars, ≤ 4 words, only ASCII letters and ordinary spaces (U+0020).
 //! * **Traditional Chinese**: suffix ≤ 8 Unicode scalars.
@@ -37,8 +37,8 @@ const PARA_SEP: char = '\u{2029}';
 /// 3. `candidate` starts with the byte-exact bytes of `prefix`.
 /// 4. The suffix (bytes after the prefix) is non-empty.
 /// 5. The suffix is not whitespace-only.
-/// 6. The suffix contains no ASCII control characters (U+0000–U+001F, U+007F)
-///    and no Unicode line/paragraph separators (U+2028, U+2029).
+/// 6. The suffix contains no Unicode control characters (`char::is_control()`)
+///    and no line/paragraph separators (U+2028, U+2029).
 /// 7. Language-specific constraints:
 ///    - `English`: only ASCII letters (a-z, A-Z) and ordinary ASCII spaces (U+0020);
 ///      ≤ 32 bytes/chars; ≤ 4 space-separated words.
@@ -79,8 +79,11 @@ pub fn validate_and_extract_continuation<'a>(
     }
 
     // ── 7. Suffix must not contain control chars or line/para separators ──────
+    // ch.is_control() covers all Unicode control characters (C0: U+0000–U+001F,
+    // DEL U+007F, C1: U+0080–U+009F, and category Cc), which subsumes the old
+    // manual ASCII-range check and also rejects e.g. U+0085 NEL, U+009B CSI.
     for ch in suffix.chars() {
-        if (ch as u32) < 0x20 || ch == '\x7F' || ch == LINE_SEP || ch == PARA_SEP {
+        if ch.is_control() || ch == LINE_SEP || ch == PARA_SEP {
             return None;
         }
     }
@@ -101,10 +104,9 @@ pub fn validate_and_extract_continuation<'a>(
 /// English suffix rules:
 /// * Only ASCII letters (a-z, A-Z) and ordinary spaces (U+0020).
 /// * ≤ 32 characters (all ASCII, so char count == byte count here).
-/// * ≤ 4 space-separated words (splitting on single spaces; leading/trailing
-///   spaces would have already been caught by the whitespace-only check, but
-///   we also reject leading/trailing spaces here as the suffix should start and
-///   end with a letter for a valid English continuation).
+/// * ≤ 4 space-separated words (non-empty segments when split on space).
+///   Leading or trailing spaces are permitted by spec; the whitespace-only
+///   check upstream already rejects all-space suffixes.
 fn validate_english_suffix(suffix: &str) -> Option<()> {
     // Only ASCII letters and spaces allowed.
     if !suffix.chars().all(|c| c.is_ascii_alphabetic() || c == ' ') {
@@ -116,12 +118,8 @@ fn validate_english_suffix(suffix: &str) -> Option<()> {
         return None;
     }
 
-    // Must not start or end with a space (the suffix extends an existing word or
-    // begins a new one; leading space is fine, e.g. " learning" after "machine",
-    // but the suffix must not be purely space which is already checked above, and
-    // trailing spaces are disallowed as they produce no word).
-    // Per spec: "English suffix permits only ASCII letters and ordinary spaces, ≤ 32
-    // characters and ≤ 4 words."  We count non-empty words split by spaces.
+    // Count non-empty words (segments between spaces).
+    // Leading/trailing spaces are allowed per spec; they simply contribute no word.
     let word_count = suffix
         .split(' ')
         .filter(|w| !w.is_empty())
@@ -177,23 +175,17 @@ mod tests {
 
     #[test]
     fn accepts_english_suffix_at_exact_32_chars() {
-        // 32-char suffix: 4 words, ASCII letters + spaces
-        let prefix = "a";
-        let suffix = "bcde fghi jklm nopq"; // 19 chars; test exact boundary separately
-        let candidate = format!("{prefix}{suffix}");
-        assert!(en(prefix, &candidate).is_some());
+        // Exactly 32 ASCII letters (1 word) → accepted.
+        let suffix_32 = "a".repeat(32);
+        assert_eq!(suffix_32.len(), 32);
+        let candidate_32 = format!("x{suffix_32}");
+        assert_eq!(en("x", &candidate_32), Some(suffix_32.as_str()));
 
-        // Build a suffix that is exactly 32 characters.
-        // "abcd efgh ijkl mnop qrst uvwx yz a" = 32 chars, 7 words → rejected (>4)
-        // Build 4 words totalling 32 chars: "abcdefgh ijklmnop qrstuvwx yzabcde" = 35 → too long
-        // "one two four five" = 17 chars, 4 words → accepted
-        let s32 = "bc de fg hi jk lm no pq rs tu vwx"; // 33 chars → rejected
-        let c33 = format!("a{s32}");
-        assert!(en("a", &c33).is_none(), "33-char suffix should be rejected");
-
-        // exactly 32:
-        let s = "bc de fg hi jk lm no pq rs tu vw"; // 32 chars, many words → >4 words rejected
-        let _ = s; // Words count check takes precedence; just confirm ≤32 alone isn't enough.
+        // Exactly 33 ASCII letters (1 word) → rejected.
+        let suffix_33 = "a".repeat(33);
+        assert_eq!(suffix_33.len(), 33);
+        let candidate_33 = format!("x{suffix_33}");
+        assert_eq!(en("x", &candidate_33), None, "33-char suffix must be rejected");
     }
 
     #[test]
@@ -305,6 +297,32 @@ mod tests {
         // U+2029 PARAGRAPH SEPARATOR
         let candidate = format!("今天{}", '\u{2029}');
         assert_eq!(zh("今天", &candidate), None);
+    }
+
+    #[test]
+    fn rejects_chinese_suffix_with_c1_nel_before_han() {
+        // U+0085 NEL (C1 control, NOT caught by the old ASCII < 0x20 filter).
+        // Followed by a Han character to prevent whitespace-only masking.
+        let candidate = format!("今天\u{0085}吃飯");
+        assert_eq!(zh("今天", &candidate), None, "U+0085 NEL must be rejected");
+    }
+
+    #[test]
+    fn rejects_chinese_suffix_with_c1_csi_before_han() {
+        // U+009B CSI (C1 control, NOT caught by the old ASCII < 0x20 filter).
+        // Followed by a Han character to prevent whitespace-only masking.
+        let candidate = format!("今天\u{009B}吃飯");
+        assert_eq!(zh("今天", &candidate), None, "U+009B CSI must be rejected");
+    }
+
+    #[test]
+    fn accepts_english_suffix_with_leading_space() {
+        // Leading space is preserved as-is per spec; not trimmed.
+        // " learning" after "machine" → 1 word, 9 chars ≤ 32 → accepted.
+        assert_eq!(en("machine", "machine learning"), Some(" learning"));
+        // Leading space + word returned unchanged (no trim).
+        let result = en("go", "go fast");
+        assert_eq!(result, Some(" fast"));
     }
 
     // ─────────────────────── ENGLISH-SPECIFIC RULES ───────────────────────────
