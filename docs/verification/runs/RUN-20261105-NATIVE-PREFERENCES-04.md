@@ -55,3 +55,5 @@ Windows workspace check --locked、真實套件 preflight：PASS。已安裝 1.0
 ## 共用 Windows 工作目錄
 
 依使用者要求，改用 `C:\Users\Defu\Documents\gis-code\chewing-kanata-lab` 與 Agy 共用。原有 AI 修改先以完整 Git bundle、binary diff 與未追蹤檔備份，再保存在原生研究分支 `research/agy-ai-before-settings-20261105`（commit `e66ef6c`）；未混入已驗收版本。備份為 `Documents\AI-Chewing\shared-workspace-backup-20261105T185040`。共用外層、原生及設定頁各使用 `fix/shared-native-settings` 分支，檔案與本輪驗收來源一致。Agy 交接通知使用既有 CLI 對話；第一次回覆 503，未宣稱已收到確認。
+
+共用路徑的原生 `cargo check --workspace --locked` 與設定頁 `cargo check --release --locked --manifest-path src-tauri/Cargo.toml --features tauri/custom-protocol` 均已實際執行並通過；不只是複製檔案。兩組驗收來源 tree 核對一致。
