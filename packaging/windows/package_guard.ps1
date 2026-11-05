@@ -92,3 +92,28 @@ function Invoke-ChewingDevRegistration {
         $process.Dispose()
     }
 }
+
+# TSF profile registration is machine-level even though the COM server and
+# payload are per-user. Keep elevation in the same user account.
+function Assert-ChewingInstallUser([string]$ExpectedUserSid) {
+    if ($ExpectedUserSid -and [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -cne $ExpectedUserSid) {
+        throw 'Please approve elevation with the same Windows account that owns this installation.'
+    }
+}
+
+function Invoke-ChewingElevationIfNeeded([string]$ScriptPath, [hashtable]$Parameters = @{}) {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { return $false }
+    $Parameters['ExpectedUserSid'] = $identity.User.Value
+    $command = "& '" + $ScriptPath.Replace("'", "''") + "'"
+    foreach ($entry in $Parameters.GetEnumerator()) {
+        if ($entry.Key -notmatch '^[A-Za-z]+$') { throw 'Invalid elevation parameter.' }
+        $command += " -" + $entry.Key + " '" + ([string]$entry.Value).Replace("'", "''") + "'"
+    }
+    $command = "try { `$ErrorActionPreference='Stop'; " + $command + "; exit 0 } catch { Write-Error `$_; exit 1 }"
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded)
+    if ($process.ExitCode -ne 0) { throw 'The elevated install or uninstall did not complete.' }
+    return $true
+}

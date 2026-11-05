@@ -2,20 +2,32 @@
 param(
     [switch]$NonInteractive,
     [string]$PackageDirectory = $PSScriptRoot,
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    [string]$ExpectedUserSid
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'package_guard.ps1')
+Assert-ChewingInstallUser $ExpectedUserSid
 
 # 必須在任何登錄、複製、程序操作之前完成。舊套件沒有 manifest，直接拒絕。
 $manifest = Assert-ChewingDevPackage -Directory $PackageDirectory
 if ($ValidateOnly) { Write-Output 'Package preflight passed; no changes made.'; return }
+if (Invoke-ChewingElevationIfNeeded -ScriptPath $PSCommandPath -Parameters @{PackageDirectory = (Resolve-Path -LiteralPath $PackageDirectory).Path}) { return }
 
 $baseDir = Join-Path $env:LOCALAPPDATA 'Programs\ChewingDev'
 $targetDir = Join-Path $baseDir ('versions\' + $manifest.version + '-' + $manifest.windows_source_commit.Substring(0, 12))
 $regBase = 'HKCU:\Software\Classes\CLSID\{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}'
 $inproc = Join-Path $regBase 'InProcServer32'
 $progId = 'HKCU:\Software\Classes\AI-Chewing.TextService'
+$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AI-Chewing'
+$previousUninstall = @{}
+$hadUninstallEntry = Test-Path -LiteralPath $uninstallKey
+if ($hadUninstallEntry) {
+    $key = Get-Item -LiteralPath $uninstallKey
+    foreach ($name in $key.GetValueNames()) {
+        $previousUninstall[$name] = @{Value = $key.GetValue($name); Kind = $key.GetValueKind($name).ToString()}
+    }
+}
 $previousDll = $null
 if (Test-Path -LiteralPath $inproc) { $previousDll = (Get-Item -LiteralPath $inproc).GetValue('') }
 
@@ -47,7 +59,7 @@ if (Test-Path -LiteralPath $targetDir) {
 # 只寫獨立的 HKCU COM 身分，不修改正式新酷音、詞庫、設定或系統預設來源。
 try {
     New-Item -Path $regBase -Force | Out-Null
-    Set-Item -LiteralPath $regBase -Value 'AI新酷音（預覽版）'
+    Set-Item -LiteralPath $regBase -Value 'AI新酷音'
     New-Item -Path (Join-Path $regBase 'ProgID') -Force | Out-Null
     Set-Item -LiteralPath (Join-Path $regBase 'ProgID') -Value 'AI-Chewing.TextService'
     New-Item -Path (Join-Path $progId 'CLSID') -Force | Out-Null
@@ -62,9 +74,30 @@ try {
         version_directory = $targetDir
         previous_dll = $previousDll
     } | ConvertTo-Json)
+    # Expose a supported removal entry in Windows Installed apps. Do not rely
+    # on the keyboard list to remove a registered third-party TSF service.
+    New-Item -Path $uninstallKey -Force | Out-Null
+    $uninstallCommand = '"' + (Join-Path $PSHOME 'powershell.exe') + '" -NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $targetDir 'do_uninstall.ps1') + '"'
+    foreach ($entry in @{
+        DisplayName = 'AI新酷音'; DisplayVersion = $manifest.version
+        Publisher = 'AI-Chewing contributors'; InstallLocation = $targetDir
+        DisplayIcon = (Join-Path $targetDir 'chewing.ico'); UninstallString = $uninstallCommand
+    }.GetEnumerator()) {
+        New-ItemProperty -LiteralPath $uninstallKey -Name $entry.Key -Value $entry.Value -PropertyType String -Force | Out-Null
+    }
+    foreach ($name in @('NoModify', 'NoRepair')) {
+        New-ItemProperty -LiteralPath $uninstallKey -Name $name -Value 1 -PropertyType DWord -Force | Out-Null
+    }
     Move-Item -LiteralPath $pointerTemp -Destination (Join-Path $baseDir 'current.json') -Force
 } catch {
     $failure = $_
+    if (Test-Path -LiteralPath $uninstallKey) { Remove-Item -LiteralPath $uninstallKey -Recurse -Force }
+    if ($hadUninstallEntry) {
+        New-Item -Path $uninstallKey -Force | Out-Null
+        foreach ($entry in $previousUninstall.GetEnumerator()) {
+            New-ItemProperty -LiteralPath $uninstallKey -Name $entry.Key -Value $entry.Value.Value -PropertyType $entry.Value.Kind -Force | Out-Null
+        }
+    }
     if ($previousDll) {
         Set-Item -LiteralPath $inproc -Value $previousDll
     } else {

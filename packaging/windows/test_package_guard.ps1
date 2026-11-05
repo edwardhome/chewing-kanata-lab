@@ -157,6 +157,18 @@ exit 0
 '@
         Invoke-ChewingDevRegistration -Executable $shell -Arguments @('-NoProfile', '-File', $child, 'C:\path with space\"quoted"\tail\')
     }
+    if ($env:OS -eq 'Windows_NT') {
+        Case 'Elevation accepts the owner and rejects another Windows account' {
+            Assert-ChewingInstallUser ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+            $rejected = $false
+            try { Assert-ChewingInstallUser 'S-1-0-0' }
+            catch {
+                if ($_.Exception.Message -notmatch 'same Windows account') { throw }
+                $rejected = $true
+            }
+            if (-not $rejected) { throw 'Cross-account elevation was accepted.' }
+        }
+    }
     Write-Output "$script:passed package guard cases passed."
 } finally {
     Remove-Item -LiteralPath $testRoot -Recurse -Force
