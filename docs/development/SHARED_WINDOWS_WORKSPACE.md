@@ -6,9 +6,9 @@
 
 | 儲存庫 | 當前工作分支 | 已驗收的原生來源 |
 | --- | --- | --- |
-| 外層 chewing-kanata-lab | fix/shared-native-settings | PR #4 的整合內容 |
-| upstream/windows-chewing-tsf | fix/shared-native-settings | b5dc92e1fb8f974ed40c79b8bd31907fd2b2dd28 |
-| upstream/windows-chewing-preferences | fix/shared-native-settings | ed957f4c6dc2fea261e608ead9589cd0719577a4 |
+| 外層 chewing-kanata-lab | feature/ollama-phrase-prediction | PR #4 的整合內容 |
+| upstream/windows-chewing-tsf | feature/ollama-phrase-prediction | b5dc92e1fb8f974ed40c79b8bd31907fd2b2dd28 |
+| upstream/windows-chewing-preferences | feature/ollama-phrase-prediction | ed957f4c6dc2fea261e608ead9589cd0719577a4 |
 
 本輪 Codex 負責整合、安裝與發布；Agy 負責原生設定來源及隔離方案審查。共用資料夾不是兩個代理可以同時切換分支或修改同一檔案的授權；領取下一項工作前先協調檔案範圍。未完成的 AI 實驗不得直接覆蓋已驗收版本。
 
@@ -17,3 +17,7 @@ Agy 原有四個未提交檔案已保存於原生分支 `research/agy-ai-before-
 原先 `ckai-codex` 與 `ckai-package-source` 保留為歷史建置／來源參考，不刪除。未合併實驗及私人詞庫均未發布。
 
 目前安裝 1.0.1，使用者確認完整設定頁與選字正常。F 延遲在完整設定頁的「其他設定」。右下角「設定」由當前載入的輸入法 DLL 開啟同版本 EXE；Explorer 若仍載入舊 DLL，應由使用者儲存工作後登出登入，避免直接覆寫仍使用中的舊套件。
+
+## 目前工作：Ollama 詞組預測
+
+使用者指定 AGY 負責獨立分支的實作與編譯，Codex 負責驗收；詳見 [開發任務](../tasks/OLLAMA_PHRASE_PREDICTION_AGY.md)。AGY 開始後，Codex 不在相同檔案平行修改或切換分支。已安裝的 1.0.1 保持不變。
