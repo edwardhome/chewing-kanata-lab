@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
+  "tree": "2d0f4bf0e865969ac4704ab8e87448ca4a4f762b",
+  "patches": [
+    {
+      "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
+      "sha256": "fcf0414a1fd0e2e32a1ac630f529279dbf5c76350217c8c693878b862c2eab2a"
+    },
+    {
+      "file": "0002-feat-tip-integrate-local-Ollama-AI-client-and-determ.patch",
+      "sha256": "36ba2065876929274b05bf372370ebc875703e648bcc98f41a0e6707c05ef90d"
+    },
+    {
+      "file": "0003-fix-tip-add-sandbox-detection-guard-and-mutex-synchr.patch",
+      "sha256": "4a58a5bd1d7e66646f5aaca18d8083082b38cd333b55572b8587812615fdc121"
+    },
+    {
+      "file": "0004-feat-kanata-implement-AI-Bopomofo-v2-F-layer-delay-c.patch",
+      "sha256": "28c0d4612a8f7b6bdc00eebeccaf7c4b75a4f38e62cdce492681f5a815ba441e"
+    },
+    {
+      "file": "0005-fix-menu-prevent-menu-crash-by-properly-sizing-separ.patch",
+      "sha256": "0b616cae1826f22173b7dcce203ec774dfbc2216652bc0a7aaf1dcf2603d86b1"
+    },
+    {
+      "file": "0006-fix-tsf-fix-preferences-freeze-F-layer-in-English-co.patch",
+      "sha256": "73676a5ae2ae26af39eafcbed0fa30d6ad72db31f873b945c88e68a0b0f66636"
+    },
+    {
+      "file": "0007-fix-tsf-isolate-runtime-and-preserve-editable-Englis.patch",
+      "sha256": "00a316a6735c7618ae4c619442425af218adf0cbfda672ed7530768498b2c5f4"
+    },
+    {
+      "file": "0008-fix-startup-disable-upstream-updates-and-unsafe-lega.patch",
+      "sha256": "a80abe87f019c1c3aec22a59ff2e8c0b8e46e0fac888adb82fc8f30923c3b184"
+    },
+    {
+      "file": "0009-fix-registration-distinguish-isolated-preview-input-.patch",
+      "sha256": "046300aee6ff03695a55dafea1379f33b456c10afac6c75b754f5ee86f7ea127"
+    },
+    {
+      "file": "0010-fix-input-restore-idle-editing-keys-and-release-sett.patch",
+      "sha256": "b37f1212b4a4fcb63a64589c873a01392d6fd4933aa0d5f82df336e40f85e872"
+    }
+  ],
+  "native_commit": "4a38766f59a96cb4c3eb5d34dde1c122db0a6d5d"
+}

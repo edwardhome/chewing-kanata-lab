@@ -1,0 +1,1472 @@
+From 7e3be5c9622212f4def3d4dfc410976c86abc7d3 Mon Sep 17 00:00:00 2001
+From: CKAI Dev <ckai-dev@local>
+Date: Thu, 5 Nov 2026 02:45:28 +0800
+Subject: [PATCH] fix(tsf): isolate runtime and preserve editable English and F
+ composition
+
+---
+ Cargo.lock                                    |   4 +
+ crates/chewing_preferences/src/main.rs        |  53 +-
+ crates/chewing_tip_core/Cargo.toml            |   1 +
+ crates/chewing_tip_core/src/config.rs         |  15 +-
+ crates/chewing_tip_core/src/ipc/named_pipe.rs |   2 +-
+ crates/chewing_tip_core/src/shell.rs          |  35 +-
+ crates/chewing_tip_core/src/update/config.rs  |   6 +-
+ .../src/text_service/chewing.rs               |   2 +-
+ crates/tsfreg/src/main.rs                     | 118 ++--
+ tip/src/text_service/chewing.rs               | 519 ++++++++----------
+ tip/src/text_service/edit_session.rs          |   4 +-
+ tip/src/text_service/key_event.rs             |   6 +-
+ tip/src/text_service/mod.rs                   |  11 +-
+ .../ui_elements/candidate_list.rs             |   7 +-
+ 14 files changed, 376 insertions(+), 407 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index f359afc..7987760 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -304,6 +304,10 @@ dependencies = [
+ [[package]]
+ name = "chewing-policy-core"
+ version = "0.1.0"
++dependencies = [
++ "serde",
++ "serde_json",
++]
+ 
+ [[package]]
+ name = "chewing_preferences"
+diff --git a/crates/chewing_preferences/src/main.rs b/crates/chewing_preferences/src/main.rs
+index 78429cd..a2b59b6 100644
+--- a/crates/chewing_preferences/src/main.rs
++++ b/crates/chewing_preferences/src/main.rs
+@@ -27,7 +27,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
+ };
+ use windows_registry::CURRENT_USER;
+ 
+-const REG_KEY: &str = r"Software\ChewingTextService";
++const REG_KEY: &str = r"Software\ChewingDev";
+ 
+ // Win32 constants
+ const TBM_GETPOS: u32 = 1024;
+@@ -140,7 +140,7 @@ fn load_registry_config() -> (i32, bool) {
+         .open(REG_KEY)
+         .and_then(|k| k.get_u32("FHoldDelayMs"))
+         .map(|v| (v as i32).clamp(100, 1000))
+-        .unwrap_or(350);
++        .unwrap_or(150);
+ 
+     let default_english = CURRENT_USER
+         .open(REG_KEY)
+@@ -226,7 +226,7 @@ unsafe extern "system" fn wnd_proc(
+             if let Ok(h_lbl_hint) = unsafe {
+                 create_ctrl(
+                     w!("STATIC"),
+-                    w!("💡 說明：預設 350ms。快速連打注音或英文為正常輸入；長按 F 鍵超過此延遲時間即啟動右手九宮格數字/運算分層。中/英文模式均通用！"),
++                    w!(" 說明：預設 150ms。快速連打注音或英文為正常輸入；長按 F 鍵超過此延遲時間即啟動右手九宮格數字/運算分層。中/英文模式均通用！"),
+                     WS_CHILD.0 | WS_VISIBLE.0,
+                     40, 85, 600, 50,
+                     hwnd, 0, hinst,
+@@ -249,7 +249,7 @@ unsafe extern "system" fn wnd_proc(
+             }
+ 
+             let cheatsheet_text = w!(
+-                "┌── 按住 F 鍵 ──┬── 符號與運算 ──┬────── 數字九宮格 ──────┐\n                 │  F + Esc ➜ `  │  F + Q ➜ /     │  F + Y ➜ 7  |  F + U ➜ 8  |  F + I ➜ 9 │\n                 │  F + [   ➜ [  │  F + W ➜ *     │  F + H ➜ 4  |  F + J ➜ 5  |  F + K ➜ 6 │\n                 │  F + ]   ➜ ]  │  F + E ➜ -     │  F + N ➜ 1  |  F + M ➜ 2  |  F + , ➜ 3 │\n                 │  F + O   ➜ {  │  F + R ➜ +     │             |  F + Space ➜ 0          │\n                 └───────────────┴────────────────┴────────────────────────────────────────┘"
++                "┌── 按住 F 鍵 ──┬── 符號與運算 ──┬────── 數字九宮格 ──────┐\n                 │  F + Esc  `  │  F + Q  /     │  F + Y  7  |  F + U  8  |  F + I  9 │\n                 │  F + [    [  │  F + W  *     │  F + H  4  |  F + J  5  |  F + K  6 │\n                 │  F + ]    ]  │  F + E  -     │  F + N  1  |  F + M  2  |  F + ,  3 │\n                 │  F + O    {  │  F + R  +     │             |  F + Space  0          │\n                 └───────────────┴────────────────┴────────────────────────────────────────┘"
+             );
+             if let Ok(h_lbl_cheat) = unsafe {
+                 create_ctrl(
+@@ -266,7 +266,7 @@ unsafe extern "system" fn wnd_proc(
+             if let Ok(h_lbl_cheat_tip) = unsafe {
+                 create_ctrl(
+                     w!("STATIC"),
+-                    w!("✨ 智能防護：中文模式打「去 (ㄑㄩ)」自動攔截優先；雙擊 Shift 進入英文模式後長按 F 亦直接進入九宮格，絕不吐出多餘 f！"),
++                    w!(" 智能防護：中文模式打「去 (ㄑㄩ)」自動攔截優先；雙擊 Shift 進入英文模式後長按 F 亦直接進入九宮格，絕不吐出多餘 f！"),
+                     WS_CHILD.0 | WS_VISIBLE.0,
+                     40, 325, 600, 25,
+                     hwnd, 0, hinst,
+@@ -308,7 +308,7 @@ unsafe extern "system" fn wnd_proc(
+             if let Ok(h_btn_dict) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+-                    w!("📝 記事本編輯 英文專業名詞庫 (technical-terms.txt)"),
++                    w!(" 記事本編輯 英文專業名詞庫 (technical-terms.txt)"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
+                     40, 430, 295, 36,
+                     hwnd, IDC_BTN_OPEN_DICT, hinst,
+@@ -320,7 +320,7 @@ unsafe extern "system" fn wnd_proc(
+             if let Ok(h_btn_user_dict) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+-                    w!("📝 記事本編輯 標準學術詞庫 (user_dict.csv)"),
++                    w!(" 記事本編輯 標準學術詞庫 (user_dict.csv)"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
+                     345, 430, 295, 36,
+                     hwnd, IDC_BTN_OPEN_USER_DICT, hinst,
+@@ -333,7 +333,7 @@ unsafe extern "system" fn wnd_proc(
+             if let Ok(h_btn_policy) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+-                    w!("📝 記事本編輯 政策設定檔 (policy.toml)"),
++                    w!(" 記事本編輯 政策設定檔 (policy.toml)"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
+                     40, 475, 295, 36,
+                     hwnd, IDC_BTN_OPEN_POLICY, hinst,
+@@ -345,7 +345,7 @@ unsafe extern "system" fn wnd_proc(
+             if let Ok(h_btn_dir) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+-                    w!("📁 開啟設定與詞庫資料夾 (檔案總管)"),
++                    w!(" 開啟設定與詞庫資料夾 (檔案總管)"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
+                     345, 475, 295, 36,
+                     hwnd, IDC_BTN_OPEN_DIR, hinst,
+@@ -358,7 +358,7 @@ unsafe extern "system" fn wnd_proc(
+             if let Ok(h_btn_editor) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+-                    w!("🛠️ 啟動 GUI 詞庫管理程式 (chewing-editor.exe)"),
++                    w!(" 啟動 GUI 詞庫管理程式 (chewing-editor.exe)"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
+                     40, 520, 600, 34,
+                     hwnd, IDC_BTN_OPEN_EDITOR, hinst,
+@@ -371,7 +371,7 @@ unsafe extern "system" fn wnd_proc(
+             if let Ok(h_btn_save) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+-                    w!("💾 套用儲存設定"),
++                    w!(" 套用儲存設定"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
+                     300, 580, 150, 40,
+                     hwnd, IDC_BTN_SAVE, hinst,
+@@ -383,7 +383,7 @@ unsafe extern "system" fn wnd_proc(
+             if let Ok(h_btn_reset) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+-                    w!("🔄 恢復預設"),
++                    w!(" 恢復預設"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
+                     460, 580, 100, 40,
+                     hwnd, IDC_BTN_RESET, hinst,
+@@ -440,50 +440,45 @@ unsafe extern "system" fn wnd_proc(
+                             let _ = unsafe {
+                                 MessageBoxW(
+                                     Some(hwnd),
+-                                    w!("✅ 設定已成功套用並儲存至 Windows 登錄表！\n新設定已即時生效。\n\n（AI 智慧功能已依需求暫緩開發並安全停用）"),
++                                    w!(" 設定已成功套用並儲存至 Windows 登錄表！\n新設定已即時生效。\n\n（AI 智慧功能已依需求暫緩開發並安全停用）"),
+                                     w!("AI新酷音輸入法設定"),
+                                     MB_OK | MB_ICONINFORMATION,
+                                 )
+                             };
+                         }
+                         IDC_BTN_RESET => {
+-                            state.f_delay_ms = 350;
++                            state.f_delay_ms = 150;
+                             unsafe {
+-                                send_msg(state.h_slider, TBM_SETPOS, 1, 350);
+-                                let _ = SetWindowTextW(state.h_lbl_f_val, w!("當前延遲：350 毫秒"));
++                                send_msg(state.h_slider, TBM_SETPOS, 1, 150);
++                                let _ = SetWindowTextW(state.h_lbl_f_val, w!("當前延遲：150 毫秒"));
+                                 send_msg(state.h_chk_default_zh, BM_SETCHECK, BST_CHECKED, 0);
+                             }
+                         }
+                         IDC_BTN_OPEN_DICT => {
+                             let appdata = std::env::var("APPDATA").unwrap_or_default();
+-                            let p = format!(r"{}\Chewing\technical-terms.txt", appdata);
++                            let p = format!(r"{}\ChewingDev\technical-terms.txt", appdata);
+                             open_file_in_notepad(&p, "# AI新酷音 專業技術與學術專有名詞庫\n# 每一行一個詞彙，支援工程與科學標準符號（如 I²C, MOSFET, SiO₂, GaN, Wi-Fi）\nI²C\nI³C\nMOSFET\nFinFET\nSiO₂\nGaN\nLiCoO₂\nWi-Fi\nChatGPT\nClaude\nOllama\n");
+                         }
+                         IDC_BTN_OPEN_USER_DICT => {
+                             let appdata = std::env::var("APPDATA").unwrap_or_default();
+-                            let p = format!(r"{}\Chewing\v4\user_dict.csv", appdata);
+-                            open_file_in_notepad(&p, "# 新酷音使用者自訂詞庫 (User Dictionary)\n# 格式：詞彙,注音 (以空白分隔各字注音)\n得富,ㄉㄜˊ ㄈㄨˋ\n陳俊安,ㄔㄣˊ ㄐㄩㄣˋ ㄢ\n章翔威,ㄓㄤ ㄒㄧㄤˊ ㄨㄟ\n");
++                            let p = format!(r"{}\ChewingDev\v4\user_dict.csv", appdata);
++                            open_file_in_notepad(&p, "# 新酷音使用者自訂詞庫 (User Dictionary)\n# 格式：詞彙,注音 (以空白分隔各字注音)\n");
+                         }
+                         IDC_BTN_OPEN_POLICY => {
+                             let appdata = std::env::var("APPDATA").unwrap_or_default();
+                             let p = format!(r"{}\ChewingDev\policy.toml", appdata);
+-                            open_file_in_notepad(&p, "# AI新酷音 策略核心組態 (Chewing Policy Core)\n[gesture]\ndouble_shift_ms = 400\n\n[kanata]\nf_hold_delay_ms = 350\nenable_number_layer = true\n\n[lexicon]\nenable_technical_lexicon = true\n");
++                            open_file_in_notepad(&p, "# AI新酷音 策略核心組態 (Chewing Policy Core)\n[gesture]\ndouble_shift_ms = 400\n\n[kanata]\nf_hold_delay_ms = 150\nenable_number_layer = true\n\n[lexicon]\nenable_technical_lexicon = true\n");
+                         }
+                         IDC_BTN_OPEN_DIR => {
+                             let appdata = std::env::var("APPDATA").unwrap_or_default();
+-                            let p = format!(r"{}\Chewing", appdata);
++                            let p = format!(r"{}\ChewingDev", appdata);
+                             let _ = std::fs::create_dir_all(&p);
+                             let _ = Command::new("explorer.exe").arg(p).spawn();
+                         }
+                         IDC_BTN_OPEN_EDITOR => {
+-                            let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+-                            let p = format!(r"{}\Programs\ChewingDev\chewing-editor.exe", localappdata);
+-                            if let Err(_) = Command::new(&p).spawn() {
+-                                // Fallback to notepad
+-                                let appdata = std::env::var("APPDATA").unwrap_or_default();
+-                                let fallback = format!(r"{}\Chewing\v4\user_dict.csv", appdata);
+-                                open_file_in_notepad(&fallback, "# 新酷音使用者自訂詞庫 (User Dictionary)\n");
+-                            }
++                            let appdata = std::env::var("APPDATA").unwrap_or_default();
++                            let p = format!(r"{}\ChewingDev\v4\user_dict.csv", appdata);
++                            open_file_in_notepad(&p, "# AI新酷音使用者詞庫：詞彙,注音\n");
+                         }
+                         IDC_BTN_CLOSE => {
+                             unsafe { PostQuitMessage(0) };
+diff --git a/crates/chewing_tip_core/Cargo.toml b/crates/chewing_tip_core/Cargo.toml
+index 011279d..0546d3a 100644
+--- a/crates/chewing_tip_core/Cargo.toml
++++ b/crates/chewing_tip_core/Cargo.toml
+@@ -26,6 +26,7 @@ windows = { version = "0.62.2", features = [
+   "Win32_Security_WinTrust",
+   "Win32_Storage_FileSystem",
+   "Win32_System_Pipes",
++  "Win32_System_LibraryLoader",
+   "Win32_System_Registry",
+   "Win32_System_SystemServices",
+   "Win32_System_Threading"
+diff --git a/crates/chewing_tip_core/src/config.rs b/crates/chewing_tip_core/src/config.rs
+index 0cd1dfc..95b4225 100644
+--- a/crates/chewing_tip_core/src/config.rs
++++ b/crates/chewing_tip_core/src/config.rs
+@@ -3,7 +3,7 @@
+ 
+ use std::{fmt::Display, ptr::null_mut, str::FromStr, time::SystemTime};
+ 
+-use chewing::path::SearchPath;
++
+ use log::error;
+ use scoped_error::{expect_error, expect_error_fn, impl_context_error};
+ use serde::{Deserialize, Serialize};
+@@ -148,11 +148,11 @@ impl Default for ChewingTsfConfig {
+                     param: "".to_string(),
+                 },
+             ],
+-            auto_check_update_channel: "stable".to_string(),
++            auto_check_update_channel: "none".to_string(),
+             update_info_url: "".to_string(),
+             last_update_check_time: 0,
+             modified_timestamp: 0,
+-            f_hold_delay_ms: 350,
++            f_hold_delay_ms: 150,
+             enable_ai: false,
+         }
+     }
+@@ -163,14 +163,13 @@ impl Config {
+         // AppContainer app, like the SearchHost.exe powering the start menu search bar
+         // needs this to access the settings.
+         if let Err(error) = grant_app_container_access(
+-            w!(r"CURRENT_USER\Software\ChewingTextService"),
++            w!(r"CURRENT_USER\Software\ChewingDev"),
+             SE_REGISTRY_KEY,
+             KEY_READ.0,
+         ) {
+             error!("Failed to grant app container access: {error:#}");
+         }
+-        let sp = SearchPath::from_env();
+-        if let Some(user_datadir) = sp.user_datadir() {
++        if let Ok(user_datadir) = crate::shell::user_dir() {
+             if let Err(error) = grant_app_container_access(
+                 &HSTRING::from(user_datadir.to_string_lossy().to_string()),
+                 SE_FILE_OBJECT,
+@@ -195,7 +194,7 @@ impl Config {
+                 .options()
+                 .read()
+                 .access(KEY_WOW64_64KEY.0)
+-                .open("Software\\ChewingTextService")?;
++                .open("Software\\ChewingDev")?;
+             let mut cfg = ChewingTsfConfig::default();
+ 
+             // if let Ok(path) = user_symbols_dat_path() {
+@@ -367,7 +366,7 @@ impl Config {
+             .create()
+             .access(KEY_WOW64_64KEY.0)
+             .write()
+-            .open("Software\\ChewingTextService")
++            .open("Software\\ChewingDev")
+         else {
+             error!("Unable to open registry for write");
+             return;
+diff --git a/crates/chewing_tip_core/src/ipc/named_pipe.rs b/crates/chewing_tip_core/src/ipc/named_pipe.rs
+index 79188e1..3771f29 100644
+--- a/crates/chewing_tip_core/src/ipc/named_pipe.rs
++++ b/crates/chewing_tip_core/src/ipc/named_pipe.rs
+@@ -37,7 +37,7 @@ use windows::{
+ use crate::ipc::IpcError;
+ use crate::sandbox::get_user_cred;
+ 
+-pub const NAMED_PIPE_PATH_BASE: &str = r"\\.\pipe\chewing.";
++pub const NAMED_PIPE_PATH_BASE: &str = r"\\.\pipe\chewing-dev.";
+ 
+ pub fn named_pipe_path() -> Result<String, IpcError> {
+     expect_error("Failed to create unique user local NamedPipe path", || {
+diff --git a/crates/chewing_tip_core/src/shell.rs b/crates/chewing_tip_core/src/shell.rs
+index 714b3c8..15fcd5d 100644
+--- a/crates/chewing_tip_core/src/shell.rs
++++ b/crates/chewing_tip_core/src/shell.rs
+@@ -20,7 +20,7 @@ use scoped_error::impl_context_error;
+ 
+ pub fn user_dir() -> Result<PathBuf, ShellError> {
+     expect_error("Unable to determine user dir", || {
+-        let user_dir = chewing::path::data_dir().ok_or("Unsupported operating system")?;
++        let user_dir = PathBuf::from(std::env::var_os("APPDATA").ok_or("APPDATA unavailable")?).join("ChewingDev");
+ 
+         // NB: chewing might be loaded into a low mandatory integrity level process (SearchHost.exe).
+         // In that case, it might not be able to check if a file exists using CreateFile
+@@ -48,14 +48,33 @@ pub fn user_dir() -> Result<PathBuf, ShellError> {
+     })
+ }
+ 
++/// Resolve this module, never the executable of the application hosting the IME.
+ pub fn program_dir() -> Result<PathBuf, ShellError> {
+-    expect_error("Failed to determine Program Files path", || {
+-        Ok(PathBuf::from(
+-            std::env::var("ProgramW6432")
+-                .or_else(|_| std::env::var("ProgramFiles"))
+-                .or_else(|_| std::env::var("ProgramFiles(x86)"))?,
+-        )
+-        .join("ChewingTextService"))
++    expect_error("Failed to locate the current ChewingDev module", || {
++        use windows::Win32::Foundation::HMODULE;
++        use windows::Win32::System::LibraryLoader::{GetModuleHandleExW, GetModuleFileNameW,
++            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT};
++        use windows::core::PCWSTR;
++        let mut module = HMODULE::default();
++        unsafe {
++            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                PCWSTR(program_dir as *const () as *const u16), &mut module)?;
++            let mut buffer = vec![0u16; 32768];
++            let length = GetModuleFileNameW(Some(module), &mut buffer) as usize;
++            if length == 0 || length >= buffer.len() { return Err("Unable to resolve module filename".into()); }
++            let path = PathBuf::from(String::from_utf16(&buffer[..length])?);
++            Ok(path.parent().ok_or("Module has no parent directory")?.to_path_buf())
++        }
++    })
++}
++
++/// Supplying both paths prevents libchewing from consulting the official user's
++/// dictionary or the CHEWING_PATH environment variable inside a host process.
++pub fn isolated_editor() -> Result<chewing::editor::Editor, ShellError> {
++    expect_error("Failed to create isolated ChewingDev editor", || {
++        let user = user_dir()?;
++        let dictionaries = format!("{};{}", user.display(), program_dir()?.join("Dictionary").display());
++        Ok(chewing::editor::Editor::chewing(Some(dictionaries), Some(user.join("chewing.dat").to_string_lossy().into_owned()))?)
+     })
+ }
+ 
+diff --git a/crates/chewing_tip_core/src/update/config.rs b/crates/chewing_tip_core/src/update/config.rs
+index b70e3de..205bfc3 100644
+--- a/crates/chewing_tip_core/src/update/config.rs
++++ b/crates/chewing_tip_core/src/update/config.rs
+@@ -14,7 +14,7 @@ pub(crate) struct CheckUpdateConfig {
+ 
+ pub(crate) fn get_check_update_config() -> Result<CheckUpdateConfig, UpdateError> {
+     expect_error("Failed to get update config from registry", || {
+-        let key = CURRENT_USER.create(r"Software\ChewingTextService")?;
++        let key = CURRENT_USER.create(r"Software\ChewingDev")?;
+         let channel = match key.get_string("AutoCheckUpdateChannel") {
+             Ok(ch) => ch,
+             Err(_) => {
+@@ -37,7 +37,7 @@ pub(crate) fn get_check_update_config() -> Result<CheckUpdateConfig, UpdateError
+ 
+ pub(crate) fn set_update_info_url(url: &str) -> Result<(), UpdateError> {
+     expect_error("Failed to set update info URL", || {
+-        let key = CURRENT_USER.create(r"Software\ChewingTextService")?;
++        let key = CURRENT_USER.create(r"Software\ChewingDev")?;
+         if url.is_empty() {
+             key.remove_value("UpdateInfoUrl")?;
+         } else {
+@@ -54,7 +54,7 @@ pub(crate) fn set_last_update_check_time() -> Result<(), UpdateError> {
+             .as_ref()
+             .map(Duration::as_secs)
+             .unwrap_or_default();
+-        let key = CURRENT_USER.create(r"Software\ChewingTextService")?;
++        let key = CURRENT_USER.create(r"Software\ChewingDev")?;
+         key.set_u64("LastUpdateCheckTime", now)?;
+         Ok(())
+     })
+diff --git a/crates/chewing_tip_host/src/text_service/chewing.rs b/crates/chewing_tip_host/src/text_service/chewing.rs
+index a39923f..f3f2fdb 100644
+--- a/crates/chewing_tip_host/src/text_service/chewing.rs
++++ b/crates/chewing_tip_host/src/text_service/chewing.rs
+@@ -37,7 +37,7 @@ impl TipSession {
+                 log::error!("Fallback to default config");
+                 Config::default()
+             });
+-            let editor = Editor::chewing(None, None)?;
++            let editor = chewing_tip_core::shell::isolated_editor()?;
+             Ok(TipSession {
+                 output_simp_chinese: cfg.chewing_tsf.output_simp_chinese,
+                 cfg,
+diff --git a/crates/tsfreg/src/main.rs b/crates/tsfreg/src/main.rs
+index 4ed1afa..5580082 100644
+--- a/crates/tsfreg/src/main.rs
++++ b/crates/tsfreg/src/main.rs
+@@ -20,18 +20,18 @@ use windows::{
+     },
+     core::*,
+ };
+-use windows_registry::{CURRENT_USER, LOCAL_MACHINE};
++use windows_registry::CURRENT_USER;
+ 
+ // https://learn.microsoft.com/en-us/windows/win32/tsf/installlayoutortip
+ windows::core::link!("input.dll" "system" fn InstallLayoutOrTip(psz: *const u16, dwFlags: u32));
+ const ILOT_INSTALL: u32 = 0x00000000;
+ // const ILOT_UNINSTALL: u32 = 0x00000001;
+ 
+-const CHEWING_TSF_CLSID: GUID = GUID::from_u128(0x13F2EF08_575C_4D8C_88E0_F67BB8052B84);
+-const CHEWING_ZH_TW_PROFILE_GUID: GUID = GUID::from_u128(0xCE45F71D_CE79_41D1_967D_640B65A380E3);
+-const CHEWING_ZH_CN_PROFILE_GUID: GUID = GUID::from_u128(0x9063E7CC_225E_4CEA_B7A1_2B0FB12A75CF);
++const CHEWING_TSF_CLSID: GUID = GUID::from_u128(0xD4C3B2A1_0E9E_4340_9E11_209B0E9C7E2E);
++const CHEWING_ZH_TW_PROFILE_GUID: GUID = GUID::from_u128(0x0E8AD36A_67D0_41AA_96A1_448B80AAC427);
++const CHEWING_ZH_CN_PROFILE_GUID: GUID = GUID::from_u128(0xC68AA49E_8654_4BFB_A791_28E206944BEE);
+ const CHEWING_TIP_DESC: PCWSTR =
+-    w!("0x0404:{13F2EF08-575C-4D8C-88E0-F67BB8052B84}{CE45F71D-CE79-41D1-967D-640B65A380E3}");
++    w!("0x0404:{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}{0E8AD36A-67D0-41AA-96A1-448B80AAC427}");
+ 
+ const CATEGORIES: [GUID; 7] = [
+     GUID_TFCAT_TIP_KEYBOARD,
+@@ -45,21 +45,20 @@ const CATEGORIES: [GUID; 7] = [
+ 
+ fn register(icon_path: String) -> Result<()> {
+     unsafe {
+-        let _ = unregister();
+ 
+         let input_processor_profile_mgr: ITfInputProcessorProfileMgr =
+             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)?;
+ 
+         let pw_icon_path = icon_path.encode_utf16().collect::<Vec<_>>();
+         let desc_zh_tw = "AI新酷音".encode_utf16().collect::<Vec<_>>();
+-        let desc_zh_cn = "AI新酷音 (简体)".encode_utf16().collect::<Vec<_>>();
++        let desc_zh_cn = "AI新酷音（簡體）".encode_utf16().collect::<Vec<_>>();
+ 
+         // Register for zh_TW
+         let mut lcid = LocaleNameToLCID(w!("zh-TW"), 0);
+         if matches!(lcid, 0 | 0x0C00 | 0x1000) {
+             lcid = 0x404;
+         }
+-        let _ = input_processor_profile_mgr.RegisterProfile(
++        input_processor_profile_mgr.RegisterProfile(
+             &CHEWING_TSF_CLSID,
+             lcid as u16,
+             &CHEWING_ZH_TW_PROFILE_GUID,
+@@ -70,13 +69,13 @@ fn register(icon_path: String) -> Result<()> {
+             0,
+             true,
+             0,
+-        );
++        )?;
+         // Register for zh_CN
+         let mut lcid = LocaleNameToLCID(w!("zh-CN"), 0);
+         if matches!(lcid, 0 | 0x0C00 | 0x1000) {
+             lcid = 0x804;
+         }
+-        let _ = input_processor_profile_mgr.RegisterProfile(
++        input_processor_profile_mgr.RegisterProfile(
+             &CHEWING_TSF_CLSID,
+             lcid as u16,
+             &CHEWING_ZH_CN_PROFILE_GUID,
+@@ -87,38 +86,18 @@ fn register(icon_path: String) -> Result<()> {
+             0,
+             false,
+             0,
+-        );
++        )?;
+ 
+         let category_manager: ITfCategoryMgr =
+             CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER)?;
+         for tfcat in &CATEGORIES {
+-            let _ = category_manager.RegisterCategory(&CHEWING_TSF_CLSID, tfcat, &CHEWING_TSF_CLSID);
++            category_manager.RegisterCategory(&CHEWING_TSF_CLSID, tfcat, &CHEWING_TSF_CLSID)?;
+         }
+ 
+-        // Direct registry write fallback to ensure "AI新酷音" is always visible
+-        if let Ok(key) = CURRENT_USER.create(r"Software\Microsoft\CTF\TIP\{13F2EF08-575C-4D8C-88E0-F67BB8052B84}\LanguageProfile\0x00000404\{CE45F71D-CE79-41D1-967D-640B65A380E3}") {
+-            let _ = key.set_string("Description", "AI新酷音");
+-        }
+-        if let Ok(key) = CURRENT_USER.create(r"Software\Classes\CLSID\{13F2EF08-575C-4D8C-88E0-F67BB8052B84}") {
+-            let _ = key.set_string("", "AI新酷音");
+-        }
+-        if let Ok(key) = LOCAL_MACHINE.create(r"SOFTWARE\Microsoft\CTF\TIP\{13F2EF08-575C-4D8C-88E0-F67BB8052B84}\LanguageProfile\0x00000404\{CE45F71D-CE79-41D1-967D-640B65A380E3}") {
+-            let _ = key.set_string("Description", "AI新酷音");
+-        }
+-        if let Ok(key) = LOCAL_MACHINE.create(r"SOFTWARE\Classes\CLSID\{13F2EF08-575C-4D8C-88E0-F67BB8052B84}") {
+-            let _ = key.set_string("", "AI新酷音");
+-        }
++        let key = CURRENT_USER.create(r"Software\Classes\CLSID\{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}")?;
++        key.set_string("", "AI新酷音")?;
+     }
+ 
+-    #[cfg(feature = "nightly")]
+-    {
+-        // Enable user-mode minidump for debug build
+-        if let Err(error) = LOCAL_MACHINE
+-            .create("SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting\\LocalDumps")
+-        {
+-            println!("Error: unable to enable user-mode minidump: {error}");
+-        }
+-    }
+     Ok(())
+ }
+ 
+@@ -201,37 +180,54 @@ fn stop() {
+     }
+ }
+ 
++#[derive(Debug, PartialEq, Eq)]
++enum Command { Register(String), Unregister, Enable, Disable, Stop }
++
++fn parse_command(args: &[String]) -> Option<Command> {
++    match args {
++        [flag, path] if flag == "-r" && !path.is_empty() => Some(Command::Register(path.clone())),
++        [flag] if flag == "-u" => Some(Command::Unregister),
++        [flag] if flag == "-i" => Some(Command::Enable),
++        [flag] if flag == "-d" => Some(Command::Disable),
++        [flag] if flag == "-s" => Some(Command::Stop),
++        _ => None,
++    }
++}
++
+ fn main() -> Result<()> {
++    // Validate before initializing COM or touching any registration.
++    let Some(command) = parse_command(&env::args().skip(1).collect::<Vec<_>>()) else {
++        eprintln!("Usage: tsfreg -r <IconPath> | -u | -i | -d | -s");
++        process::exit(2);
++    };
+     unsafe {
+-        if IsDebuggerPresent().as_bool() {
+-            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+-        }
++        if IsDebuggerPresent().as_bool() { let _ = AttachConsole(ATTACH_PARENT_PROCESS); }
+         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
++    }
++    match command {
++        Command::Register(path) => register(path)?,
++        Command::Unregister => unregister()?,
++        Command::Enable => enable(),
++        Command::Disable => disable(),
++        Command::Stop => stop(),
++    }
++    Ok(())
++}
+ 
+-        if env::args().len() == 1 {
+-            println!("Usage:");
+-            println!("  tsfreg -r <IconPath>    註冊輸入法");
+-            println!("  tsfreg -i           立即啟用輸入法");
+-            println!("  tsfreg -d           立即停用輸入法");
+-            println!("  tsfreg -u                 取消註冊");
+-            println!("  tsfreg -s   停止 chewing_tip_host");
+-            process::exit(1);
+-        }
+-
+-        if let Some("-r") = env::args().nth(1).as_deref() {
+-            let icon_path = env::args().nth(2).expect("缺少 IconPath");
+-            register(icon_path)?;
+-        } else if let Some("-i") = env::args().nth(1).as_deref() {
+-            enable();
+-        } else if let Some("-d") = env::args().nth(1).as_deref() {
+-            disable();
+-        } else if let Some("-s") = env::args().nth(1).as_deref() {
+-            stop();
+-        } else if let Err(err) = unregister() {
+-            println!("警告：無法解除輸入法註冊，反安裝可能無法正常完成。");
+-            println!("錯誤訊息：{:?}", err);
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn args(values: &[&str]) -> Vec<String> { values.iter().map(|s| s.to_string()).collect() }
++    #[test]
++    fn unknown_arguments_never_unregister() {
++        for a in [vec![], vec!["--identity"], vec!["--help"], vec!["-r"], vec!["-r", ""], vec!["-u", "extra"]] {
++            assert_eq!(parse_command(&args(&a)), None);
+         }
+     }
+-
+-    Ok(())
++    #[test]
++    fn unregister_requires_explicit_flag() { assert_eq!(parse_command(&args(&["-u"])), Some(Command::Unregister)); }
++    #[test]
++    fn registration_requires_exact_icon_argument() {
++        assert_eq!(parse_command(&args(&["-r", "C:\\package\\chewing.ico"])), Some(Command::Register("C:\\package\\chewing.ico".into())));
++    }
+ }
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 88701d8..ddd6787 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -24,6 +24,7 @@ use chewing::input::{KeyState, KeyboardEvent, keycode, keysym};
+ use chewing::zhuyin::Syllable;
+ use chewing_tip_core::config::{ChewingTsfConfig, Config};
+ use chewing_tip_core::shell::open_url;
++use chewing_policy_core::shift_letter::{ASCIIComposition, FCompositionBuffer, ShiftMode};
+ use chewing_policy_core::{
+     CompositionAction, DoubleShiftGesture, PolicyContext, PolicyMode, SessionResult,
+     ShiftLetterSession, TechnicalLexicon, should_bypass_key, transform_commit,
+@@ -77,7 +78,7 @@ const GUID_MODE_BUTTON: GUID = GUID::from_u128(0xB59D51B9_B832_40D2_9A8D_5695937
+ const GUID_SHAPE_TYPE_BUTTON: GUID = GUID::from_u128(0x5325DBF5_5FBE_467B_ADF0_2395BE9DD2BB);
+ const GUID_SETTINGS_BUTTON: GUID = GUID::from_u128(0x4FAFA520_2104_407E_A532_9F1AAB7751CD);
+ 
+-pub(crate) const CLSID_TEXT_SERVICE: GUID = GUID::from_u128(0x13F2EF08_575C_4D8C_88E0_F67BB8052B84);
++pub(crate) const CLSID_TEXT_SERVICE: GUID = GUID::from_u128(0xD4C3B2A1_0E9E_4340_9E11_209B0E9C7E2E);
+ 
+ impl_context_error!(TsfError);
+ 
+@@ -178,6 +179,8 @@ pub(super) struct ChewingTextService {
+     shift_session: Option<ShiftLetterSession>,
+     lexicon: TechnicalLexicon,
+     f_key_state: kanata_layer::FKeyState,
++    f_event: Option<SystemKeyboardEvent>,
++    f_buffer: Option<FCompositionBuffer>,
+     double_shift: DoubleShiftGesture,
+     start_time: Instant,
+     cfg: Config,
+@@ -282,7 +285,7 @@ impl ChewingTextService {
+         cfg.grant_sandbox_access();
+ 
+         // Initialize a temp editor, this will be replaced in init_chewing_context.
+-        let editor = Editor::chewing(None, None)?;
++        let editor = chewing_tip_core::shell::isolated_editor()?;
+ 
+         let mut cts = ChewingTextService {
+             thread_mgr,
+@@ -303,6 +306,8 @@ impl ChewingTextService {
+             shift_session: None,
+             lexicon: TechnicalLexicon::load_from_file_or_default(),
+             f_key_state: kanata_layer::FKeyState::Up,
++            f_event: None,
++            f_buffer: None,
+             double_shift: DoubleShiftGesture::new(),
+             start_time: Instant::now(),
+             cfg,
+@@ -351,14 +356,16 @@ impl ChewingTextService {
+     pub(super) fn on_kill_focus(&mut self, context: Option<ITfContext>) -> Result<()> {
+         debug!("on_kill_focus");
+         self.has_focus = false;
++        if let Some(context) = context {
++            if self.f_buffer.is_some() || self.shift_session.is_some() {
++                self.cancel_custom_input(&context)?;
++            } else if self.is_composing() { self.end_composition(&context)?; }
++        }
+         self.f_key_state = kanata_layer::FKeyState::Up;
++        self.f_event = None;
++        self.f_buffer = None;
+         self.shift_session = None;
+         self.double_shift.reset();
+-        if self.is_composing()
+-            && let Some(context) = context
+-        {
+-            self.end_composition(&context)?;
+-        }
+         self.hide_candidates();
+         self.hide_message();
+         Ok(())
+@@ -415,7 +422,15 @@ impl ChewingTextService {
+         self.chewing_editor
+             .set_editor_options(|opt| opt.language_mode = self.lang_mode.get().into());
+ 
+-        let is_context_mutable = self.is_context_mutable(context)?;
++        let is_context_mutable = self.has_focus && self.is_context_mutable(context)?;
++        if !is_context_mutable {
++            self.f_key_state = kanata_layer::FKeyState::Up;
++            self.f_event = None;
++            self.f_buffer = None;
++            self.shift_session = None;
++            self.double_shift.reset();
++            return Ok(false);
++        }
+         let evt = ev.to_keyboard_event(self.keymap);
+         let simulate_english_layout = self.cfg.chewing_tsf.simulate_english_layout != 0;
+ 
+@@ -433,7 +448,7 @@ impl ChewingTextService {
+         } else if evt.ksym != SYM_LEFTSHIFT && evt.ksym != SYM_RIGHTSHIFT {
+             self.double_shift.reset();
+         }
+-        debug!(evt:?, shift_key_state:? = self.shift_key_state; "on_test_keydown");
++        debug!("on_test_keydown");
+ 
+         let mut shift_down = false;
+         if (evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT)
+@@ -459,18 +474,24 @@ impl ChewingTextService {
+             return Ok(false);
+         }
+ 
+-        // Kanata Tap-Hold 'f' Number/Symbol Layer interception
+-        // 1. If F key is pressed, always intercept so we can track hold / chord / tap
+-        if ev.vk == 0x46 && !self.chewing_editor.is_selecting() {
++        // Shortcut modifiers must bypass the custom F/English policy.
++        if other_modifiers {
++            self.double_shift.reset();
++            if let Some(buffer) = self.f_buffer.take() {
++                self.shift_session = buffer.base;
++                self.f_key_state = kanata_layer::FKeyState::Cancelled;
++                self.f_event = None;
++            }
++            if self.shift_session.is_some() { return Ok(true); }
++            // Leave upstream Ctrl keybindings to the normal handling below.
++        }
++        if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
++        if !other_modifiers && ev.vk == 0x46 && !self.chewing_editor.is_selecting()
++            && (self.chewing_editor.is_empty() || self.shift_session.is_some()) {
+             return Ok(true);
+         }
+-        // 2. If F is currently active, intercept any mapped chord keys (except when cancelled)
+-        if self.f_key_state != kanata_layer::FKeyState::Up
+-            && self.f_key_state != kanata_layer::FKeyState::Cancelled
+-        {
+-            if kanata_layer::map_kanata_number_layer(ev.vk).is_some() {
+-                return Ok(true);
+-            }
++        if matches!(self.f_key_state, kanata_layer::FKeyState::Down(_) | kanata_layer::FKeyState::Held) {
++            return Ok(true);
+         }
+ 
+         // 3. If ShiftLetterSession is active, intercept word keys, backspace, enter, esc, space
+@@ -551,7 +572,7 @@ impl ChewingTextService {
+                 let ascii_char = evt.ksym.to_unicode();
+                 let policy_ctx = PolicyContext::new(PolicyMode::AsciiFirst);
+                 if should_bypass_key(ascii_char, &policy_ctx) {
+-                    debug!(ascii_char; "ASCII-first policy: bypass key to application");
++                    debug!("ASCII-first policy: bypass key to application");
+                     return Ok(false);
+                 }
+             }
+@@ -597,124 +618,77 @@ impl ChewingTextService {
+             return Ok(false);
+         }
+         let mut evt = ev.to_keyboard_event(self.keymap);
+-        debug!(evt:?; "on_keydown");
++        debug!("on_keydown");
+ 
+         let shift_held = evt.is_state_on(KeyState::Shift) || self.shift_key_state != ShiftKeyState::Up;
+         let _is_english = self.lang_mode.get() == TsfLangMode::English;
+ 
+-        // [ShiftLetterSession] 英文連續輸入狀態機處理
+-        if let Some(session) = self.shift_session.take() {
+-            // 1. 若使用者按下 Ctrl 或 Alt 組合鍵 (如 Ctrl+C, Ctrl+V)，先行送出當前英文單字並放行快捷鍵
+-            if evt.is_state_on(KeyState::Control) || evt.is_state_on(KeyState::Alt) {
+-                let text = session.composition.display().to_string();
+-                if !text.is_empty() {
+-                    self.insert_text(context, &text)?;
+-                }
+-                self.update_preedit(context, String::new())?;
+-                return Ok(false);
+-            }
+-
+-            // 2. Escape: 放棄當前輸入
+-            if ev.vk == 0x1B {
+-                self.update_preedit(context, String::new())?;
+-                return Ok(true);
+-            }
+-
+-            // 3. Return (Enter): 確認送出當前英文單字
+-            if ev.vk == 0x0D {
+-                let text = session.composition.display().to_string();
+-                if !text.is_empty() {
+-                    self.insert_text(context, &text)?;
+-                }
+-                self.update_preedit(context, String::new())?;
+-                return Ok(true);
+-            }
+-
+-            // 4. Space: 送出當前英文單字 + 空格
+-            if ev.vk == 0x20 {
+-                let text = format!("{} ", session.composition.display());
+-                self.insert_text(context, &text)?;
+-                self.update_preedit(context, String::new())?;
+-                return Ok(true);
++        // Resolve the F gesture before Shift-letter handling, including direct
++        // English and an existing ASCII composition. Key-up owns the commit.
++        if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
++        if ev.vk == 0x46 && !evt.is_state_on(KeyState::Control) && !evt.is_state_on(KeyState::Alt)
++            && !evt.is_state_on(KeyState::Super) && !self.chewing_editor.is_selecting()
++            && (self.chewing_editor.is_empty() || self.shift_session.is_some()) {
++            if self.f_key_state == kanata_layer::FKeyState::Up && !ev.repeating {
++                self.f_event = Some(ev);
++                self.f_buffer = Some(FCompositionBuffer::new(self.shift_session.take(), &self.lexicon));
++                self.f_key_state = kanata_layer::FKeyState::Down(Instant::now());
+             }
+-
+-            // 5. Backspace: 倒退刪除字元
+-            if ev.vk == 0x08 {
+-                let res = session.applying(CompositionAction::Backspace, shift_held, false, &self.lexicon);
+-                match res {
+-                    SessionResult::Updated(next) => {
+-                        if next.composition.raw.is_empty() {
+-                            self.update_preedit(context, String::new())?;
+-                        } else {
+-                            let disp = next.composition.display().to_string();
+-                            self.update_preedit(context, disp)?;
+-                            self.shift_session = Some(next);
+-                        }
+-                    }
+-                    _ => {
+-                        self.update_preedit(context, String::new())?;
+-                    }
++            return Ok(true);
++        }
++        if matches!(self.f_key_state, kanata_layer::FKeyState::Down(_) | kanata_layer::FKeyState::Held) {
++            let delay = Duration::from_millis(self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64);
++            let pending = matches!(self.f_key_state, kanata_layer::FKeyState::Down(t) if t.elapsed() <= delay);
++            let phonetic = kanata_layer::prefers_phonetic_f_chord(ev.vk, pending,
++                self.lang_mode.get() == TsfLangMode::Chinese && self.f_buffer.as_ref().is_some_and(|b| b.base.is_none()),
++                matches!(self.kbtype, KeyboardLayoutCompat::Default) && matches!(self.keymap, KeymapOp::None), shift_held);
++            if !phonetic && (kanata_layer::map_kanata_number_layer(ev.vk).is_some() || ev.vk == 0x08) {
++                self.f_key_state = kanata_layer::FKeyState::Held;
++                if let Some(buffer) = &mut self.f_buffer {
++                    if ev.vk == 0x08 { buffer.backspace(); }
++                    else if let Some(symbol) = kanata_layer::map_kanata_number_layer(ev.vk) { buffer.append(symbol); }
+                 }
++                self.render_ascii(context)?;
+                 return Ok(true);
+             }
++            if pending { self.replay_f_tap(context)?; }
++            else { self.finish_f_buffer(context)?; }
++            self.f_key_state = kanata_layer::FKeyState::Cancelled;
++        }
+ 
+-            // 6. Tab 或 Down Arrow: 切換候選詞
+-            if (ev.vk == 0x09 || ev.vk == 0x28) && session.composition.candidates.len() > 1 {
+-                let res = session.applying(CompositionAction::Cycle(1), shift_held, false, &self.lexicon);
+-                if let SessionResult::Updated(next) = res {
+-                    let disp = next.composition.display().to_string();
+-                    self.update_preedit(context, disp)?;
+-                    self.shift_session = Some(next);
+-                    return Ok(true);
+-                }
+-            }
+-
+-            // 7. 英文字母 A-Z / a-z、數字 0-9、底線 / 減號
+-            let ch = if (0x41..=0x5A).contains(&ev.vk) {
+-                if shift_held {
+-                    (ev.vk as u8) as char
+-                } else {
+-                    (ev.vk as u8).to_ascii_lowercase() as char
++        if let Some(session) = self.shift_session.take() {
++            let shortcut = evt.is_state_on(KeyState::Control) || evt.is_state_on(KeyState::Alt) || evt.is_state_on(KeyState::Super);
++            let action = if shortcut { Some(CompositionAction::Shortcut) } else {
++                match ev.vk {
++                    0x1B => Some(CompositionAction::Escape),
++                    0x0D => Some(CompositionAction::Enter),
++                    0x08 => Some(CompositionAction::Backspace),
++                    0x2E => Some(CompositionAction::Delete),
++                    0x25 => Some(CompositionAction::Left),
++                    0x27 => Some(CompositionAction::Right),
++                    0x24 => Some(CompositionAction::Home),
++                    0x23 => Some(CompositionAction::End),
++                    0x09 | 0x28 => Some(CompositionAction::Cycle(if shift_held { -1 } else { 1 })),
++                    0x26 => Some(CompositionAction::Cycle(-1)),
++                    _ if (32..=126).contains(&ev.ascii_code) => Some(CompositionAction::Insert((ev.ascii_code as char).to_string())),
++                    _ => None,
+                 }
+-            } else if (0x30..=0x39).contains(&ev.vk) {
+-                (ev.vk as u8) as char
+-            } else if ev.vk == 0xBD {
+-                if shift_held { '_' } else { '-' }
+-            } else {
+-                ' '
+             };
+-
+-            if ch != ' ' {
+-                let res = session.applying(CompositionAction::Insert(ch.to_string()), shift_held, false, &self.lexicon);
+-                match res {
+-                    SessionResult::Updated(next) => {
+-                        let disp = next.composition.display().to_string();
+-                        self.update_preedit(context, disp)?;
+-                        self.shift_session = Some(next);
+-                    }
+-                    SessionResult::Commit(text) => {
+-                        self.insert_text(context, &text)?;
+-                        self.update_preedit(context, String::new())?;
+-                    }
++            if let Some(action) = action {
++                match session.applying(action, shift_held, ev.repeating, &self.lexicon) {
++                    SessionResult::Updated(next) => { self.shift_session = Some(next); self.render_ascii(context)?; }
++                    SessionResult::Commit(text) => self.commit_ascii(context, &text)?,
+                     SessionResult::CommitAndContinue(text, next) => {
+-                        self.insert_text(context, &text)?;
+-                        let disp = next.composition.display().to_string();
+-                        self.update_preedit(context, disp)?;
+-                        self.shift_session = Some(next);
+-                    }
+-                    _ => {
+-                        self.update_preedit(context, String::new())?;
++                        self.commit_ascii(context, &text)?; self.shift_session = Some(next);
+                     }
++                    SessionResult::PassThrough(text) => { self.commit_ascii(context, &text)?; return Ok(false); }
++                    SessionResult::Forward => { self.shift_session = Some(session); return Ok(false); }
++                    SessionResult::Cancel => self.commit_ascii(context, "")?,
++                    SessionResult::Rejected => self.shift_session = Some(session),
+                 }
+                 return Ok(true);
+-            } else {
+-                // 非英文單字字元：先行 commit 當前英文，結束 session，並繼續向下處理該字元
+-                let text = session.composition.display().to_string();
+-                if !text.is_empty() {
+-                    self.insert_text(context, &text)?;
+-                }
+-                self.update_preedit(context, String::new())?;
+             }
++            self.commit_ascii(context, session.composition.display())?;
+         }
+ 
+         // [ShiftLetterSession] 在中文模式下，若使用者按住 Shift 輸入 A-Z，開啟英文組字狀態
+@@ -737,114 +711,11 @@ impl ChewingTextService {
+             }
+             let initial_char = (ev.vk as u8) as char;
+             let session = ShiftLetterSession::start_with_letter(initial_char, &self.lexicon);
+-            let disp = session.composition.display().to_string();
+-            self.update_preedit(context, disp)?;
+             self.shift_session = Some(session);
++            self.render_ascii(context)?;
+             return Ok(true);
+         }
+ 
+-        // 1. Kanata Tap-Hold 'f' Number/Symbol Layer: F key itself (中文與英文模式皆支援)
+-        if self.shift_session.is_none()
+-            && ev.vk == 0x46
+-            && !shift_held
+-            && !self.chewing_editor.is_selecting()
+-            && self.chewing_editor.is_empty()
+-        {
+-            match self.f_key_state {
+-                kanata_layer::FKeyState::Up => {
+-                    self.f_key_state = kanata_layer::FKeyState::Down(Instant::now());
+-                }
+-                kanata_layer::FKeyState::Down(instant) => {
+-                    let f_delay = Duration::from_millis(
+-                        self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64,
+-                    );
+-                    if instant.elapsed() >= f_delay {
+-                        self.f_key_state = kanata_layer::FKeyState::Held;
+-                    }
+-                }
+-                kanata_layer::FKeyState::Held => {}
+-                kanata_layer::FKeyState::Cancelled => {}
+-            }
+-            return Ok(true);
+-        }
+-
+-        // 2. Kanata Tap-Hold 'f' Number/Symbol Layer: Active chord keys or flush pending 'f'
+-        // AI-Bopomofo 0.6.11 (fix/f-phonetic-overlap):
+-        // 快速注音保護：等待長按 (Down) 期間若遇到 U (ㄧ) 或 M (ㄩ)，優先保留注音 ㄑㄧ / ㄑㄩ，
+-        // 先將 F (ㄑ) 送入注音引擎，取消本手勢，避免高速打字時誤出數字 8 / 2。
+-        if self.f_key_state != kanata_layer::FKeyState::Up
+-            && self.f_key_state != kanata_layer::FKeyState::Cancelled
+-        {
+-            let f_delay = Duration::from_millis(
+-                self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64,
+-            );
+-            let _is_pending = match self.f_key_state {
+-                kanata_layer::FKeyState::Down(instant) => {
+-                    if instant.elapsed() >= f_delay {
+-                        self.f_key_state = kanata_layer::FKeyState::Held;
+-                        false
+-                    } else {
+-                        true
+-                    }
+-                }
+-                kanata_layer::FKeyState::Held => false,
+-                _ => false,
+-            };
+-
+-            let other_modifiers = evt.is_state_on(KeyState::Control)
+-                || evt.is_state_on(KeyState::Alt)
+-                || evt.is_state_on(KeyState::Shift)
+-                || evt.is_state_on(KeyState::Super);
+-
+-            let is_chinese = self.lang_mode.get() == TsfLangMode::Chinese;
+-            let prefers_phonetic = is_chinese
+-                && !other_modifiers
+-                && kanata_layer::is_phonetic_f_overlap(ev.vk);
+-
+-            let is_mapped = kanata_layer::map_kanata_number_layer(ev.vk);
+-
+-            if !prefers_phonetic && let Some(text) = is_mapped {
+-                self.f_key_state = kanata_layer::FKeyState::Held;
+-                if !self.chewing_editor.is_empty() {
+-                    let _ = self.chewing_editor.commit();
+-                    let commit = self.chewing_editor.display_commit().to_owned();
+-                    self.chewing_editor.ack();
+-                    if !commit.is_empty() {
+-                        self.insert_text(context, &commit)?;
+-                    }
+-                    self.update_preedit(context, String::new())?;
+-                }
+-                self.insert_text(context, text)?;
+-                return Ok(true);
+-            } else {
+-                // Not a chord key OR prefers phonetic Bopomofo (ㄑㄧ / ㄑㄩ)!
+-                // If F was in Down state, flush 'f' FIRST to maintain strict keystroke order!
+-                let prev_state = self.f_key_state;
+-                self.f_key_state = kanata_layer::FKeyState::Cancelled;
+-                if let kanata_layer::FKeyState::Down(_) = prev_state {
+-                    let f_sysev = SystemKeyboardEvent {
+-                        vk: 0x46,
+-                        scan_code: 0x21,
+-                        ascii_code: b'f',
+-                        key_state: [0; 256],
+-                    };
+-                    let f_evt = f_sysev.to_keyboard_event(self.keymap);
+-                    if is_chinese {
+-                        self.chewing_editor.process_keyevent(f_evt);
+-                        let last_behavior = self.chewing_editor.last_key_behavior();
+-                        if !self.is_composing() && last_behavior == EditorKeyBehavior::Commit {
+-                            let text = self.chewing_editor.display_commit().to_owned();
+-                            self.chewing_editor.ack();
+-                            self.insert_text(context, &text)?;
+-                        }
+-                    } else {
+-                        self.insert_text(context, "f")?;
+-                    }
+-                }
+-                // Continue executing this on_keydown event for `ev` below without returning!
+-            }
+-        }
+-
+         // Handle keybindings
+         // FIXME: refactor this
+         let mut text_action = None;
+@@ -1017,7 +888,7 @@ impl ChewingTextService {
+         {
+             let text = self.chewing_editor.display_commit().to_owned();
+             self.chewing_editor.ack();
+-            debug!(text; "commit string");
++            debug!("commit string");
+             self.insert_text(context, &text)?;
+             if let Some(param) = text_action {
+                 self.insert_text(context, &param)?;
+@@ -1076,51 +947,22 @@ impl ChewingTextService {
+         context: &ITfContext,
+         ev: SystemKeyboardEvent,
+     ) -> Result<bool> {
+-        if ev.vk == 0x46 {
+-            let prev = self.f_key_state;
++        if !self.has_focus || !self.is_context_mutable(context)? {
+             self.f_key_state = kanata_layer::FKeyState::Up;
+-            if let kanata_layer::FKeyState::Down(instant) = prev {
+-                let f_delay = Duration::from_millis(
+-                    self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64,
+-                );
+-                if instant.elapsed() < f_delay {
+-                    let evt = ev.to_keyboard_event(self.keymap);
+-                    let shift_held = evt.is_state_on(KeyState::Shift) || self.shift_key_state != ShiftKeyState::Up;
+-                    if shift_held {
+-                        self.insert_text(context, "F")?;
+-                    } else if self.lang_mode.get() == TsfLangMode::Chinese {
+-                        // Normal tap 'f': synthesize a keydown event for 'f' into chewing_editor!
+-                        let f_sysev = SystemKeyboardEvent {
+-                            vk: 0x46,
+-                            scan_code: 0x21,
+-                            ascii_code: b'f',
+-                            key_state: [0; 256],
+-                        };
+-                        let f_evt = f_sysev.to_keyboard_event(self.keymap);
+-                        self.chewing_editor.process_keyevent(f_evt);
+-                        let last_behavior = self.chewing_editor.last_key_behavior();
+-                        if !self.is_composing() && last_behavior == EditorKeyBehavior::Commit {
+-                            let text = self.chewing_editor.display_commit().to_owned();
+-                            self.chewing_editor.ack();
+-                            self.insert_text(context, &text)?;
+-                        } else {
+-                            if let Err(error) = self.update_candidates(context) {
+-                                error!("{}", error.report());
+-                            }
+-                            let commit = if last_behavior == EditorKeyBehavior::Commit {
+-                                let c = self.chewing_editor.display_commit().to_owned();
+-                                self.chewing_editor.ack();
+-                                c
+-                            } else {
+-                                String::new()
+-                            };
+-                            self.update_preedit(context, commit)?;
+-                        }
+-                    } else {
+-                        self.insert_text(context, "f")?;
+-                    }
+-                }
++            self.f_event = None; self.f_buffer = None; self.shift_session = None;
++            self.double_shift.reset();
++            return Ok(false);
++        }
++        if ev.vk == 0x46 {
++            let previous = self.f_key_state;
++            let delay = Duration::from_millis(self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64);
++            if matches!(previous, kanata_layer::FKeyState::Down(t) if t.elapsed() <= delay) {
++                self.replay_f_tap(context)?;
++            } else if matches!(previous, kanata_layer::FKeyState::Down(_) | kanata_layer::FKeyState::Held) {
++                self.finish_f_buffer(context)?;
+             }
++            self.f_key_state = kanata_layer::FKeyState::Up;
++            self.f_event = None;
+             return Ok(false);
+         }
+         let evt = ev.to_keyboard_event(self.keymap);
+@@ -1129,6 +971,12 @@ impl ChewingTextService {
+ 
+         debug!(last_is_shift, last_is_capslock; "");
+ 
++        if last_is_shift && self.f_buffer.is_some() {
++            let _ = self.shift_key_state.release();
++            self.double_shift.reset();
++            if let Some(base) = self.f_buffer.as_mut().and_then(|b| b.base.as_mut()) { base.mode = ShiftMode::Word; }
++            return Ok(false);
++        }
+         if last_is_shift {
+             let time = self.start_time.elapsed();
+             let _ = self.shift_key_state.release();
+@@ -1142,12 +990,11 @@ impl ChewingTextService {
+                         self.shift_session = Some(next);
+                     }
+                     SessionResult::Commit(text) => {
+-                        self.insert_text(context, &text)?;
+-                        self.update_preedit(context, String::new())?;
++                        self.commit_ascii(context, &text)?;
+                     }
+                     _ => {}
+                 }
+-                return Ok(true);
++                return Ok(false);
+             }
+ 
+             let double_shift_triggered = self.double_shift.update(false, other_modifiers, time);
+@@ -1228,6 +1075,11 @@ impl ChewingTextService {
+     // SAFETY: this method must not cause TSF callback reentrant
+     pub(super) fn on_composition_terminated_tail(&mut self) -> Result<()> {
+         debug!(has_focus=self.has_focus; "on_composition_terminated_tail");
++        self.f_key_state = kanata_layer::FKeyState::Up;
++        self.f_event = None;
++        self.f_buffer = None;
++        self.shift_session = None;
++        self.double_shift.reset();
+         if self.candidate_list.is_some() {
+             self.hide_candidates();
+         }
+@@ -1274,7 +1126,7 @@ impl ChewingTextService {
+                 self.chewing_editor.commit()?;
+                 let commit = self.chewing_editor.display_commit().to_owned();
+                 self.chewing_editor.ack();
+-                debug!(commit; "commit string");
++                debug!("commit string");
+                 unsafe {
+                     let doc_mgr = self
+                         .thread_mgr
+@@ -1354,13 +1206,13 @@ impl ChewingTextService {
+                 }
+                 ID_HASHED => {
+                     let appdata = std::env::var("APPDATA").unwrap_or_default();
+-                    let dir = std::path::PathBuf::from(&appdata).join("Chewing").join("v4");
++                    let dir = std::path::PathBuf::from(&appdata).join("ChewingDev").join("v4");
+                     let _ = std::fs::create_dir_all(&dir);
+                     let user_dict = dir.join("user_dict.csv");
+                     if !user_dict.exists() {
+                         let _ = std::fs::write(
+                             &user_dict,
+-                            "# 新酷音使用者自訂詞庫 (User Dictionary)\n# 格式：詞彙,注音 (以空白分隔各字注音)\n得富,ㄉㄜˊ ㄈㄨˋ\n陳俊安,ㄔㄣˊ ㄐㄩㄣˋ ㄢ\n章翔威,ㄓㄤ ㄒㄧㄤˊ ㄨㄟ\n",
++                            "# 新酷音使用者自訂詞庫 (User Dictionary)\n# 格式：詞彙,注音 (以空白分隔各字注音)\n",
+                         );
+                     }
+                     use std::os::windows::process::CommandExt;
+@@ -1370,8 +1222,10 @@ impl ChewingTextService {
+                         .spawn();
+                 }
+                 ID_CONFIG => {
+-                    let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+-                    let p = format!(r"{}\Programs\ChewingDev\ChewingPreferences.exe", localappdata);
++                    let p = match chewing_tip_core::shell::program_dir() {
++                        Ok(dir) => dir.join("ChewingPreferences.exe"),
++                        Err(_) => return,
++                    };
+                     use std::os::windows::process::CommandExt;
+                     let mut spawned = false;
+                     if std::path::Path::new(&p).exists() {
+@@ -1384,7 +1238,7 @@ impl ChewingTextService {
+                     }
+                     if !spawned {
+                         let appdata = std::env::var("APPDATA").unwrap_or_default();
+-                        let dir = format!(r"{}\Chewing", appdata);
++                        let dir = format!(r"{}\ChewingDev", appdata);
+                         let _ = std::fs::create_dir_all(&dir);
+                         let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+                     }
+@@ -1398,7 +1252,7 @@ impl ChewingTextService {
+                     // AI 功能暫緩開發
+                 }
+                 ID_CHECK_NEW_VER => open_url(&self.cfg.chewing_tsf.update_info_url),
+-                ID_ABOUT => open_url("chewing-preferences://about"),
++                ID_ABOUT => open_url("https://github.com/edwardhome/chewing-kanata-lab"),
+                 ID_WEBSITE => open_url("https://chewing.im/"),
+                 ID_GROUP => open_url("https://groups.google.com/group/chewing-devel"),
+                 ID_BUGREPORT => open_url("https://codeberg.org/chewing/windows-chewing-tsf/issues"),
+@@ -1416,6 +1270,101 @@ impl ChewingTextService {
+         }
+     }
+ 
++    fn cancel_custom_input(&mut self, context: &ITfContext) -> Result<()> {
++        let active = self.f_buffer.is_some() || self.shift_session.is_some();
++        let base = self.f_buffer.take().and_then(|b| b.base).or_else(|| self.shift_session.take());
++        self.f_event = None;
++        self.f_key_state = kanata_layer::FKeyState::Up;
++        self.double_shift.reset();
++        if active { self.commit_ascii(context, base.as_ref().map_or("", |s| s.composition.raw.as_str()))?; }
++        Ok(())
++    }
++
++    fn render_ascii(&mut self, context: &ITfContext) -> Result<()> {
++        let composition = if let Some(buffer) = &self.f_buffer { buffer.preview(&self.lexicon) }
++            else if let Some(session) = &self.shift_session { session.composition.clone() }
++            else { ASCIIComposition::default() };
++        let text = composition.display();
++        let cursor = text.chars().take(composition.display_cursor()).map(char::len_utf16).sum();
++        self.set_composition_string(context, "", text, vec![(0, text.encode_utf16().count())], cursor)?;
++        if self.f_buffer.is_some() || composition.candidates.len() < 2 { self.hide_candidates(); }
++        else { self.show_ascii_candidates(context, &composition)?; }
++        Ok(())
++    }
++
++    fn show_ascii_candidates(&mut self, context: &ITfContext, composition: &ASCIIComposition) -> Result<()> {
++        if self.candidate_list.is_none() {
++            let hwnd = unsafe { context.GetActiveView()?.GetWnd().unwrap_or_default() };
++            self.candidate_list = Some(CandidateList::new(hwnd, self.thread_mgr.clone())?);
++        }
++        let hints = self.lexicon.candidate_items(&composition.raw);
++        let items: Vec<String> = composition.candidates.iter().map(|text| {
++            hints.iter().find(|c| &c.text == text).and_then(|c| c.annotation.as_ref())
++                .map_or_else(|| text.clone(), |hint| format!("{text}  {hint}"))
++        }).collect();
++        let cfg = &self.cfg.chewing_tsf;
++        if let Some(list) = &self.candidate_list {
++            list.set_model(Model {
++                selkeys: vec![0; items.len()], items, cand_per_row: 1,
++                total_page: 1, current_page: 1, use_cursor: true,
++                current_sel: composition.selected_index,
++                font_family: HSTRING::from(&cfg.font_family), font_size: cfg.font_size as f32,
++                fg_color: color_s(&cfg.font_fg_color), bg_color: color_s(&cfg.font_bg_color),
++                highlight_fg_color: color_s(&cfg.font_highlight_fg_color), highlight_bg_color: color_s(&cfg.font_highlight_bg_color),
++                border_color: color_s(&cfg.cand_list_border_color), selkey_color: color_s(&cfg.font_number_fg_color),
++            });
++            list.show();
++            if let Ok(rect) = self.get_selection_rect(context) { list.set_position(rect.left, rect.bottom); }
++        }
++        Ok(())
++    }
++
++    fn commit_ascii(&mut self, context: &ITfContext, text: &str) -> Result<()> {
++        self.set_composition_string(context, text, "", vec![], 0)?;
++        self.end_composition(context)?;
++        self.hide_candidates();
++        Ok(())
++    }
++
++    fn finish_f_buffer(&mut self, context: &ITfContext) -> Result<()> {
++        if let Some(buffer) = self.f_buffer.take() {
++            let composition = buffer.preview(&self.lexicon);
++            if let Some(mut base) = buffer.base {
++                base.composition = composition;
++                self.shift_session = Some(base);
++                self.render_ascii(context)?;
++            } else { self.commit_ascii(context, composition.display())?; }
++        }
++        self.f_event = None;
++        Ok(())
++    }
++
++    fn replay_f_tap(&mut self, context: &ITfContext) -> Result<()> {
++        let Some(event) = self.f_event.take() else { return Ok(()); };
++        if let Some(buffer) = self.f_buffer.take() { self.shift_session = buffer.base; }
++        let shifted = event.to_keyboard_event(self.keymap).is_state_on(KeyState::Shift);
++        let literal = if event.ascii_code == b'F' || shifted { "F" } else { "f" };
++        if let Some(session) = self.shift_session.take() {
++            match session.applying(CompositionAction::Insert(literal.into()), false, false, &self.lexicon) {
++                SessionResult::Updated(next) => { self.shift_session = Some(next); self.render_ascii(context)?; }
++                SessionResult::CommitAndContinue(text, next) => { self.commit_ascii(context, &text)?; self.shift_session = Some(next); }
++                _ => self.shift_session = Some(session),
++            }
++        } else if shifted && self.lang_mode.get() == TsfLangMode::Chinese {
++            let mut session = ShiftLetterSession::start_with_letter('F', &self.lexicon);
++            if self.shift_key_state == ShiftKeyState::Up { session.mode = ShiftMode::Word; }
++            self.shift_session = Some(session); self.render_ascii(context)?;
++        } else if self.lang_mode.get() == TsfLangMode::Chinese {
++            self.chewing_editor.process_keyevent(event.to_keyboard_event(self.keymap));
++            let commit = if self.chewing_editor.last_key_behavior() == EditorKeyBehavior::Commit {
++                let text = self.chewing_editor.display_commit().to_owned(); self.chewing_editor.ack(); text
++            } else { String::new() };
++            self.update_candidates(context)?;
++            self.update_preedit(context, commit)?;
++        } else { self.commit_ascii(context, literal)?; }
++        Ok(())
++    }
++
+     fn update_preedit(&mut self, context: &ITfContext, commit: String) -> Result<()> {
+         let mut composition_buf = String::new();
+         let mut segments = vec![];
+@@ -1477,7 +1426,7 @@ impl ChewingTextService {
+     }
+ 
+     fn insert_text(&self, context: &ITfContext, text: &str) -> Result<()> {
+-        debug!(text; "going to request immediate text insertion");
++        debug!("going to request immediate text insertion");
+         let htext = text.into();
+         let session = InsertText::new(context.clone(), htext).into_object();
+         request_edit_session(
+@@ -1511,7 +1460,7 @@ impl ChewingTextService {
+         segments: Vec<(usize, usize)>,
+         cursor: usize,
+     ) -> Result<()> {
+-        debug!(commit, preedit; "set composition string");
++        debug!("set composition string");
+         let commit = if self.output_simp_chinese {
+             zhconv(commit, Variant::ZhHans).into()
+         } else {
+@@ -1523,7 +1472,7 @@ impl ChewingTextService {
+             preedit.into()
+         };
+         if let Some(cell) = self.pending_edit.upgrade() {
+-            debug!(cursor, preedit:%; "Reuse existing edit session");
++            debug!("Reuse existing edit session");
+             cell.replace(Some(CompositionString {
+                 commit,
+                 preedit,
+@@ -1777,6 +1726,7 @@ impl ChewingTextService {
+     }
+ 
+     fn toggle_lang_mode_with_context(&mut self, context: &ITfContext) -> Result<()> {
++        self.cancel_custom_input(context)?;
+         let prev = self.lang_mode.get();
+         self.lang_mode.update(|v| match v {
+             TsfLangMode::English => TsfLangMode::Chinese,
+@@ -1808,6 +1758,7 @@ impl ChewingTextService {
+             unsafe {
+                 if let Ok(doc_mgr) = self.thread_mgr.GetFocus() {
+                     if let Ok(context) = doc_mgr.GetTop() {
++                        self.cancel_custom_input(&context)?;
+                         self.chewing_editor.clear_syllable_editor();
+                         let _ = self.update_preedit(&context, String::new());
+                     }
+@@ -1846,7 +1797,7 @@ impl ChewingTextService {
+ 
+     fn build_editor_from_cfg(cfg: &ChewingTsfConfig) -> Result<Editor> {
+         // Recreate editor to load latest user files
+-        let mut editor = Editor::chewing(None, None)?;
++        let mut editor = chewing_tip_core::shell::isolated_editor()?;
+         editor.set_editor_options(|opt| {
+             opt.easy_symbol_input = cfg.easy_symbols_with_shift || cfg.easy_symbols_with_shift_ctrl;
+             // NB: Historically the config was inverted
+diff --git a/tip/src/text_service/edit_session.rs b/tip/src/text_service/edit_session.rs
+index 3dd8f34..dc76f77 100644
+--- a/tip/src/text_service/edit_session.rs
++++ b/tip/src/text_service/edit_session.rs
+@@ -130,7 +130,7 @@ impl ITfEditSession_Impl for SetCompositionString_Impl {
+                 && let Some(pending) = self.pending.borrow().as_ref()
+             {
+                 let range = composition.GetRange()?;
+-                debug!(range:?, commit=pending.commit, preedit=pending.preedit; "set composition string");
++                debug!("set composition string");
+                 let text = HSTRING::from(format!("{}{}", pending.commit, pending.preedit));
+                 // Set text then shift the range to commit the string.
+                 // It seems Cicero doesn't handle multiple edit session very well, so we do
+@@ -141,7 +141,7 @@ impl ITfEditSession_Impl for SetCompositionString_Impl {
+                 let mut moved = 0;
+                 range.ShiftStart(
+                     ec,
+-                    pending.commit.chars().count() as i32,
++                    pending.commit.encode_utf16().count() as i32,
+                     &mut moved,
+                     ptr::null(),
+                 )?;
+diff --git a/tip/src/text_service/key_event.rs b/tip/src/text_service/key_event.rs
+index e1d078b..b068342 100644
+--- a/tip/src/text_service/key_event.rs
++++ b/tip/src/text_service/key_event.rs
+@@ -9,12 +9,13 @@ use chewing::input::keymap::{
+ use chewing::input::{KeyboardEvent, keysym::*};
+ use windows::Win32::UI::Input::KeyboardAndMouse::{
+     GetKeyboardState, MAPVK_VK_TO_VSC, MapVirtualKeyW, ToAscii, VIRTUAL_KEY, VK_CAPITAL,
+-    VK_CONTROL, VK_LWIN, VK_MENU, VK_NUMLOCK, VK_SHIFT,
++    VK_CONTROL, VK_LWIN, VK_RWIN, VK_MENU, VK_NUMLOCK, VK_SHIFT,
+ };
+ 
+ #[derive(Debug, Clone, Copy)]
+ pub(super) struct SystemKeyboardEvent {
+     pub(super) vk: u16,
++    pub(super) repeating: bool,
+     pub(super) scan_code: u16,
+     pub(super) ascii_code: u8,
+     pub(super) key_state: [u8; 256],
+@@ -54,6 +55,7 @@ impl SystemKeyboardEvent {
+             }
+         }
+         SystemKeyboardEvent {
++            repeating: lparam & (1 << 30) != 0,
+             vk,
+             scan_code,
+             ascii_code: code,
+@@ -98,7 +100,7 @@ impl SystemKeyboardEvent {
+             .alt_if(self.is_key_down(VK_MENU))
+             .caps_lock_if(self.is_key_toggled(VK_CAPITAL))
+             .num_lock_if(self.is_key_toggled(VK_NUMLOCK))
+-            .super_if(self.is_key_down(VK_LWIN))
++            .super_if(self.is_key_down(VK_LWIN) || self.is_key_down(VK_RWIN))
+             .build()
+     }
+ }
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index 269c9e8..0833ba7 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -42,10 +42,10 @@ mod ui_elements;
+ 
+ impl_context_error!(TipError);
+ 
+-const CHEWING_TSF_CLSID: GUID = GUID::from_u128(0x13F2EF08_575C_4D8C_88E0_F67BB8052B84);
+-const GUID_INPUT_DISPLAY_ATTRIBUTE_1: GUID = GUID::from_u128(0xEEA32958_DC57_4542_9FC833C74F5CAAA9);
++const CHEWING_TSF_CLSID: GUID = GUID::from_u128(0xD4C3B2A1_0E9E_4340_9E11_209B0E9C7E2E);
++const GUID_INPUT_DISPLAY_ATTRIBUTE_1: GUID = GUID::from_u128(0xA93694E9_862C_4C91_A4E36B8E41295B10);
+ const GUID_INPUT_DISPLAY_ATTRIBUTE_2: GUID =
+-    GUID::from_u128(0x211F1E9E_8C3F_437A_B25E_C83F627468DB);
++    GUID::from_u128(0xC0C98323_C48B_4167_9A1F_4E5BB81FBA47);
+ 
+ #[derive(Debug, Copy, Clone)]
+ #[repr(C)]
+@@ -272,7 +272,10 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
+ }
+ 
+ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
+-    fn ActivateEx(&self, ptim: Ref<ITfThreadMgr>, tid: u32, _dwflags: u32) -> Result<()> {
++    fn ActivateEx(&self, ptim: Ref<ITfThreadMgr>, tid: u32, dwflags: u32) -> Result<()> {
++        // Secure desktop activation must not open dictionaries, apply custom key
++        // policy, or initialize an AI client.
++        if dwflags & TF_TMAE_SECUREMODE != 0 { return Ok(()); }
+         self.Activate(ptim, tid)
+     }
+ }
+diff --git a/tip/src/text_service/ui_elements/candidate_list.rs b/tip/src/text_service/ui_elements/candidate_list.rs
+index 254ce90..fdaf9b0 100644
+--- a/tip/src/text_service/ui_elements/candidate_list.rs
++++ b/tip/src/text_service/ui_elements/candidate_list.rs
+@@ -251,12 +251,11 @@ impl View {
+                 let mut selkey_width: f32 = 0.0;
+                 let mut text_width: f32 = 0.0;
+                 let mut item_height: f32 = 0.0;
+-                let mut selkey = "?.".to_string().encode_utf16().collect::<Vec<_>>();
+                 for (key, text) in model.selkeys.iter().zip(model.items.iter()) {
+                     let mut selkey_metrics = DWRITE_TEXT_METRICS::default();
+                     let mut item_metrics = DWRITE_TEXT_METRICS::default();
+ 
+-                    selkey[0] = *key;
++                    let selkey = if *key == 0 { vec![] } else { vec![*key, b'.' as u16] };
+                     unsafe {
+                         dwrite_factory
+                             .CreateTextLayout(&selkey, &text_format, f32::MAX, f32::MAX)?
+@@ -449,8 +448,8 @@ impl View {
+                             right: x + selkey_width + text_width,
+                             bottom: y + item_height,
+                         };
+-                        let mut selkey = "?.".to_string().encode_utf16().collect::<Vec<_>>();
+-                        selkey[0] = model.selkeys.get(i.clamp(0, 9)).cloned().unwrap_or(0x3F);
++                        let key = model.selkeys.get(i).copied().unwrap_or(0);
++                        let selkey = if key == 0 { vec![] } else { vec![key, b'.' as u16] };
+ 
+                         dc.DrawText(
+                             &selkey,
+-- 
+2.55.0.windows.3
+

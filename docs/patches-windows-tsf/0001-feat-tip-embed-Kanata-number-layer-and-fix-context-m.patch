@@ -1,0 +1,368 @@
+From 9b3223c5cd37b2de9b0267f466f6a0ddaf6efd38 Mon Sep 17 00:00:00 2001
+From: Defu <defu@local.dev>
+Date: Fri, 23 Oct 2026 19:34:30 +0800
+Subject: [PATCH 1/6] feat(tip): embed Kanata number layer and fix context menu
+ launching
+
+---
+ Cargo.lock                           |   5 ++
+ tip/Cargo.toml                       |   1 +
+ tip/src/text_service/chewing.rs      | 100 +++++++++++++++++++++++-
+ tip/src/text_service/kanata_layer.rs | 112 +++++++++++++++++++++++++++
+ tip/src/text_service/mod.rs          |   1 +
+ 5 files changed, 216 insertions(+), 3 deletions(-)
+ create mode 100644 tip/src/text_service/kanata_layer.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index e55e176..54cf4c0 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -301,6 +301,10 @@ dependencies = [
+  "scoped-error",
+ ]
+ 
++[[package]]
++name = "chewing-policy-core"
++version = "0.1.0"
++
+ [[package]]
+ name = "chewing_tip"
+ version = "26.9.0"
+@@ -308,6 +312,7 @@ dependencies = [
+  "anyhow",
+  "cc",
+  "chewing",
++ "chewing-policy-core",
+  "chewing_tip_core",
+  "embed-resource",
+  "getrandom 0.4.3",
+diff --git a/tip/Cargo.toml b/tip/Cargo.toml
+index cd879f7..b30a0cd 100644
+--- a/tip/Cargo.toml
++++ b/tip/Cargo.toml
+@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
+ anyhow = "1.0.95"
+ chewing = { workspace = true }
+ chewing_tip_core = { path = "../crates/chewing_tip_core" }
++chewing-policy-core = { path = "../../../policy-core" }
+ getrandom = ">= 0.3.0, < 0.5.0"
+ interprocess = { workspace = true }
+ log = { version = "0.4.0", features = ["kv"] }
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index e1f3bae..5e72046 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -24,6 +24,7 @@ use chewing::input::{KeyState, KeyboardEvent, keycode, keysym};
+ use chewing::zhuyin::Syllable;
+ use chewing_tip_core::config::{ChewingTsfConfig, Config};
+ use chewing_tip_core::shell::open_url;
++use chewing_policy_core::{PolicyContext, PolicyMode, should_bypass_key, transform_commit};
+ use log::{debug, error, info};
+ use scoped_error::impl_context_error;
+ use scoped_error::{ErrorExt, expect_error};
+@@ -49,6 +50,7 @@ use windows_core::{ComObject, ComObjectInner, GUID, HSTRING, Interface};
+ use zhconv::{Variant, zhconv};
+ 
+ use super::CommandType;
++use super::kanata_layer;
+ use super::GUID_INPUT_DISPLAY_ATTRIBUTE_1;
+ use super::GUID_INPUT_DISPLAY_ATTRIBUTE_2;
+ use super::display_attribute::register_display_attribute;
+@@ -169,6 +171,7 @@ pub(super) struct ChewingTextService {
+     has_focus: bool,
+     output_simp_chinese: bool,
+     shift_key_state: ShiftKeyState,
++    f_key_state: kanata_layer::FKeyState,
+     cfg: Config,
+     kbtype: KeyboardLayoutCompat,
+     keymap: KeymapOp,
+@@ -285,6 +288,7 @@ impl ChewingTextService {
+             has_focus: true,
+             output_simp_chinese: Default::default(),
+             shift_key_state: ShiftKeyState::Up,
++            f_key_state: kanata_layer::FKeyState::Up,
+             cfg,
+             kbtype: KeyboardLayoutCompat::Default,
+             keymap: KeymapOp::None,
+@@ -331,6 +335,7 @@ impl ChewingTextService {
+     pub(super) fn on_kill_focus(&mut self, context: Option<ITfContext>) -> Result<()> {
+         debug!("on_kill_focus");
+         self.has_focus = false;
++        self.f_key_state = kanata_layer::FKeyState::Up;
+         if self.is_composing()
+             && let Some(context) = context
+         {
+@@ -432,6 +437,14 @@ impl ChewingTextService {
+         if shift_down {
+             return Ok(false);
+         }
++        if ev.vk == 0x46 {
++            return Ok(true);
++        }
++        if self.f_key_state != kanata_layer::FKeyState::Up {
++            if kanata_layer::map_kanata_number_layer(ev.vk).is_some() {
++                return Ok(true);
++            }
++        }
+         //
+         // Step 2.2 handle any keybindings
+         //
+@@ -480,6 +493,14 @@ impl ChewingTextService {
+             return Ok(true);
+         }
+         if !self.is_composing() {
++            if evt.ksym.is_ascii() {
++                let ascii_char = evt.ksym.to_unicode();
++                let policy_ctx = PolicyContext::new(PolicyMode::AsciiFirst);
++                if should_bypass_key(ascii_char, &policy_ctx) {
++                    debug!(ascii_char; "ASCII-first policy: bypass key to application");
++                    return Ok(false);
++                }
++            }
+             let shape_mode = self.chewing_editor.editor_options().character_form;
+             // don't do further handling in pure English + half shape mode
+             if self.lang_mode.get() == LanguageMode::English
+@@ -524,6 +545,41 @@ impl ChewingTextService {
+         let mut evt = ev.to_keyboard_event(self.keymap);
+         debug!(evt:?; "on_keydown");
+ 
++        // Kanata Tap-Hold 'f' Number/Symbol Layer
++        if ev.vk == 0x46 {
++            match self.f_key_state {
++                kanata_layer::FKeyState::Up => {
++                    self.f_key_state = kanata_layer::FKeyState::Down(Instant::now());
++                }
++                kanata_layer::FKeyState::Down(instant) => {
++                    if instant.elapsed() >= Duration::from_millis(180) {
++                        self.f_key_state = kanata_layer::FKeyState::Held;
++                    }
++                }
++                kanata_layer::FKeyState::Held => {}
++            }
++            return Ok(true);
++        }
++
++        if self.f_key_state != kanata_layer::FKeyState::Up {
++            if let Some(text) = kanata_layer::map_kanata_number_layer(ev.vk) {
++                self.f_key_state = kanata_layer::FKeyState::Held;
++                if !self.chewing_editor.is_empty() {
++                    let _ = self.chewing_editor.commit();
++                    let commit = self.chewing_editor.display_commit().to_owned();
++                    self.chewing_editor.ack();
++                    if !commit.is_empty() {
++                        self.insert_text(context, &commit)?;
++                    }
++                    self.update_preedit(context, String::new())?;
++                }
++                self.insert_text(context, text)?;
++                return Ok(true);
++            } else {
++                self.f_key_state = kanata_layer::FKeyState::Held;
++            }
++        }
++
+         // Handle keybindings
+         // FIXME: refactor this
+         let mut text_action = None;
+@@ -717,6 +773,8 @@ impl ChewingTextService {
+             if let Some(param) = text_action {
+                 commit.push_str(&param);
+             }
++            let policy_ctx = PolicyContext::new(PolicyMode::AsciiFirst);
++            commit = transform_commit(&commit, &policy_ctx).to_owned();
+             commit
+         } else {
+             String::new()
+@@ -748,6 +806,36 @@ impl ChewingTextService {
+         context: &ITfContext,
+         ev: SystemKeyboardEvent,
+     ) -> Result<bool> {
++        if ev.vk == 0x46 {
++            let prev = self.f_key_state;
++            self.f_key_state = kanata_layer::FKeyState::Up;
++            if let kanata_layer::FKeyState::Down(instant) = prev {
++                if instant.elapsed() < Duration::from_millis(250) {
++                    // Tap 'f'! Process normal 'f' into chewing editor
++                    let evt = ev.to_keyboard_event(self.keymap);
++                    self.chewing_editor.process_keyevent(evt);
++                    let last_behavior = self.chewing_editor.last_key_behavior();
++                    if !self.is_composing() && last_behavior == EditorKeyBehavior::Commit {
++                        let text = self.chewing_editor.display_commit().to_owned();
++                        self.chewing_editor.ack();
++                        self.insert_text(context, &text)?;
++                    } else {
++                        if let Err(error) = self.update_candidates(context) {
++                            error!("{}", error.report());
++                        }
++                        let commit = if last_behavior == EditorKeyBehavior::Commit {
++                            let c = self.chewing_editor.display_commit().to_owned();
++                            self.chewing_editor.ack();
++                            c
++                        } else {
++                            String::new()
++                        };
++                        self.update_preedit(context, commit)?;
++                    }
++                }
++            }
++            return Ok(true);
++        }
+         let evt = ev.to_keyboard_event(self.keymap);
+         let last_is_shift = evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT;
+         let last_is_capslock = evt.ksym == SYM_CAPSLOCK;
+@@ -928,7 +1016,7 @@ impl ChewingTextService {
+                         pos.x,
+                         pos.y,
+                         None,
+-                        GetFocus(),
++                        windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow(),
+                         None,
+                     )
+                 };
+@@ -957,8 +1045,14 @@ impl ChewingTextService {
+                         error!("unable to toggle lang mode: {error}");
+                     }
+                 }
+-                ID_HASHED => open_url("chewing-editor://open"),
+-                ID_CONFIG => open_url("chewing-preferences://config"),
++                ID_HASHED => {
++                    open_url("chewing-editor://open");
++                    let _ = std::process::Command::new(r"C:\Users\Defu\AppData\Local\Programs\ChewingDev\chewing-editor.exe").spawn();
++                }
++                ID_CONFIG => {
++                    open_url("chewing-preferences://config");
++                    let _ = std::process::Command::new(r"C:\Users\Defu\AppData\Local\Programs\ChewingDev\ChewingPreferences.exe").spawn();
++                }
+                 ID_OUTPUT_SIMP_CHINESE => {
+                     if let Err(error) = self.toggle_simp_chinese() {
+                         error!("unable to toggle simplified chinese: {error}");
+diff --git a/tip/src/text_service/kanata_layer.rs b/tip/src/text_service/kanata_layer.rs
+new file mode 100644
+index 0000000..48644d2
+--- /dev/null
++++ b/tip/src/text_service/kanata_layer.rs
+@@ -0,0 +1,112 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Kanata Number & Symbol Layer emulator for Chewing TSF
++// Based on kanata.original.kbd (tap-hold 120 180 f (layer-toggle number))
++
++use std::time::Instant;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum FKeyState {
++    Up,
++    Down(Instant),
++    Held,
++}
++
++impl Default for FKeyState {
++    fn default() -> Self {
++        Self::Up
++    }
++}
++
++/// 依據 kanata.original.kbd 的 number layer 定義進行虛擬鍵映射
++pub(crate) fn map_kanata_number_layer(vk: u16) -> Option<&'static str> {
++    match vk {
++        // Row 1: ` 1 2 3 4 5 6 7 8 9 0 - =
++        0xC0 => Some("`"),  // VK_OEM_3 (`~) -> `
++        0x31 => Some("!"),  // VK_1 -> !
++        0x32 => Some("@"),  // VK_2 -> @
++        0x33 => Some("#"),  // VK_3 -> #
++        0x34 => Some("$"),  // VK_4 -> $
++        0x35 => Some("%"),  // VK_5 -> %
++        0x36 => Some("^"),  // VK_6 -> ^
++        0x37 => Some("&"),  // VK_7 -> &
++        0x38 => Some("~"),  // VK_8 -> ~
++        0x39 => Some("("),  // VK_9 -> (
++        0x30 => Some(")"),  // VK_0 -> )
++        0xBD => Some("_"),  // VK_OEM_MINUS -> _
++        0xBB => Some("'"),  // VK_OEM_PLUS (=+) -> '
++
++        // Row 2: q w e r t y u i o p [ ] \
++        0x51 => Some("/"),  // Q -> /
++        0x57 => Some("*"),  // W -> *
++        0x45 => Some("-"),  // E -> -
++        0x52 => Some("+"),  // R -> +
++        // T is transparent
++        0x59 => Some("7"),  // Y -> 7
++        0x55 => Some("8"),  // U -> 8
++        0x49 => Some("9"),  // I -> 9
++        0x4F => Some("{"),  // O -> {
++        0x50 => Some("}"),  // P -> }
++        0xDB => Some("["),  // VK_OEM_4 ([{) -> [
++        0xDD => Some("]"),  // VK_OEM_6 (]} ) -> ]
++        0xDC => Some("\\"), // VK_OEM_5 (\|) -> \
++
++        // Row 3: a s d f g h j k l ; '
++        0x41 => Some("<"),  // A -> <
++        0x53 => Some(">"),  // S -> >
++        0x44 => Some("="),  // D -> =
++        // F is the hold modifier itself
++        0x47 => Some(">"),  // G -> >
++        0x48 => Some("4"),  // H -> 4
++        0x4A => Some("5"),  // J -> 5
++        0x4B => Some("6"),  // K -> 6
++        0x4C => Some(":"),  // L -> :
++        0xBA => Some(";"),  // VK_OEM_1 (;:) -> ;
++        0xDE => Some("\""), // VK_OEM_7 ('") -> "
++
++        // Row 4: z x c v b n m , . /
++        0x5A => Some("'"),  // Z -> '
++        0x58 => Some("|"),  // X -> |
++        // C, V transparent
++        0x42 => Some("°"),  // B -> ° (degree sign U+00B0)
++        0x4E => Some("1"),  // N -> 1
++        0x4D => Some("2"),  // M -> 2
++        0xBC => Some("3"),  // VK_OEM_COMMA (,<) -> 3
++        0xBE => Some("."),  // VK_OEM_PERIOD (.>) -> .
++        0xBF => Some("?"),  // VK_OEM_2 (/?) -> ?
++
++        // Row 5: Space
++        0x20 => Some("0"),  // VK_SPACE -> 0
++
++        _ => None,
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn test_kanata_number_layer_numpad() {
++        assert_eq!(map_kanata_number_layer(0x48), Some("4")); // H -> 4
++        assert_eq!(map_kanata_number_layer(0x4A), Some("5")); // J -> 5
++        assert_eq!(map_kanata_number_layer(0x4B), Some("6")); // K -> 6
++        assert_eq!(map_kanata_number_layer(0x4C), Some(":")); // L -> :
++        assert_eq!(map_kanata_number_layer(0x59), Some("7")); // Y -> 7
++        assert_eq!(map_kanata_number_layer(0x55), Some("8")); // U -> 8
++        assert_eq!(map_kanata_number_layer(0x49), Some("9")); // I -> 9
++        assert_eq!(map_kanata_number_layer(0x4E), Some("1")); // N -> 1
++        assert_eq!(map_kanata_number_layer(0x4D), Some("2")); // M -> 2
++        assert_eq!(map_kanata_number_layer(0xBC), Some("3")); // , -> 3
++        assert_eq!(map_kanata_number_layer(0x20), Some("0")); // Space -> 0
++    }
++
++    #[test]
++    fn test_kanata_number_layer_symbols() {
++        assert_eq!(map_kanata_number_layer(0xDB), Some("[")); // [
++        assert_eq!(map_kanata_number_layer(0xDD), Some("]")); // ]
++        assert_eq!(map_kanata_number_layer(0x4F), Some("{")); // O -> {
++        assert_eq!(map_kanata_number_layer(0x50), Some("}")); // P -> }
++        assert_eq!(map_kanata_number_layer(0xBD), Some("_")); // - -> _
++        assert_eq!(map_kanata_number_layer(0x42), Some("°")); // B -> °
++    }
++}
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index d11b0ca..e1d1fdd 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -31,6 +31,7 @@ mod chewing;
+ mod display_attribute;
+ mod edit_session;
+ mod icons;
++mod kanata_layer;
+ mod key_event;
+ mod lang_bar;
+ mod menu;

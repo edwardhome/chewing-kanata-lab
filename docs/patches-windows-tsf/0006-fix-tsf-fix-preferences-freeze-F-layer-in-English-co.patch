@@ -1,0 +1,844 @@
+From 2232ff9b91efae8247842eb0d34b8880c30d8e50 Mon Sep 17 00:00:00 2001
+From: Defu <defu@local.dev>
+Date: Wed, 4 Nov 2026 22:36:14 +0800
+Subject: [PATCH 6/6] fix(tsf): fix preferences freeze, F-layer in English,
+ continuous Shift-English session and suspend AI
+
+---
+ crates/chewing_preferences/src/main.rs | 305 +++++++++++++++----------
+ tip/rc/ChewingTextService.rc           |   1 -
+ tip/src/text_service/chewing.rs        | 244 ++++++++++++++++++--
+ 3 files changed, 403 insertions(+), 147 deletions(-)
+
+diff --git a/crates/chewing_preferences/src/main.rs b/crates/chewing_preferences/src/main.rs
+index e1675ab..78429cd 100644
+--- a/crates/chewing_preferences/src/main.rs
++++ b/crates/chewing_preferences/src/main.rs
+@@ -11,7 +11,7 @@ use windows::Win32::Graphics::Gdi::{
+ };
+ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+ use windows::Win32::UI::Controls::{
+-    InitCommonControlsEx, ICC_STANDARD_CLASSES, ICC_UPDOWN_CLASS, TBM_SETPOS, TBM_SETRANGE,
++    InitCommonControlsEx, ICC_BAR_CLASSES, ICC_STANDARD_CLASSES, ICC_UPDOWN_CLASS, TBM_SETPOS, TBM_SETRANGE,
+     TRACKBAR_CLASSW,
+ };
+ use windows::Win32::UI::HiDpi::{
+@@ -42,19 +42,20 @@ const COLOR_BTNFACE: i32 = 15;
+ // Control IDs
+ const IDC_SLIDER_F: isize = 101;
+ const IDC_LABEL_F_VAL: isize = 102;
+-const IDC_CHK_AI: isize = 103;
+ const IDC_CHK_DEFAULT_ZH: isize = 104;
+ const IDC_BTN_OPEN_DICT: isize = 105;
+-const IDC_BTN_OPEN_EDITOR: isize = 106;
+-const IDC_BTN_SAVE: isize = 107;
+-const IDC_BTN_RESET: isize = 108;
+-const IDC_BTN_CLOSE: isize = 109;
++const IDC_BTN_OPEN_USER_DICT: isize = 106;
++const IDC_BTN_OPEN_POLICY: isize = 107;
++const IDC_BTN_OPEN_DIR: isize = 108;
++const IDC_BTN_OPEN_EDITOR: isize = 109;
++const IDC_BTN_SAVE: isize = 110;
++const IDC_BTN_RESET: isize = 111;
++const IDC_BTN_CLOSE: isize = 112;
+ 
+ struct AppState {
+     f_delay_ms: i32,
+     h_slider: HWND,
+     h_lbl_f_val: HWND,
+-    h_chk_ai: HWND,
+     h_chk_default_zh: HWND,
+     font_title: HFONT,
+     font_bold: HFONT,
+@@ -123,32 +124,37 @@ unsafe fn create_ctrl(
+     }
+ }
+ 
+-fn load_registry_config() -> (i32, bool, bool) {
++fn open_file_in_notepad(path_str: &str, default_content: &str) {
++    let path = std::path::Path::new(path_str);
++    if let Some(parent) = path.parent() {
++        let _ = std::fs::create_dir_all(parent);
++    }
++    if !path.exists() {
++        let _ = std::fs::write(path, default_content);
++    }
++    let _ = Command::new("notepad.exe").arg(path).spawn();
++}
++
++fn load_registry_config() -> (i32, bool) {
+     let f_delay = CURRENT_USER
+         .open(REG_KEY)
+         .and_then(|k| k.get_u32("FHoldDelayMs"))
+         .map(|v| (v as i32).clamp(100, 1000))
+         .unwrap_or(350);
+ 
+-    let enable_ai = CURRENT_USER
+-        .open(REG_KEY)
+-        .and_then(|k| k.get_u32("EnableAI"))
+-        .map(|v| v != 0)
+-        .unwrap_or(false);
+-
+     let default_english = CURRENT_USER
+         .open(REG_KEY)
+         .and_then(|k| k.get_u32("DefaultEnglish"))
+         .map(|v| v != 0)
+         .unwrap_or(false);
+ 
+-    (f_delay, enable_ai, !default_english)
++    (f_delay, !default_english)
+ }
+ 
+-fn save_registry_config(f_delay: i32, enable_ai: bool, default_chinese: bool) {
++fn save_registry_config(f_delay: i32, default_chinese: bool) {
+     if let Ok(key) = CURRENT_USER.create(REG_KEY) {
+         let _ = key.set_u32("FHoldDelayMs", f_delay as u32);
+-        let _ = key.set_u32("EnableAI", if enable_ai { 1 } else { 0 });
++        let _ = key.set_u32("EnableAI", 0); // AI 功能暫緩開發
+         let _ = key.set_u32("DefaultEnglish", if default_chinese { 0 } else { 1 });
+     }
+ }
+@@ -161,7 +167,7 @@ unsafe extern "system" fn wnd_proc(
+ ) -> LRESULT {
+     match msg {
+         WM_CREATE => {
+-            let (f_delay, enable_ai, default_chinese) = load_registry_config();
++            let (f_delay, default_chinese) = load_registry_config();
+             let hinst = unsafe { HINSTANCE(GetModuleHandleW(None).unwrap().0) };
+ 
+             // Create fonts
+@@ -172,16 +178,17 @@ unsafe extern "system" fn wnd_proc(
+             let bg_brush = unsafe { CreateSolidBrush(COLORREF(0x00F8F8F8)) };
+ 
+             // 1. GroupBox: F 鍵分層延遲設定
+-            let grp1 = unsafe {
++            if let Ok(grp1) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+                     w!("【1】F 鍵長按延遲設定 (F-Hold Delay)"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_GROUPBOX,
+-                    20, 20, 640, 140,
++                    20, 15, 640, 130,
+                     hwnd, 0, hinst,
+-                ).unwrap()
+-            };
+-            unsafe { send_msg(grp1, WM_SETFONT, font_bold.0 as usize, 1) };
++                )
++            } {
++                unsafe { send_msg(grp1, WM_SETFONT, font_bold.0 as usize, 1) };
++            }
+ 
+             // Slider
+             let h_slider = unsafe {
+@@ -189,13 +196,15 @@ unsafe extern "system" fn wnd_proc(
+                     TRACKBAR_CLASSW,
+                     w!(""),
+                     WS_CHILD.0 | WS_VISIBLE.0 | TBS_AUTOTICKS | WS_TABSTOP.0,
+-                    40, 55, 380, 40,
++                    40, 45, 380, 40,
+                     hwnd, IDC_SLIDER_F, hinst,
+-                ).unwrap()
++                ).unwrap_or_default()
+             };
+-            unsafe {
+-                send_msg(h_slider, TBM_SETRANGE, 1, ((1000 << 16) | 100) as isize);
+-                send_msg(h_slider, TBM_SETPOS, 1, f_delay as isize);
++            if !h_slider.0.is_null() {
++                unsafe {
++                    send_msg(h_slider, TBM_SETRANGE, 1, ((1000 << 16) | 100) as isize);
++                    send_msg(h_slider, TBM_SETPOS, 1, f_delay as isize);
++                }
+             }
+ 
+             // Label F Value
+@@ -205,167 +214,200 @@ unsafe extern "system" fn wnd_proc(
+                     w!("STATIC"),
+                     PCWSTR(val_str.as_ptr()),
+                     WS_CHILD.0 | WS_VISIBLE.0,
+-                    440, 60, 200, 25,
++                    440, 50, 200, 25,
+                     hwnd, IDC_LABEL_F_VAL, hinst,
+-                ).unwrap()
++                ).unwrap_or_default()
+             };
+-            unsafe { send_msg(h_lbl_f_val, WM_SETFONT, font_bold.0 as usize, 1) };
++            if !h_lbl_f_val.0.is_null() {
++                unsafe { send_msg(h_lbl_f_val, WM_SETFONT, font_bold.0 as usize, 1) };
++            }
+ 
+             // Slider Hint
+-            let h_lbl_hint = unsafe {
++            if let Ok(h_lbl_hint) = unsafe {
+                 create_ctrl(
+                     w!("STATIC"),
+-                    w!("💡 說明：預設 350ms。快速連續打注音 (如「ㄑㄧ」、「ㄑㄩ」) 自動保留注音，絕不輸出數字；按住 F 鍵超過此時間後即啟動右側九宮格數字層。"),
++                    w!("💡 說明：預設 350ms。快速連打注音或英文為正常輸入；長按 F 鍵超過此延遲時間即啟動右手九宮格數字/運算分層。中/英文模式均通用！"),
+                     WS_CHILD.0 | WS_VISIBLE.0,
+-                    40, 100, 600, 45,
++                    40, 85, 600, 50,
+                     hwnd, 0, hinst,
+-                ).unwrap()
+-            };
+-            unsafe { send_msg(h_lbl_hint, WM_SETFONT, font_normal.0 as usize, 1) };
++                )
++            } {
++                unsafe { send_msg(h_lbl_hint, WM_SETFONT, font_normal.0 as usize, 1) };
++            }
+ 
+             // 2. GroupBox: F 分層功能展示
+-            let grp2 = unsafe {
++            if let Ok(grp2) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+-                    w!("【2】F 分層輸入功能展示 (右手九宮格與算術鍵盤)"),
++                    w!("【2】F 分層輸入功能展示 (右手九宮格與算術運算鍵盤)"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_GROUPBOX,
+-                    20, 175, 640, 205,
++                    20, 155, 640, 205,
+                     hwnd, 0, hinst,
+-                ).unwrap()
+-            };
+-            unsafe { send_msg(grp2, WM_SETFONT, font_bold.0 as usize, 1) };
++                )
++            } {
++                unsafe { send_msg(grp2, WM_SETFONT, font_bold.0 as usize, 1) };
++            }
+ 
+             let cheatsheet_text = w!(
+-                "┌── 按住 F 鍵 ──┬── 符號與運算 ──┬────── 數字九宮格 ──────┐\n\
+-                 │  F + Esc ➜ `  │  F + Q ➜ /     │  F + Y ➜ 7  |  F + U ➜ 8  |  F + I ➜ 9 │\n\
+-                 │  F + [   ➜ [  │  F + W ➜ *     │  F + H ➜ 4  |  F + J ➜ 5  |  F + K ➜ 6 │\n\
+-                 │  F + ]   ➜ ]  │  F + E ➜ -     │  F + N ➜ 1  |  F + M ➜ 2  |  F + , ➜ 3 │\n\
+-                 │  F + O   ➜ {  │  F + R ➜ +     │             |  F + Space ➜ 0          │\n\
+-                 └───────────────┴────────────────┴────────────────────────────────────────┘"
++                "┌── 按住 F 鍵 ──┬── 符號與運算 ──┬────── 數字九宮格 ──────┐\n                 │  F + Esc ➜ `  │  F + Q ➜ /     │  F + Y ➜ 7  |  F + U ➜ 8  |  F + I ➜ 9 │\n                 │  F + [   ➜ [  │  F + W ➜ *     │  F + H ➜ 4  |  F + J ➜ 5  |  F + K ➜ 6 │\n                 │  F + ]   ➜ ]  │  F + E ➜ -     │  F + N ➜ 1  |  F + M ➜ 2  |  F + , ➜ 3 │\n                 │  F + O   ➜ {  │  F + R ➜ +     │             |  F + Space ➜ 0          │\n                 └───────────────┴────────────────┴────────────────────────────────────────┘"
+             );
+-            let h_lbl_cheat = unsafe {
++            if let Ok(h_lbl_cheat) = unsafe {
+                 create_ctrl(
+                     w!("STATIC"),
+                     cheatsheet_text,
+                     WS_CHILD.0 | WS_VISIBLE.0,
+-                    40, 205, 600, 130,
++                    40, 185, 600, 130,
+                     hwnd, 0, hinst,
+-                ).unwrap()
+-            };
+-            unsafe { send_msg(h_lbl_cheat, WM_SETFONT, font_mono.0 as usize, 1) };
++                )
++            } {
++                unsafe { send_msg(h_lbl_cheat, WM_SETFONT, font_mono.0 as usize, 1) };
++            }
+ 
+-            let h_lbl_cheat_tip = unsafe {
++            if let Ok(h_lbl_cheat_tip) = unsafe {
+                 create_ctrl(
+                     w!("STATIC"),
+-                    w!("✨ 智慧保護：長按 F 打數字時雙手不離主鍵區；中文模式鍵入「去 (ㄑㄩ)」自動攔截優先，零衝突！"),
++                    w!("✨ 智能防護：中文模式打「去 (ㄑㄩ)」自動攔截優先；雙擊 Shift 進入英文模式後長按 F 亦直接進入九宮格，絕不吐出多餘 f！"),
+                     WS_CHILD.0 | WS_VISIBLE.0,
+-                    40, 345, 600, 25,
++                    40, 325, 600, 25,
+                     hwnd, 0, hinst,
+-                ).unwrap()
+-            };
+-            unsafe { send_msg(h_lbl_cheat_tip, WM_SETFONT, font_normal.0 as usize, 1) };
++                )
++            } {
++                unsafe { send_msg(h_lbl_cheat_tip, WM_SETFONT, font_normal.0 as usize, 1) };
++            }
+ 
+-            // 3. GroupBox: AI 智慧與詞庫設定
+-            let grp3 = unsafe {
++            // 3. GroupBox: 詞庫管理與檔案直接編輯 (防止 WebView2 假死或沒有回應)
++            if let Ok(grp3) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+-                    w!("【3】AI 智慧組詞與詞庫選項"),
++                    w!("【3】詞庫管理與設定檔案直接編輯"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_GROUPBOX,
+-                    20, 395, 640, 160,
++                    20, 370, 640, 195,
+                     hwnd, 0, hinst,
+-                ).unwrap()
+-            };
+-            unsafe { send_msg(grp3, WM_SETFONT, font_bold.0 as usize, 1) };
+-
+-            let h_chk_ai = unsafe {
+-                create_ctrl(
+-                    w!("BUTTON"),
+-                    w!("啟用 Ollama 本機 AI 智慧組詞 (僅在英文單字組詞時介入，預設關閉)"),
+-                    WS_CHILD.0 | WS_VISIBLE.0 | BS_AUTOCHECKBOX | WS_TABSTOP.0,
+-                    40, 425, 600, 25,
+-                    hwnd, IDC_CHK_AI, hinst,
+-                ).unwrap()
+-            };
+-            unsafe {
+-                send_msg(h_chk_ai, WM_SETFONT, font_normal.0 as usize, 1);
+-                send_msg(h_chk_ai, BM_SETCHECK, if enable_ai { BST_CHECKED } else { BST_UNCHECKED }, 0);
++                )
++            } {
++                unsafe { send_msg(grp3, WM_SETFONT, font_bold.0 as usize, 1) };
+             }
+ 
+             let h_chk_default_zh = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+-                    w!("開機與切換視窗時預設為「中文注音模式」[中] (雙擊 Shift 可瞬切中英)"),
++                    w!("開機與切換視窗時預設為「中文注音模式」[中] (雙擊 Shift 可瞬切直接英文)"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_AUTOCHECKBOX | WS_TABSTOP.0,
+-                    40, 455, 600, 25,
++                    40, 395, 600, 25,
+                     hwnd, IDC_CHK_DEFAULT_ZH, hinst,
+-                ).unwrap()
++                ).unwrap_or_default()
+             };
+-            unsafe {
+-                send_msg(h_chk_default_zh, WM_SETFONT, font_normal.0 as usize, 1);
+-                send_msg(h_chk_default_zh, BM_SETCHECK, if default_chinese { BST_CHECKED } else { BST_UNCHECKED }, 0);
++            if !h_chk_default_zh.0.is_null() {
++                unsafe {
++                    send_msg(h_chk_default_zh, WM_SETFONT, font_normal.0 as usize, 1);
++                    send_msg(h_chk_default_zh, BM_SETCHECK, if default_chinese { BST_CHECKED } else { BST_UNCHECKED }, 0);
++                }
+             }
+ 
+-            let h_btn_dict = unsafe {
++            // Row 1: Direct notepad editing for dictionaries
++            if let Ok(h_btn_dict) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+-                    w!("📖 開啟英文專業名詞詞庫 (technical-terms.txt)"),
++                    w!("📝 記事本編輯 英文專業名詞庫 (technical-terms.txt)"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
+-                    40, 495, 290, 35,
++                    40, 430, 295, 36,
+                     hwnd, IDC_BTN_OPEN_DICT, hinst,
+-                ).unwrap()
+-            };
+-            unsafe { send_msg(h_btn_dict, WM_SETFONT, font_normal.0 as usize, 1) };
++                )
++            } {
++                unsafe { send_msg(h_btn_dict, WM_SETFONT, font_normal.0 as usize, 1) };
++            }
++
++            if let Ok(h_btn_user_dict) = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("📝 記事本編輯 標準學術詞庫 (user_dict.csv)"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
++                    345, 430, 295, 36,
++                    hwnd, IDC_BTN_OPEN_USER_DICT, hinst,
++                )
++            } {
++                unsafe { send_msg(h_btn_user_dict, WM_SETFONT, font_normal.0 as usize, 1) };
++            }
++
++            // Row 2: Policy & Explorer
++            if let Ok(h_btn_policy) = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("📝 記事本編輯 政策設定檔 (policy.toml)"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
++                    40, 475, 295, 36,
++                    hwnd, IDC_BTN_OPEN_POLICY, hinst,
++                )
++            } {
++                unsafe { send_msg(h_btn_policy, WM_SETFONT, font_normal.0 as usize, 1) };
++            }
++
++            if let Ok(h_btn_dir) = unsafe {
++                create_ctrl(
++                    w!("BUTTON"),
++                    w!("📁 開啟設定與詞庫資料夾 (檔案總管)"),
++                    WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
++                    345, 475, 295, 36,
++                    hwnd, IDC_BTN_OPEN_DIR, hinst,
++                )
++            } {
++                unsafe { send_msg(h_btn_dir, WM_SETFONT, font_normal.0 as usize, 1) };
++            }
+ 
+-            let h_btn_editor = unsafe {
++            // Row 3: Editor
++            if let Ok(h_btn_editor) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+-                    w!("🛠️ 開啟使用者詞庫編輯器 (chewing-editor.exe)"),
++                    w!("🛠️ 啟動 GUI 詞庫管理程式 (chewing-editor.exe)"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
+-                    340, 495, 300, 35,
++                    40, 520, 600, 34,
+                     hwnd, IDC_BTN_OPEN_EDITOR, hinst,
+-                ).unwrap()
+-            };
+-            unsafe { send_msg(h_btn_editor, WM_SETFONT, font_normal.0 as usize, 1) };
++                )
++            } {
++                unsafe { send_msg(h_btn_editor, WM_SETFONT, font_normal.0 as usize, 1) };
++            }
+ 
+             // Bottom Buttons
+-            let h_btn_save = unsafe {
++            if let Ok(h_btn_save) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+                     w!("💾 套用儲存設定"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
+-                    300, 570, 150, 40,
++                    300, 580, 150, 40,
+                     hwnd, IDC_BTN_SAVE, hinst,
+-                ).unwrap()
+-            };
+-            unsafe { send_msg(h_btn_save, WM_SETFONT, font_bold.0 as usize, 1) };
++                )
++            } {
++                unsafe { send_msg(h_btn_save, WM_SETFONT, font_bold.0 as usize, 1) };
++            }
+ 
+-            let h_btn_reset = unsafe {
++            if let Ok(h_btn_reset) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+                     w!("🔄 恢復預設"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
+-                    460, 570, 100, 40,
++                    460, 580, 100, 40,
+                     hwnd, IDC_BTN_RESET, hinst,
+-                ).unwrap()
+-            };
+-            unsafe { send_msg(h_btn_reset, WM_SETFONT, font_normal.0 as usize, 1) };
++                )
++            } {
++                unsafe { send_msg(h_btn_reset, WM_SETFONT, font_normal.0 as usize, 1) };
++            }
+ 
+-            let h_btn_close = unsafe {
++            if let Ok(h_btn_close) = unsafe {
+                 create_ctrl(
+                     w!("BUTTON"),
+                     w!("關閉"),
+                     WS_CHILD.0 | WS_VISIBLE.0 | BS_PUSHBUTTON | WS_TABSTOP.0,
+-                    570, 570, 90, 40,
++                    570, 580, 90, 40,
+                     hwnd, IDC_BTN_CLOSE, hinst,
+-                ).unwrap()
+-            };
+-            unsafe { send_msg(h_btn_close, WM_SETFONT, font_normal.0 as usize, 1) };
++                )
++            } {
++                unsafe { send_msg(h_btn_close, WM_SETFONT, font_normal.0 as usize, 1) };
++            }
+ 
+             *APP_STATE.lock().unwrap() = Some(AppState {
+                 f_delay_ms: f_delay,
+                 h_slider,
+                 h_lbl_f_val,
+-                h_chk_ai,
+                 h_chk_default_zh,
+                 font_title,
+                 font_bold,
+@@ -393,13 +435,12 @@ unsafe extern "system" fn wnd_proc(
+                 if let Some(state) = guard.as_mut() {
+                     match id {
+                         IDC_BTN_SAVE => {
+-                            let ai_checked = unsafe { send_msg(state.h_chk_ai, BM_GETCHECK, 0, 0) }.0 == BST_CHECKED as isize;
+                             let zh_checked = unsafe { send_msg(state.h_chk_default_zh, BM_GETCHECK, 0, 0) }.0 == BST_CHECKED as isize;
+-                            save_registry_config(state.f_delay_ms, ai_checked, zh_checked);
++                            save_registry_config(state.f_delay_ms, zh_checked);
+                             let _ = unsafe {
+                                 MessageBoxW(
+                                     Some(hwnd),
+-                                    w!("✅ 設定已成功套用並儲存至 Windows 登錄表！\n新設定已即時生效。"),
++                                    w!("✅ 設定已成功套用並儲存至 Windows 登錄表！\n新設定已即時生效。\n\n（AI 智慧功能已依需求暫緩開發並安全停用）"),
+                                     w!("AI新酷音輸入法設定"),
+                                     MB_OK | MB_ICONINFORMATION,
+                                 )
+@@ -410,19 +451,39 @@ unsafe extern "system" fn wnd_proc(
+                             unsafe {
+                                 send_msg(state.h_slider, TBM_SETPOS, 1, 350);
+                                 let _ = SetWindowTextW(state.h_lbl_f_val, w!("當前延遲：350 毫秒"));
+-                                send_msg(state.h_chk_ai, BM_SETCHECK, BST_UNCHECKED, 0);
+                                 send_msg(state.h_chk_default_zh, BM_SETCHECK, BST_CHECKED, 0);
+                             }
+                         }
+                         IDC_BTN_OPEN_DICT => {
+                             let appdata = std::env::var("APPDATA").unwrap_or_default();
+                             let p = format!(r"{}\Chewing\technical-terms.txt", appdata);
+-                            let _ = Command::new("notepad.exe").arg(p).spawn();
++                            open_file_in_notepad(&p, "# AI新酷音 專業技術與學術專有名詞庫\n# 每一行一個詞彙，支援工程與科學標準符號（如 I²C, MOSFET, SiO₂, GaN, Wi-Fi）\nI²C\nI³C\nMOSFET\nFinFET\nSiO₂\nGaN\nLiCoO₂\nWi-Fi\nChatGPT\nClaude\nOllama\n");
++                        }
++                        IDC_BTN_OPEN_USER_DICT => {
++                            let appdata = std::env::var("APPDATA").unwrap_or_default();
++                            let p = format!(r"{}\Chewing\v4\user_dict.csv", appdata);
++                            open_file_in_notepad(&p, "# 新酷音使用者自訂詞庫 (User Dictionary)\n# 格式：詞彙,注音 (以空白分隔各字注音)\n得富,ㄉㄜˊ ㄈㄨˋ\n陳俊安,ㄔㄣˊ ㄐㄩㄣˋ ㄢ\n章翔威,ㄓㄤ ㄒㄧㄤˊ ㄨㄟ\n");
++                        }
++                        IDC_BTN_OPEN_POLICY => {
++                            let appdata = std::env::var("APPDATA").unwrap_or_default();
++                            let p = format!(r"{}\ChewingDev\policy.toml", appdata);
++                            open_file_in_notepad(&p, "# AI新酷音 策略核心組態 (Chewing Policy Core)\n[gesture]\ndouble_shift_ms = 400\n\n[kanata]\nf_hold_delay_ms = 350\nenable_number_layer = true\n\n[lexicon]\nenable_technical_lexicon = true\n");
++                        }
++                        IDC_BTN_OPEN_DIR => {
++                            let appdata = std::env::var("APPDATA").unwrap_or_default();
++                            let p = format!(r"{}\Chewing", appdata);
++                            let _ = std::fs::create_dir_all(&p);
++                            let _ = Command::new("explorer.exe").arg(p).spawn();
+                         }
+                         IDC_BTN_OPEN_EDITOR => {
+                             let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+                             let p = format!(r"{}\Programs\ChewingDev\chewing-editor.exe", localappdata);
+-                            let _ = Command::new(p).spawn();
++                            if let Err(_) = Command::new(&p).spawn() {
++                                // Fallback to notepad
++                                let appdata = std::env::var("APPDATA").unwrap_or_default();
++                                let fallback = format!(r"{}\Chewing\v4\user_dict.csv", appdata);
++                                open_file_in_notepad(&fallback, "# 新酷音使用者自訂詞庫 (User Dictionary)\n");
++                            }
+                         }
+                         IDC_BTN_CLOSE => {
+                             unsafe { PostQuitMessage(0) };
+@@ -470,7 +531,7 @@ fn main() -> windows::core::Result<()> {
+         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+         let icce = windows::Win32::UI::Controls::INITCOMMONCONTROLSEX {
+             dwSize: std::mem::size_of::<windows::Win32::UI::Controls::INITCOMMONCONTROLSEX>() as u32,
+-            dwICC: ICC_STANDARD_CLASSES | ICC_UPDOWN_CLASS,
++            dwICC: ICC_STANDARD_CLASSES | ICC_UPDOWN_CLASS | ICC_BAR_CLASSES,
+         };
+         let _ = InitCommonControlsEx(&icce);
+ 
+@@ -494,7 +555,7 @@ fn main() -> windows::core::Result<()> {
+             class_name,
+             w!("AI新酷音輸入法設定"),
+             WS_OVERLAPPEDWINDOW & !windows::Win32::UI::WindowsAndMessaging::WS_MAXIMIZEBOX,
+-            150, 150, 695, 665,
++            150, 150, 695, 680,
+             None,
+             None,
+             Some(hinstance),
+diff --git a/tip/rc/ChewingTextService.rc b/tip/rc/ChewingTextService.rc
+index fbec28c..3033432 100644
+--- a/tip/rc/ChewingTextService.rc
++++ b/tip/rc/ChewingTextService.rc
+@@ -139,7 +139,6 @@ BEGIN
+             MENUITEM "教育部國語小字典",                    ID_LITTLEDICT
+             MENUITEM "教育部成語典",                      ID_PROVERBDICT
+         END
+-        MENUITEM "AI 智慧輔助 (本機 LLM) (&L)",         ID_TOGGLE_AI
+         MENUITEM "輸出全形英數字母 (&F)",             ID_SWITCH_SHAPE
+         MENUITEM "輸出簡體中文 (&S)",                 ID_OUTPUT_SIMP_CHINESE
+     END
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 471d640..88701d8 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -25,7 +25,8 @@ use chewing::zhuyin::Syllable;
+ use chewing_tip_core::config::{ChewingTsfConfig, Config};
+ use chewing_tip_core::shell::open_url;
+ use chewing_policy_core::{
+-    DoubleShiftGesture, PolicyContext, PolicyMode, should_bypass_key, transform_commit,
++    CompositionAction, DoubleShiftGesture, PolicyContext, PolicyMode, SessionResult,
++    ShiftLetterSession, TechnicalLexicon, should_bypass_key, transform_commit,
+ };
+ use log::{debug, error, info};
+ use scoped_error::impl_context_error;
+@@ -174,6 +175,8 @@ pub(super) struct ChewingTextService {
+     has_focus: bool,
+     output_simp_chinese: bool,
+     shift_key_state: ShiftKeyState,
++    shift_session: Option<ShiftLetterSession>,
++    lexicon: TechnicalLexicon,
+     f_key_state: kanata_layer::FKeyState,
+     double_shift: DoubleShiftGesture,
+     start_time: Instant,
+@@ -297,6 +300,8 @@ impl ChewingTextService {
+             has_focus: true,
+             output_simp_chinese: Default::default(),
+             shift_key_state: ShiftKeyState::Up,
++            shift_session: None,
++            lexicon: TechnicalLexicon::load_from_file_or_default(),
+             f_key_state: kanata_layer::FKeyState::Up,
+             double_shift: DoubleShiftGesture::new(),
+             start_time: Instant::now(),
+@@ -347,6 +352,7 @@ impl ChewingTextService {
+         debug!("on_kill_focus");
+         self.has_focus = false;
+         self.f_key_state = kanata_layer::FKeyState::Up;
++        self.shift_session = None;
+         self.double_shift.reset();
+         if self.is_composing()
+             && let Some(context) = context
+@@ -467,6 +473,25 @@ impl ChewingTextService {
+             }
+         }
+ 
++        // 3. If ShiftLetterSession is active, intercept word keys, backspace, enter, esc, space
++        if self.shift_session.is_some() {
++            if !evt.is_state_on(KeyState::Control) && !evt.is_state_on(KeyState::Alt) {
++                return Ok(true);
++            }
++        }
++
++        // 4. In Chinese mode, intercept Shift + [A-Z] to start ShiftLetterSession
++        let shift_held = evt.is_state_on(KeyState::Shift) || self.shift_key_state != ShiftKeyState::Up;
++        if self.lang_mode.get() == TsfLangMode::Chinese
++            && shift_held
++            && (0x41..=0x5A).contains(&ev.vk)
++            && !evt.is_state_on(KeyState::Control)
++            && !evt.is_state_on(KeyState::Alt)
++            && !self.chewing_editor.is_selecting()
++        {
++            return Ok(true);
++        }
++
+ 
+         //
+         // Step 2.1 handle switch lang with Shift
+@@ -574,12 +599,154 @@ impl ChewingTextService {
+         let mut evt = ev.to_keyboard_event(self.keymap);
+         debug!(evt:?; "on_keydown");
+ 
+-        // 1. Kanata Tap-Hold 'f' Number/Symbol Layer: F key itself
+         let shift_held = evt.is_state_on(KeyState::Shift) || self.shift_key_state != ShiftKeyState::Up;
+-        let is_english = self.lang_mode.get() == TsfLangMode::English;
+-        if ev.vk == 0x46
++        let _is_english = self.lang_mode.get() == TsfLangMode::English;
++
++        // [ShiftLetterSession] 英文連續輸入狀態機處理
++        if let Some(session) = self.shift_session.take() {
++            // 1. 若使用者按下 Ctrl 或 Alt 組合鍵 (如 Ctrl+C, Ctrl+V)，先行送出當前英文單字並放行快捷鍵
++            if evt.is_state_on(KeyState::Control) || evt.is_state_on(KeyState::Alt) {
++                let text = session.composition.display().to_string();
++                if !text.is_empty() {
++                    self.insert_text(context, &text)?;
++                }
++                self.update_preedit(context, String::new())?;
++                return Ok(false);
++            }
++
++            // 2. Escape: 放棄當前輸入
++            if ev.vk == 0x1B {
++                self.update_preedit(context, String::new())?;
++                return Ok(true);
++            }
++
++            // 3. Return (Enter): 確認送出當前英文單字
++            if ev.vk == 0x0D {
++                let text = session.composition.display().to_string();
++                if !text.is_empty() {
++                    self.insert_text(context, &text)?;
++                }
++                self.update_preedit(context, String::new())?;
++                return Ok(true);
++            }
++
++            // 4. Space: 送出當前英文單字 + 空格
++            if ev.vk == 0x20 {
++                let text = format!("{} ", session.composition.display());
++                self.insert_text(context, &text)?;
++                self.update_preedit(context, String::new())?;
++                return Ok(true);
++            }
++
++            // 5. Backspace: 倒退刪除字元
++            if ev.vk == 0x08 {
++                let res = session.applying(CompositionAction::Backspace, shift_held, false, &self.lexicon);
++                match res {
++                    SessionResult::Updated(next) => {
++                        if next.composition.raw.is_empty() {
++                            self.update_preedit(context, String::new())?;
++                        } else {
++                            let disp = next.composition.display().to_string();
++                            self.update_preedit(context, disp)?;
++                            self.shift_session = Some(next);
++                        }
++                    }
++                    _ => {
++                        self.update_preedit(context, String::new())?;
++                    }
++                }
++                return Ok(true);
++            }
++
++            // 6. Tab 或 Down Arrow: 切換候選詞
++            if (ev.vk == 0x09 || ev.vk == 0x28) && session.composition.candidates.len() > 1 {
++                let res = session.applying(CompositionAction::Cycle(1), shift_held, false, &self.lexicon);
++                if let SessionResult::Updated(next) = res {
++                    let disp = next.composition.display().to_string();
++                    self.update_preedit(context, disp)?;
++                    self.shift_session = Some(next);
++                    return Ok(true);
++                }
++            }
++
++            // 7. 英文字母 A-Z / a-z、數字 0-9、底線 / 減號
++            let ch = if (0x41..=0x5A).contains(&ev.vk) {
++                if shift_held {
++                    (ev.vk as u8) as char
++                } else {
++                    (ev.vk as u8).to_ascii_lowercase() as char
++                }
++            } else if (0x30..=0x39).contains(&ev.vk) {
++                (ev.vk as u8) as char
++            } else if ev.vk == 0xBD {
++                if shift_held { '_' } else { '-' }
++            } else {
++                ' '
++            };
++
++            if ch != ' ' {
++                let res = session.applying(CompositionAction::Insert(ch.to_string()), shift_held, false, &self.lexicon);
++                match res {
++                    SessionResult::Updated(next) => {
++                        let disp = next.composition.display().to_string();
++                        self.update_preedit(context, disp)?;
++                        self.shift_session = Some(next);
++                    }
++                    SessionResult::Commit(text) => {
++                        self.insert_text(context, &text)?;
++                        self.update_preedit(context, String::new())?;
++                    }
++                    SessionResult::CommitAndContinue(text, next) => {
++                        self.insert_text(context, &text)?;
++                        let disp = next.composition.display().to_string();
++                        self.update_preedit(context, disp)?;
++                        self.shift_session = Some(next);
++                    }
++                    _ => {
++                        self.update_preedit(context, String::new())?;
++                    }
++                }
++                return Ok(true);
++            } else {
++                // 非英文單字字元：先行 commit 當前英文，結束 session，並繼續向下處理該字元
++                let text = session.composition.display().to_string();
++                if !text.is_empty() {
++                    self.insert_text(context, &text)?;
++                }
++                self.update_preedit(context, String::new())?;
++            }
++        }
++
++        // [ShiftLetterSession] 在中文模式下，若使用者按住 Shift 輸入 A-Z，開啟英文組字狀態
++        if self.shift_session.is_none()
++            && self.lang_mode.get() == TsfLangMode::Chinese
++            && shift_held
++            && (0x41..=0x5A).contains(&ev.vk)
++            && !evt.is_state_on(KeyState::Control)
++            && !evt.is_state_on(KeyState::Alt)
++            && !self.chewing_editor.is_selecting()
++        {
++            if !self.chewing_editor.is_empty() {
++                let _ = self.chewing_editor.commit();
++                let commit = self.chewing_editor.display_commit().to_owned();
++                self.chewing_editor.ack();
++                if !commit.is_empty() {
++                    self.insert_text(context, &commit)?;
++                }
++                self.update_preedit(context, String::new())?;
++            }
++            let initial_char = (ev.vk as u8) as char;
++            let session = ShiftLetterSession::start_with_letter(initial_char, &self.lexicon);
++            let disp = session.composition.display().to_string();
++            self.update_preedit(context, disp)?;
++            self.shift_session = Some(session);
++            return Ok(true);
++        }
++
++        // 1. Kanata Tap-Hold 'f' Number/Symbol Layer: F key itself (中文與英文模式皆支援)
++        if self.shift_session.is_none()
++            && ev.vk == 0x46
+             && !shift_held
+-            && !is_english
+             && !self.chewing_editor.is_selecting()
+             && self.chewing_editor.is_empty()
+         {
+@@ -969,6 +1136,20 @@ impl ChewingTextService {
+                 || evt.is_state_on(KeyState::Alt)
+                 || evt.is_state_on(KeyState::Super);
+ 
++            if let Some(session) = self.shift_session.take() {
++                match session.releasing_shift() {
++                    SessionResult::Updated(next) => {
++                        self.shift_session = Some(next);
++                    }
++                    SessionResult::Commit(text) => {
++                        self.insert_text(context, &text)?;
++                        self.update_preedit(context, String::new())?;
++                    }
++                    _ => {}
++                }
++                return Ok(true);
++            }
++
+             let double_shift_triggered = self.double_shift.update(false, other_modifiers, time);
+             if double_shift_triggered {
+                 self.toggle_lang_mode_with_context(context)?;
+@@ -1172,14 +1353,41 @@ impl ChewingTextService {
+                     }
+                 }
+                 ID_HASHED => {
+-                    let appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+-                    let p = format!(r"{}\Programs\ChewingDev\chewing-editor.exe", appdata);
+-                    let _ = std::process::Command::new(p).spawn();
++                    let appdata = std::env::var("APPDATA").unwrap_or_default();
++                    let dir = std::path::PathBuf::from(&appdata).join("Chewing").join("v4");
++                    let _ = std::fs::create_dir_all(&dir);
++                    let user_dict = dir.join("user_dict.csv");
++                    if !user_dict.exists() {
++                        let _ = std::fs::write(
++                            &user_dict,
++                            "# 新酷音使用者自訂詞庫 (User Dictionary)\n# 格式：詞彙,注音 (以空白分隔各字注音)\n得富,ㄉㄜˊ ㄈㄨˋ\n陳俊安,ㄔㄣˊ ㄐㄩㄣˋ ㄢ\n章翔威,ㄓㄤ ㄒㄧㄤˊ ㄨㄟ\n",
++                        );
++                    }
++                    use std::os::windows::process::CommandExt;
++                    let _ = std::process::Command::new("notepad.exe")
++                        .arg(&user_dict)
++                        .creation_flags(0x01000000 | 0x00000200)
++                        .spawn();
+                 }
+                 ID_CONFIG => {
+-                    let appdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+-                    let p = format!(r"{}\Programs\ChewingDev\ChewingPreferences.exe", appdata);
+-                    let _ = std::process::Command::new(p).spawn();
++                    let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
++                    let p = format!(r"{}\Programs\ChewingDev\ChewingPreferences.exe", localappdata);
++                    use std::os::windows::process::CommandExt;
++                    let mut spawned = false;
++                    if std::path::Path::new(&p).exists() {
++                        if let Ok(_) = std::process::Command::new(&p)
++                            .creation_flags(0x01000000 | 0x00000200)
++                            .spawn()
++                        {
++                            spawned = true;
++                        }
++                    }
++                    if !spawned {
++                        let appdata = std::env::var("APPDATA").unwrap_or_default();
++                        let dir = format!(r"{}\Chewing", appdata);
++                        let _ = std::fs::create_dir_all(&dir);
++                        let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
++                    }
+                 }
+                 ID_OUTPUT_SIMP_CHINESE => {
+                     if let Err(error) = self.toggle_simp_chinese() {
+@@ -1187,19 +1395,7 @@ impl ChewingTextService {
+                     }
+                 }
+                 ID_TOGGLE_AI => {
+-                    self.cfg.chewing_tsf.enable_ai = !self.cfg.chewing_tsf.enable_ai;
+-                    let _ = self.cfg.save_reg();
+-                    unsafe {
+-                        let _ = CheckMenuItem(
+-                            self.popup_menu,
+-                            ID_TOGGLE_AI,
+-                            if self.cfg.chewing_tsf.enable_ai {
+-                                MF_CHECKED.0
+-                            } else {
+-                                MF_UNCHECKED.0
+-                            },
+-                        );
+-                    }
++                    // AI 功能暫緩開發
+                 }
+                 ID_CHECK_NEW_VER => open_url(&self.cfg.chewing_tsf.update_info_url),
+                 ID_ABOUT => open_url("chewing-preferences://about"),

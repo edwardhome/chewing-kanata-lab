@@ -79,6 +79,10 @@ impl TextProtection {
 
     /// 液體容量特例規範化 (500ML -> 500mL)
     pub fn normalizing_volume_unit(text: &str, protected_words: &[String]) -> String {
+        // Ambiguous code/URLs/paths are never eligible for the volume exception.
+        if text.contains('`') || text.contains("://") || text.contains('/') || text.contains('\\') {
+            return text.to_string();
+        }
         if protected_words.iter().any(|w| w.eq_ignore_ascii_case("ML")) {
             return text.to_string();
         }
@@ -167,12 +171,30 @@ impl TextProtection {
             return false;
         }
 
-        // 4. 代碼反引號保護（若原文包含 `code`，候選亦必須完整保留）
-        if original.contains('`') {
-            let orig_backticks = original.matches('`').count();
-            let cand_backticks = candidate.matches('`').count();
-            if orig_backticks != cand_backticks {
-                return false;
+        // Preserve every non-Han character at its exact scalar position, including
+        // bare numbers, Unicode engineering symbols, punctuation and whitespace.
+        // The narrowly scoped volume normalization above is the only exception.
+        let left: Vec<char> = norm_orig.chars().collect();
+        let right: Vec<char> = norm_cand.chars().collect();
+        if left.len() != right.len() || left.iter().zip(&right).any(|(&a, &b)| {
+            (!Self::is_han(a) || !Self::is_han(b)) && a != b
+        }) { return false; }
+
+        // Text inside backticks, including Han text, must remain byte-for-byte intact.
+        // An unmatched backtick conservatively protects the rest of the composition.
+        let mut in_code = false;
+        for (&a, &b) in left.iter().zip(&right) {
+            if a == '`' { in_code = !in_code; }
+            if in_code && a != b { return false; }
+        }
+
+        // Names and explicitly protected vocabulary must stay at their original
+        // scalar positions. Do not treat equal occurrence counts as preservation.
+        for word in protected_words.iter().filter(|w| !w.is_empty()) {
+            let w: Vec<char> = word.chars().collect();
+            if w.len() > left.len() { continue; }
+            for (i, span) in left.windows(w.len()).enumerate() {
+                if span == w.as_slice() && right[i..i+w.len()] != w { return false; }
             }
         }
 
@@ -238,4 +260,27 @@ mod tests {
         let invalid = "執行 cargo test 再說";
         assert!(!TextProtection::validate_correction(orig, invalid, &[]));
     }
+    #[test]
+    fn rejects_changes_to_code_numbers_symbols_and_names() {
+        let cases = [
+            ("執行 `刪除資料` 在說", "執行 `清空資料` 再說"),
+            ("我有500個", "我有600個"),
+            ("使用 SiO₂ 在說", "使用 SiO3 再說"),
+            ("張小明在說", "王小明再說"),
+            ("網址 https://example.com/在", "網址 https://example.org/再"),
+            ("我在說，謝謝", "我再說。謝謝"),
+        ];
+        for (original, candidate) in cases {
+            assert!(!TextProtection::validate_correction(original, candidate, &["張小明".into()]), "{original}");
+        }
+    }
+
+    #[test]
+    fn volume_exception_never_changes_code_or_urls() {
+        for text in ["喝水 `500ML` 在說", "喝水 https://example.com/500ML 在說", "喝水 C:\\500ML 在說"] {
+            assert_eq!(TextProtection::normalizing_volume_unit(text, &[]), text);
+            assert!(!TextProtection::validate_correction(text, &text.replace("ML", "mL"), &[]));
+        }
+    }
+
 }

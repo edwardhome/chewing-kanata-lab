@@ -50,7 +50,7 @@ void ai_reranker_init(const char *endpoint, const char *model, int timeout_ms);
 
 /**
  * @brief 嚴格白名單校驗函式
- * 檢驗 AI 回傳之候選字 ID 清單是否 100% 來自原始請求，且無任何偽造或重複
+ * 檢驗請求識別與組字版本，以及候選 ID 的完整排列；拒絕空清單、超限與重複 ID。
  */
 bool ai_reranker_validate_response(
     const rerank_request_t *req,
@@ -58,7 +58,9 @@ bool ai_reranker_validate_response(
 );
 
 /**
- * @brief 執行本機候選重排 (若 AI 未啟用或失敗，安全回退原版順序)
+ * @brief 目前為離線回退實作，原樣保留合法請求的候選順序，並未呼叫模型。
+ * 候選數須為 1..MAX_CANDIDATES_PER_REQUEST，ID 不可重複。
+ * 不合法請求返回 -1；若 resp 非空則清空並設為無效，呼叫端應保留上游候選。
  */
 int ai_reranker_process(
     const rerank_request_t *req,
