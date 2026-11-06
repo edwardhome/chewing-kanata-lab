@@ -62,3 +62,7 @@
 - Mac 交付：`/Users/defu/Documents/AI-Chewing/1.0.2-preview.2/`；Windows 成品：`C:\Users\Defu\Documents\AI-Chewing\1.0.2-preview.2`（ZIP 在上一層）。
 
 安裝後請先重新開啟測試用應用，再從右下角原生選單或同版本設定程式的「其他設定」操作 Restart。要求送出後 30 秒內回到輸入欄位；有組字時先自行完成或取消。實際中文恢復仍待使用者回報。
+
+### AGY 遲到的審查初稿
+
+封裝後收到共用目錄未追蹤的 `RUN-20261106-AGY-RECOVERY-REVIEW.md`。Codex 已閱讀：它仍引用舊版單調 token 判斷與 9 項 gate 測試，且將推論寫為 Root Cause Verified；不採用其根因確認或整體 PASS 宣告，也不將初稿發布為正式驗收。其 JavaScript 整數精度建議對目前 epoch 毫秒範圍不構成實際問題，且前端不以 request_id 做比較；焦點暫態及鍵盤快照失敗均由既有安全條件延後。最終結果仍以上方固定來源、10 項 gate 測試及 49 項總測試為準，使用者症狀待實機確認。
