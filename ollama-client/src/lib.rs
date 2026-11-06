@@ -7,16 +7,18 @@
 //! - Fixed production endpoint: `http://127.0.0.1:11434`
 //! - No redirects, no proxy, no cloud fallback
 //! - Connect timeout <= 250ms, genuine total request/body deadline <= 2s
+//! - Response header size bounded to 8 KiB (8,192 bytes)
 //! - Response body hard capped at 16 KiB (16,384 bytes)
 //! - Non-success HTTP statuses (4xx, 5xx) and redirects (3xx) rejected as typed errors
-//! - Zero text/prompt logging in errors or debug formatters
+//! - Zero text/prompt logging in errors or debug formatters; errors use static categories
+//!   to prevent leaking untrusted HTTP response payloads or parser diagnostics
 //! - Cancellation checked before network initiation and before delivering results.
 //!
 //! # Cancellation Semantics
 //! Since this transport relies on synchronous blocking socket I/O, cancellation tokens
 //! are polled immediately prior to initiating connection and immediately before delivering
-//! response bytes. In-flight blocking socket calls are bounded by the total deadline (<= 2s)
-//! and will terminate when the socket deadline expires or data completes; immediate
+//! response bytes. In-flight blocking socket calls are bounded by the shared global deadline
+//! (<= 2s) and will terminate when the socket deadline expires or data completes; immediate
 //! mid-syscall cancellation is not supported by blocking sockets without socket closure.
 
 use std::io::{self, Read};
@@ -33,20 +35,24 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 /// Maximum allowed total request and body deadline (2.0 s).
 pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Maximum permitted response size: 16 KiB (16,384 bytes).
+/// Maximum permitted response headers size: 8 KiB (8,192 bytes).
+pub const MAX_HEADER_SIZE: usize = 8 * 1024;
+
+/// Maximum permitted response body size: 16 KiB (16,384 bytes).
 pub const MAX_RESPONSE_SIZE: usize = 16 * 1024;
 
 /// Strongly typed errors produced by the Ollama HTTP transport.
 ///
-/// Error formats strictly omit caller request content, prompts, or response text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Error variants use static categories without raw error strings from I/O or
+/// HTTP parser diagnostics, ensuring untrusted response text is never leaked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OllamaError {
     /// Request was cancelled via `CancellationToken` before initiation or delivery.
     Cancelled,
     /// Connection to local endpoint failed.
-    Connect(String),
-    /// Request exceeded the connect timeout or total deadline.
-    Timeout(String),
+    Connect,
+    /// Request exceeded the connect timeout or total global deadline.
+    Timeout,
     /// An HTTP redirect was received and rejected.
     Redirect(u16),
     /// Server returned a non-success HTTP status code (not 200..=299).
@@ -56,25 +62,25 @@ pub enum OllamaError {
         limit: usize,
         actual: Option<usize>,
     },
-    /// Low-level I/O error occurred during transfer.
-    Io(String),
+    /// Low-level transport I/O error occurred.
+    Io,
     /// HTTP protocol or parse violation.
-    Protocol(String),
+    Protocol,
 }
 
 impl std::fmt::Display for OllamaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Cancelled => write!(f, "request cancelled"),
-            Self::Connect(msg) => write!(f, "connection failed: {msg}"),
-            Self::Timeout(msg) => write!(f, "request timed out: {msg}"),
+            Self::Connect => write!(f, "connection to endpoint failed"),
+            Self::Timeout => write!(f, "request deadline exceeded"),
             Self::Redirect(code) => write!(f, "HTTP redirect rejected (status {code})"),
             Self::HttpStatus(code) => write!(f, "HTTP non-success status {code}"),
             Self::Oversized { limit, actual } => {
                 write!(f, "response exceeded {limit} bytes (actual: {actual:?})")
             }
-            Self::Io(msg) => write!(f, "I/O error: {msg}"),
-            Self::Protocol(msg) => write!(f, "protocol error: {msg}"),
+            Self::Io => write!(f, "transport I/O error"),
+            Self::Protocol => write!(f, "HTTP protocol violation"),
         }
     }
 }
@@ -131,6 +137,7 @@ impl OllamaClient {
             .timeout_recv_response(Some(total_timeout))
             .timeout_recv_body(Some(total_timeout))
             .timeout_send_body(Some(total_timeout))
+            .max_response_header_size(MAX_HEADER_SIZE)
             .max_redirects(0)
             .max_redirects_will_error(true)
             .proxy(None)
@@ -253,9 +260,9 @@ impl OllamaClient {
                 Ok(n) => n,
                 Err(e) => {
                     if e.kind() == io::ErrorKind::TimedOut {
-                        return Err(OllamaError::Timeout("body read deadline exceeded".to_string()));
+                        return Err(OllamaError::Timeout);
                     }
-                    return Err(OllamaError::Io(e.to_string()));
+                    return Err(OllamaError::Io);
                 }
             };
 
@@ -278,7 +285,7 @@ impl OllamaClient {
 
     fn map_ureq_error(err: ureq::Error) -> OllamaError {
         match err {
-            ureq::Error::Timeout(t) => OllamaError::Timeout(format!("{t:?}")),
+            ureq::Error::Timeout(_) => OllamaError::Timeout,
             ureq::Error::StatusCode(code) => {
                 if (300..=399).contains(&code) {
                     OllamaError::Redirect(code)
@@ -290,19 +297,19 @@ impl OllamaClient {
                 OllamaError::Redirect(300)
             }
             ureq::Error::ConnectionFailed | ureq::Error::HostNotFound => {
-                OllamaError::Connect("connection to loopback endpoint failed".to_string())
+                OllamaError::Connect
             }
             ureq::Error::Io(e) => {
                 if e.kind() == io::ErrorKind::TimedOut {
-                    OllamaError::Timeout("I/O timed out".to_string())
+                    OllamaError::Timeout
                 } else if e.kind() == io::ErrorKind::ConnectionRefused {
-                    OllamaError::Connect("connection refused".to_string())
+                    OllamaError::Connect
                 } else {
-                    OllamaError::Io(e.to_string())
+                    OllamaError::Io
                 }
             }
-            ureq::Error::Protocol(p) => OllamaError::Protocol(p.to_string()),
-            other => OllamaError::Io(other.to_string()),
+            ureq::Error::Protocol(_) => OllamaError::Protocol,
+            _ => OllamaError::Io,
         }
     }
 }
@@ -396,7 +403,6 @@ mod tests {
     fn test_chunked_fragmented_response() {
         let (base_url, server_thread) = spawn_server(|server| {
             let req = server.recv().unwrap();
-            // In tiny_http, passing data_length=None triggers Transfer-Encoding: chunked
             let chunked_data = b"chunk1-chunk2-chunk3";
             let resp = Response::new(
                 StatusCode(200),
@@ -430,10 +436,7 @@ mod tests {
         let client = OllamaClient::new_for_test(&base_url);
         let cancel = CancellationToken::new();
         let err = client.list_models(&cancel).expect_err("redirect rejected");
-        match err {
-            OllamaError::Redirect(code) => assert_eq!(code, 302),
-            other => panic!("expected Redirect error, got {other:?}"),
-        }
+        assert_eq!(err, OllamaError::Redirect(302));
         server_thread.join().unwrap();
     }
 
@@ -497,7 +500,6 @@ mod tests {
     fn test_rejects_oversized_content_length() {
         let (base_url, server_thread) = spawn_server(|server| {
             let req = server.recv().unwrap();
-            // Announce Content-Length: 16,385 (1 byte over 16 KiB)
             let resp = Response::new(
                 StatusCode(200),
                 vec![],
@@ -525,7 +527,6 @@ mod tests {
     fn test_rejects_oversized_chunked_stream() {
         let (base_url, server_thread) = spawn_server(|server| {
             let req = server.recv().unwrap();
-            // Send 18,000 bytes chunked without Content-Length
             let big_data = vec![b'y'; 18000];
             let resp = Response::new(
                 StatusCode(200),
@@ -579,7 +580,6 @@ mod tests {
         struct StalledReader;
         impl Read for StalledReader {
             fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
-                // Sleep longer than the client's total timeout
                 thread::sleep(Duration::from_millis(600));
                 Ok(0)
             }
@@ -597,7 +597,6 @@ mod tests {
             req.respond(resp).unwrap();
         });
 
-        // Use a 200ms total deadline for fast test execution
         let client = OllamaClient::new_for_test_with_timeouts(
             &base_url,
             Duration::from_millis(100),
@@ -605,9 +604,131 @@ mod tests {
         );
         let cancel = CancellationToken::new();
         let err = client.list_models(&cancel).expect_err("stalled timeout");
+        assert_eq!(err, OllamaError::Timeout);
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_slow_drip_body_deadline_exceeded() {
+        struct SlowDripReader {
+            chunks_remaining: usize,
+            chunk_delay: Duration,
+        }
+        impl Read for SlowDripReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.chunks_remaining == 0 {
+                    return Ok(0);
+                }
+                thread::sleep(self.chunk_delay);
+                self.chunks_remaining -= 1;
+                let payload = b"drip";
+                let n = payload.len().min(buf.len());
+                buf[..n].copy_from_slice(&payload[..n]);
+                Ok(n)
+            }
+        }
+
+        let (base_url, server_thread) = spawn_server(|server| {
+            let req = server.recv().unwrap();
+            // 8 chunks with 50ms delay = 400ms total drip time
+            let resp = Response::new(
+                StatusCode(200),
+                vec![],
+                Box::new(SlowDripReader {
+                    chunks_remaining: 8,
+                    chunk_delay: Duration::from_millis(50),
+                }),
+                None,
+                None,
+            );
+            req.respond(resp).unwrap();
+        });
+
+        // Client configured with 150ms total deadline; should time out during slow drip
+        let client = OllamaClient::new_for_test_with_timeouts(
+            &base_url,
+            Duration::from_millis(100),
+            Duration::from_millis(150),
+        );
+        let cancel = CancellationToken::new();
+        let err = client.list_models(&cancel).expect_err("slow drip timeout");
+        assert_eq!(err, OllamaError::Timeout);
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_shared_global_deadline_header_plus_body() {
+        struct DelayedBodyReader {
+            delay: Duration,
+            done: bool,
+        }
+        impl Read for DelayedBodyReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.done {
+                    return Ok(0);
+                }
+                thread::sleep(self.delay);
+                self.done = true;
+                let payload = b"done";
+                let n = payload.len().min(buf.len());
+                buf[..n].copy_from_slice(&payload[..n]);
+                Ok(n)
+            }
+        }
+
+        let (base_url, server_thread) = spawn_server(|server| {
+            let req = server.recv().unwrap();
+            // Delay 120ms before writing headers
+            thread::sleep(Duration::from_millis(120));
+            // Body read will delay another 120ms (total = 240ms)
+            let resp = Response::new(
+                StatusCode(200),
+                vec![],
+                Box::new(DelayedBodyReader {
+                    delay: Duration::from_millis(120),
+                    done: false,
+                }),
+                None,
+                None,
+            );
+            req.respond(resp).unwrap();
+        });
+
+        // Client deadline is 200ms.
+        // Header time (120ms) < 200ms.
+        // Body time (120ms) < 200ms.
+        // Combined time (240ms) > 200ms global deadline!
+        let client = OllamaClient::new_for_test_with_timeouts(
+            &base_url,
+            Duration::from_millis(100),
+            Duration::from_millis(200),
+        );
+        let cancel = CancellationToken::new();
+        let err = client.list_models(&cancel).expect_err("shared deadline timeout");
+        assert_eq!(err, OllamaError::Timeout);
+        server_thread.join().unwrap();
+    }
+
+    // ──────────────────────── HEADER SIZE BOUND ───────────────────────────────
+
+    #[test]
+    fn test_rejects_oversized_header() {
+        let (base_url, server_thread) = spawn_server(|server| {
+            let req = server.recv().unwrap();
+            // Generate header exceeding MAX_HEADER_SIZE (8 KiB)
+            let big_header_val = vec![b'a'; 9000];
+            let resp = Response::empty(200).with_header(
+                Header::from_bytes(&b"X-Custom-Header"[..], big_header_val).unwrap(),
+            );
+            req.respond(resp).unwrap();
+        });
+
+        let client = OllamaClient::new_for_test(&base_url);
+        let cancel = CancellationToken::new();
+        let err = client.list_models(&cancel).expect_err("oversized header rejected");
         match err {
-            OllamaError::Timeout(_) => {}
-            other => panic!("expected Timeout error, got {other:?}"),
+            OllamaError::Protocol | OllamaError::Io => {}
+            other => panic!("expected Protocol or Io error for oversized header, got {other:?}"),
         }
         server_thread.join().unwrap();
     }
@@ -616,12 +737,10 @@ mod tests {
 
     #[test]
     fn test_cancellation_before_send() {
-        // Cancelled before any network activity
         let cancel = CancellationToken::new();
         cancel.cancel();
         assert!(cancel.is_cancelled());
 
-        // Target an unrouted port; should return immediately without trying connection
         let client = OllamaClient::new_for_test("http://127.0.0.1:9");
         let err = client.list_models(&cancel).expect_err("cancelled before send");
         assert_eq!(err, OllamaError::Cancelled);
@@ -637,7 +756,6 @@ mod tests {
 
         let (base_url, server_thread) = spawn_server(move |server| {
             let req = server.recv().unwrap();
-            // Cancel token while server is processing
             cancel_clone.cancel();
             req.respond(Response::from_string("ok")).unwrap();
         });
@@ -652,7 +770,6 @@ mod tests {
 
     #[test]
     fn test_connection_refused_unbound_port() {
-        // Pick an unbound high port on 127.0.0.1
         let client = OllamaClient::new_for_test_with_timeouts(
             "http://127.0.0.1:49999",
             Duration::from_millis(50),
@@ -661,7 +778,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let err = client.list_models(&cancel).expect_err("connection fails");
         match err {
-            OllamaError::Connect(_) | OllamaError::Timeout(_) => {}
+            OllamaError::Connect | OllamaError::Timeout => {}
             other => panic!("expected Connect or Timeout, got {other:?}"),
         }
     }
