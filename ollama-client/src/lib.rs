@@ -26,6 +26,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(test)]
+mod protocol_contract;
+
 /// Fixed production endpoint for the local Ollama instance.
 pub const DEFAULT_OLLAMA_ENDPOINT: &str = "http://127.0.0.1:11434";
 

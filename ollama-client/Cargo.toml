@@ -16,5 +16,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 [dev-dependencies]
+chewing-policy-core = { path = "../policy-core" }
 # tiny_http: minimal synchronous HTTP server used for local fake-server tests.
 tiny_http = "0.12"
