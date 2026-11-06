@@ -1,0 +1,418 @@
+From ddb2282f7a47d6eebc166f6ad8cb4ac02da368e3 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Fri, 6 Nov 2026 15:39:22 +0800
+Subject: [PATCH] fix(input): recover Chinese mode without discarding
+ composition
+
+---
+ tip/rc/ChewingTextService.rc      |   1 +
+ tip/rc/resource.h                 |   3 +-
+ tip/src/text_service/chewing.rs   | 171 +++++++++++++++++++++++++++---
+ tip/src/text_service/mod.rs       |  13 ++-
+ tip/src/text_service/resources.rs |   1 +
+ 5 files changed, 171 insertions(+), 18 deletions(-)
+
+diff --git a/tip/rc/ChewingTextService.rc b/tip/rc/ChewingTextService.rc
+index 3033432..bee9bd7 100644
+--- a/tip/rc/ChewingTextService.rc
++++ b/tip/rc/ChewingTextService.rc
+@@ -129,6 +129,7 @@ BEGIN
+         MENUITEM "AI新酷音使用說明 (&H)",                ID_CHEWING_HELP
+         MENUITEM "編輯使用者詞庫 (&E)",                 ID_HASHED
+         MENUITEM "AI新酷音設定(&C)",                    ID_CONFIG
++        MENUITEM "Restart：恢復中文輸入(&R)",             ID_RECOVER_INPUT
+         MENUITEM SEPARATOR
+         POPUP "網路辭典 (&D)"
+         BEGIN
+diff --git a/tip/rc/resource.h b/tip/rc/resource.h
+index e7a6381..6a45e84 100644
+--- a/tip/rc/resource.h
++++ b/tip/rc/resource.h
+@@ -60,6 +60,7 @@
+ #define ID_POPUP_40026 40026
+ #define ID_OUTPUT_SIMP_CHINESE 40027
+ #define ID_TOGGLE_AI 40028
++#define ID_RECOVER_INPUT 40029
+ #define IDC_STATIC -1
+ 
+ // Next default values for new objects
+@@ -68,7 +69,7 @@
+ #ifndef APSTUDIO_READONLY_SYMBOLS
+ #define _APS_NO_MFC 1
+ #define _APS_NEXT_RESOURCE_VALUE 111
+-#define _APS_NEXT_COMMAND_VALUE 40028
++#define _APS_NEXT_COMMAND_VALUE 40030
+ #define _APS_NEXT_CONTROL_VALUE 1025
+ #define _APS_NEXT_SYMED_VALUE 104
+ #endif
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 6417b26..775fb83 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -6,7 +6,7 @@ use std::ffi::c_void;
+ use std::mem;
+ use std::rc::{Rc, Weak};
+ use std::sync::atomic::Ordering;
+-use std::time::{Duration, Instant};
++use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+ 
+ use anyhow::{Context, Result, bail};
+ use chewing::editor::zhuyin_layout::{self, KeyboardLayoutCompat, SyllableEditor};
+@@ -53,6 +53,8 @@ use windows_core::{ComObject, ComObjectInner, GUID, HSTRING, Interface};
+ use zhconv::{Variant, zhconv};
+ 
+ use super::CommandType;
++use super::recovery::RecoveryGate;
++use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardState;
+ use super::kanata_layer;
+ use super::GUID_INPUT_DISPLAY_ATTRIBUTE_1;
+ use super::GUID_INPUT_DISPLAY_ATTRIBUTE_2;
+@@ -101,6 +103,12 @@ enum ShiftKeyState {
+ 
+ #[allow(dead_code)]
+ impl ShiftKeyState {
++    // A remembered key-down is not evidence that Shift is still physically held.
++    fn reconcile(&mut self, physical_shift: bool, shift_event: bool) -> bool {
++        if !physical_shift && !shift_event { *self = Self::Up; }
++        physical_shift
++    }
++
+     fn release(&mut self) -> Option<Duration> {
+         let duration = match self {
+             ShiftKeyState::Down(instant) => Some(instant.elapsed()),
+@@ -172,6 +180,8 @@ pub(super) struct ChewingTextService {
+ 
+     lang_mode: Cell<TsfLangMode>,
+     pending_lang_mode_change: Cell<bool>,
++    recovery_gate: RecoveryGate,
++    recovery_open_pending: Cell<bool>,
+ 
+     has_focus: bool,
+     output_simp_chinese: bool,
+@@ -324,6 +334,8 @@ impl ChewingTextService {
+             composition: Default::default(),
+             pending_edit: Weak::new(),
+             pending_lang_mode_change: Cell::new(false),
++            recovery_gate: RecoveryGate::default(),
++            recovery_open_pending: Cell::new(false),
+         };
+ 
+         if let Err(error) = cts.init_openclose(tid) {
+@@ -357,6 +369,7 @@ impl ChewingTextService {
+     pub(super) fn on_kill_focus(&mut self, context: Option<ITfContext>) -> Result<()> {
+         debug!("on_kill_focus");
+         self.has_focus = false;
++        self.reset_shift_gesture();
+         if let Some(context) = context {
+             if self.f_buffer.is_some() || self.shift_session.is_some() {
+                 self.cancel_custom_input(&context)?;
+@@ -375,13 +388,89 @@ impl ChewingTextService {
+     pub(super) fn on_focus(&mut self) -> Result<()> {
+         debug!("on_focus");
+         self.has_focus = true;
++        self.reset_shift_gesture();
++        self.recover_focused_context();
+         Ok(())
+     }
+ 
++    pub(super) fn reset_shift_gesture(&mut self) {
++        self.shift_key_state = ShiftKeyState::Up;
++        self.double_shift.reset();
++    }
++
+     pub(super) fn on_thread_focus(&mut self) -> Result<()> {
+-        let _ = self.cfg.reload_if_needed();
+-        self.apply_runtime_config()?;
+-        self.sync_lang_mode(true)?;
++        self.reset_shift_gesture();
++        // Focus changes must not rebuild an editor that still owns uncommitted text.
++        if !self.has_pending_input() {
++            self.apply_config_if_changed()?;
++            self.sync_lang_mode(true)?;
++            self.chewing_editor.set_editor_options(|opt| opt.language_mode = self.lang_mode.get().into());
++        }
++        self.recover_focused_context();
++        Ok(())
++    }
++
++    fn has_pending_input(&self) -> bool {
++        self.is_composing() || !self.chewing_editor.is_empty()
++            || !self.chewing_editor.syllable_buffer_display().is_empty()
++            || self.chewing_editor.is_selecting() || self.shift_session.is_some()
++            || self.f_buffer.is_some() || self.pending_edit.upgrade().is_some()
++    }
++
++    fn recovery_time_ms() -> Result<u64> {
++        Ok(u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?)
++    }
++
++    fn request_input_recovery(&mut self) -> Result<()> {
++        let key = windows_registry::CURRENT_USER.options().create().write()
++            .open("Software\\ChewingDev")?;
++        key.set_u64("InputRecoveryRequest", Self::recovery_time_ms()?)?;
++        self.recover_focused_context();
++        Ok(())
++    }
++
++    fn recover_focused_context(&mut self) {
++        if let Ok(context) = unsafe { self.thread_mgr.GetFocus().and_then(|doc| doc.GetTop()) } {
++            if self.try_recover_input(&context).is_err() {
++                error!("input recovery could not complete; retry from settings");
++            }
++        }
++    }
++
++    fn try_recover_input(&mut self, context: &ITfContext) -> Result<()> {
++        let request = windows_registry::CURRENT_USER.open("Software\\ChewingDev")
++            .and_then(|key| key.get_u64("InputRecoveryRequest")).unwrap_or(0);
++        if request == 0 { return Ok(()); }
++        let now = Self::recovery_time_ms()?;
++        let safe = self.has_focus && self.is_context_mutable(context).unwrap_or(false);
++        // Unlike normal key conversion, a failed snapshot must defer recovery.
++        let mut keys = [0u8; 256];
++        let snapshot_ok = unsafe { GetKeyboardState(&mut keys) }.is_ok();
++        let held = [0x10usize, 0x11, 0x12, 0x5b, 0x5c, 0x46]
++            .iter().any(|&vk| keys[vk] & 0x80 != 0);
++        let caps_forces_english = self.cfg.chewing_tsf.enable_caps_lock
++            && ((keys[0x14] & 1 != 0) != self.cfg.chewing_tsf.lock_chinese_on_caps_lock);
++        let busy = self.has_pending_input() || held || caps_forces_english;
++        if !self.recovery_gate.consider(request, now, safe && snapshot_ok, busy) {
++            return Ok(());
++        }
++        // Construct first so a failure cannot discard the working editor.
++        let form = self.chewing_editor.editor_options().character_form;
++        let mut editor = Self::build_editor_from_cfg(&self.cfg.chewing_tsf)?;
++        editor.set_editor_options(|opt| {
++            opt.language_mode = LanguageMode::Chinese;
++            opt.character_form = form;
++        });
++        self.reset_shift_gesture();
++        self.f_key_state = kanata_layer::FKeyState::Up;
++        self.f_event = None;
++        self.chewing_editor = editor;
++        self.lang_mode.set(TsfLangMode::Chinese);
++        self.pending_lang_mode_change.set(true);
++        self.recovery_open_pending.set(true);
++        self.hide_candidates();
++        self.hide_message();
++        self.update_lang_buttons()?;
+         Ok(())
+     }
+ 
+@@ -419,12 +508,12 @@ impl ChewingTextService {
+         context: &ITfContext,
+         ev: SystemKeyboardEvent,
+     ) -> Result<bool> {
+-        // NB: self.lang_mode might have changed earlier
+-        self.chewing_editor
+-            .set_editor_options(|opt| opt.language_mode = self.lang_mode.get().into());
+-
++        if self.try_recover_input(context).is_err() {
++            error!("input recovery could not complete; retry from settings");
++        }
+         let is_context_mutable = self.has_focus && self.is_context_mutable(context)?;
+         if !is_context_mutable {
++            self.reset_shift_gesture();
+             self.f_key_state = kanata_layer::FKeyState::Up;
+             self.f_event = None;
+             self.f_buffer = None;
+@@ -433,6 +522,8 @@ impl ChewingTextService {
+             return Ok(false);
+         }
+         let evt = ev.to_keyboard_event(self.keymap);
++        self.shift_key_state.reconcile(evt.is_state_on(KeyState::Shift),
++            evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT);
+         let simulate_english_layout = self.cfg.chewing_tsf.simulate_english_layout != 0;
+ 
+         let other_modifiers = evt.is_state_on(KeyState::Control)
+@@ -471,6 +562,8 @@ impl ChewingTextService {
+         if let Err(error) = self.apply_config_if_changed() {
+             error!("unable to load config: {error:#}");
+         }
++        self.chewing_editor
++            .set_editor_options(|opt| opt.language_mode = self.lang_mode.get().into());
+         //
+         // Step 2. handle any mode change related keydown
+         //
+@@ -510,7 +603,8 @@ impl ChewingTextService {
+         }
+ 
+         // 4. In Chinese mode, intercept Shift + [A-Z] to start ShiftLetterSession
+-        let shift_held = evt.is_state_on(KeyState::Shift) || self.shift_key_state != ShiftKeyState::Up;
++        let shift_held = self.shift_key_state.reconcile(evt.is_state_on(KeyState::Shift),
++            evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT);
+         if self.lang_mode.get() == TsfLangMode::Chinese
+             && shift_held
+             && (0x41..=0x5A).contains(&ev.vk)
+@@ -634,7 +728,8 @@ impl ChewingTextService {
+         let mut evt = ev.to_keyboard_event(self.keymap);
+         debug!("on_keydown");
+ 
+-        let shift_held = evt.is_state_on(KeyState::Shift) || self.shift_key_state != ShiftKeyState::Up;
++        let shift_held = self.shift_key_state.reconcile(evt.is_state_on(KeyState::Shift),
++            evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT);
+         let _is_english = self.lang_mode.get() == TsfLangMode::English;
+ 
+         // Resolve the F gesture before Shift-letter handling, including direct
+@@ -1236,6 +1331,11 @@ impl ChewingTextService {
+                         .creation_flags(0x01000000 | 0x00000200)
+                         .spawn();
+                 }
++                ID_RECOVER_INPUT => {
++                    if self.request_input_recovery().is_err() {
++                        error!("unable to request input recovery");
++                    }
++                }
+                 ID_CONFIG => {
+                     let p = match chewing_tip_core::shell::program_dir() {
+                         Ok(dir) => dir.join("ChewingPreferences.exe"),
+@@ -1843,7 +1943,7 @@ impl ChewingTextService {
+     }
+ 
+     fn apply_config_if_changed(&mut self) -> Result<()> {
+-        if self.cfg.reload_if_needed()? {
++        if !self.has_pending_input() && self.cfg.reload_if_needed()? {
+             self.apply_runtime_config()?;
+         }
+         Ok(())
+@@ -1890,7 +1990,13 @@ impl ChewingTextService {
+             let sim = SimulatedKeyboard::from(cfg.simulate_english_layout);
+             self.keymap = sim.into();
+         }
+-        self.chewing_editor = Self::build_editor_from_cfg(cfg)?;
++        let form = self.chewing_editor.editor_options().character_form;
++        let mut editor = Self::build_editor_from_cfg(cfg)?;
++        editor.set_editor_options(|opt| {
++            opt.language_mode = self.lang_mode.get().into();
++            opt.character_form = form;
++        });
++        self.chewing_editor = editor;
+         let _ = self.update_lang_buttons();
+         let keybindings = cfg
+             .keybind
+@@ -1998,10 +2104,11 @@ impl<'a> ReentrantOps<'a> {
+             bail!("chewing_tip is not initialized");
+         };
+         debug!(force, pending_lang_mode_change=tip.pending_lang_mode_change.get(); "sync_keyboard_openclose");
+-        if !force && !tip.pending_lang_mode_change.get() {
++        let recovery = tip.recovery_open_pending.get();
++        if !force && !tip.pending_lang_mode_change.get() && !recovery {
+             return Ok(());
+         }
+-        if !tip.cfg.chewing_tsf.sync_lang_mode_openclose {
++        if !tip.cfg.chewing_tsf.sync_lang_mode_openclose && !recovery {
+             // sync openclose is disabled by default
+             tip.pending_lang_mode_change.set(false);
+             return Ok(());
+@@ -2016,7 +2123,12 @@ impl<'a> ReentrantOps<'a> {
+                 _ => 0,
+             };
+             // NB: recursively call this inside compartment callback will fail
+-            let _ = compartment.SetValue(tip.tid, &openclose.into());
++            // Clear before the reentrant callback; retain the request if SetValue fails.
++            tip.recovery_open_pending.set(false);
++            if let Err(error) = compartment.SetValue(tip.tid, &openclose.into()) {
++                tip.recovery_open_pending.set(recovery);
++                return Err(error.into());
++            }
+         }
+ 
+         Ok(())
+@@ -2058,3 +2170,32 @@ fn keymap_from_kbtype(kbtype: KeyboardLayoutCompat) -> KeymapOp {
+         _ => KeymapOp::None,
+     }
+ }
++
++#[cfg(test)]
++mod recovery_shift_tests {
++    use super::*;
++
++    #[test]
++    fn missing_shift_up_does_not_make_later_letters_english() {
++        for mut state in [ShiftKeyState::Down(Instant::now()), ShiftKeyState::Consumed] {
++            assert!(!state.reconcile(false, false));
++            assert_eq!(state, ShiftKeyState::Up);
++            assert!(state.release().is_none());
++        }
++    }
++
++    #[test]
++    fn physical_shift_still_handles_uppercase_and_shift_f() {
++        for mut state in [ShiftKeyState::Up, ShiftKeyState::Consumed] {
++            assert!(state.reconcile(true, false));
++        }
++    }
++
++    #[test]
++    fn shift_event_keeps_release_timing_for_double_shift() {
++        let mut state = ShiftKeyState::Down(Instant::now());
++        assert!(!state.reconcile(false, true));
++        assert!(state.release().is_some());
++        assert_eq!(state, ShiftKeyState::Up);
++    }
++}
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index 0833ba7..2d4e86c 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -37,6 +37,7 @@ mod key_event;
+ mod lang_bar;
+ mod menu;
+ mod resources;
++mod recovery;
+ mod theme;
+ mod ui_elements;
+ 
+@@ -323,6 +324,8 @@ impl ITfThreadMgrEventSink_Impl for TextService_Impl {
+             error!("Unable to handle focus: {error:#}");
+             return Err(E_UNEXPECTED.into());
+         }
++        let ops = ReentrantOps::from_mut(&self.inner, borrowed_ts);
++        ops.sync_keyboard_openclose(false).map_err(|_| windows_core::Error::from(E_UNEXPECTED))?;
+         Ok(())
+     }
+ 
+@@ -356,6 +359,9 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
+     }
+     fn OnKillThreadFocus(&self) -> Result<()> {
+         debug!("on_kill_thread_focus");
++        if let Ok(mut borrowed) = self.inner.try_borrow_mut() {
++            if let Some(ts) = borrowed.as_mut() { ts.reset_shift_gesture(); }
++        }
+         Ok(())
+     }
+ }
+@@ -375,13 +381,16 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
+                 return Ok(FALSE);
+             };
+             let ev = SystemKeyboardEvent::new(wparam.0 as u16, lparam.0);
+-            match ts.on_test_keydown(pic.ok()?, ev) {
++            let handled = match ts.on_test_keydown(pic.ok()?, ev) {
+                 Ok(v) => v,
+                 Err(error) => {
+                     error!("Unable to handle OnTestKeyDown: {error:#}");
+                     return Err(E_UNEXPECTED.into());
+                 }
+-            }
++            };
++            let ops = ReentrantOps::from_mut(&self.inner, borrowed_ts);
++            ops.sync_keyboard_openclose(false).map_err(|_| windows_core::Error::from(E_UNEXPECTED))?;
++            handled
+         };
+         self.tail_handler();
+         Ok(should_handle.into())
+diff --git a/tip/src/text_service/resources.rs b/tip/src/text_service/resources.rs
+index 90ed6b4..a1b6c4b 100644
+--- a/tip/src/text_service/resources.rs
++++ b/tip/src/text_service/resources.rs
+@@ -26,6 +26,7 @@ pub(super) const ID_SWITCH_SHAPE: u32 = 102;
+ pub(super) const ID_MODE_ICON: u32 = 103;
+ pub(super) const ID_HASHED: u32 = 40016;
+ pub(super) const ID_CONFIG: u32 = 40017;
++pub(super) const ID_RECOVER_INPUT: u32 = 40029;
+ pub(super) const ID_OUTPUT_SIMP_CHINESE: u32 = 40027;
+ pub(super) const ID_ABOUT: u32 = 40005;
+ pub(super) const ID_CHECK_NEW_VER: u32 = 40006;
+-- 
+2.54.0 (Apple Git-157)
+

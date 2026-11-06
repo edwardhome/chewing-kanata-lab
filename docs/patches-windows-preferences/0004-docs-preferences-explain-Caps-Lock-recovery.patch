@@ -1,0 +1,24 @@
+From 91e926ad2a89d2594db681dd7001f303e9cbf9b5 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Fri, 6 Nov 2026 15:40:56 +0800
+Subject: [PATCH] docs(preferences): explain Caps Lock recovery prerequisite
+
+---
+ src/Recovery.tsx | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/Recovery.tsx b/src/Recovery.tsx
+index 1c1d17d..7ccedec 100644
+--- a/src/Recovery.tsx
++++ b/src/Recovery.tsx
+@@ -25,6 +25,7 @@ export default function Recovery() {
+     <Button type="button" disabled={busy} onClick={() => void restart()}>
+       {busy ? "送出中…" : "Restart：恢復中文輸入"}
+     </Button>
++    <Text>若 Caps Lock 設定正在鎖定英文，請先切回對應的中文狀態，再按恢復。</Text>
+     <Text>此功能恢復輸入狀態；更新程式後仍需重新開啟應用，才能載入新版輸入法。</Text>
+     <div aria-live="polite">{status && <Text>{status}</Text>}{error && <Text role="alert">{error}</Text>}</div>
+   </section>;
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,85 @@
+From acdbd7057d8dc48d57d596b3473c2ca56c3e4909 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Fri, 6 Nov 2026 15:49:50 +0800
+Subject: [PATCH] fix(input): allow new recovery requests after clock
+ correction
+
+---
+ tip/src/text_service/recovery.rs | 33 +++++++++++++++++---------------
+ 1 file changed, 18 insertions(+), 15 deletions(-)
+
+diff --git a/tip/src/text_service/recovery.rs b/tip/src/text_service/recovery.rs
+index 180fa5d..935016d 100644
+--- a/tip/src/text_service/recovery.rs
++++ b/tip/src/text_service/recovery.rs
+@@ -8,7 +8,7 @@ pub const RECOVERY_EXPIRY_MS: u64 = 30_000;
+ /// External recovery requests are written as QWORD timestamps (unix epoch ms).
+ /// The gate ensures:
+ /// - Zero request tokens are rejected without updating state.
+-/// - Duplicate or older tokens (`request <= last_seen`) are rejected.
++/// - Duplicate tokens (`request == last_seen`) are rejected.
+ /// - Future tokens (`request > now_ms`) or stale tokens (`now_ms - request > 30000`)
+ ///   are rejected and consumed (`last_seen = request`).
+ /// - Valid tokens received while the context is unsafe or busy (active composition
+@@ -27,7 +27,8 @@ impl Default for RecoveryGate {
+ }
+ 
+ impl RecoveryGate {
+-    pub(super) fn new() -> Self {
++    #[cfg(test)]
++    fn new() -> Self {
+         Self::default()
+     }
+ 
+@@ -35,7 +36,7 @@ impl RecoveryGate {
+     ///
+     /// # Arguments
+     /// * `request` - Incoming request timestamp in epoch milliseconds (0 = no request).
+-    /// * `now_ms` - Current monotonic or epoch timestamp in milliseconds.
++    /// * `now_ms` - Current Unix epoch timestamp in milliseconds.
+     /// * `safe` - Whether the current document/thread context is safe for input processing.
+     /// * `busy` - Whether the IME is currently busy (e.g. active composition or held modifier/F).
+     ///
+@@ -48,8 +49,8 @@ impl RecoveryGate {
+             return false;
+         }
+ 
+-        // Duplicate or older than last-seen token.
+-        if request <= self.last_seen {
++        // Request IDs can move backwards after a system-clock correction.
++        if request == self.last_seen {
+             return false;
+         }
+ 
+@@ -168,16 +169,18 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn test_advancing_tokens_monotonic() {
+-        let mut gate = RecoveryGate::new();
+-        assert!(gate.consider(100, 100, true, false));
+-        assert_eq!(gate.last_seen, 100);
+-
+-        assert!(gate.consider(200, 200, true, false));
+-        assert_eq!(gate.last_seen, 200);
++    fn valid_token_after_rejected_future_timestamp_is_accepted() {
++        let mut gate = RecoveryGate::default();
++        assert!(!gate.consider(u64::MAX, 1_000, true, false));
++        assert!(gate.consider(1_001, 1_001, true, false));
++        assert!(!gate.consider(1_001, 1_002, true, false));
++    }
+ 
+-        // Out-of-order older token (150 < 200) rejected as duplicate/past
+-        assert!(!gate.consider(150, 250, true, false));
+-        assert_eq!(gate.last_seen, 200);
++    #[test]
++    fn valid_token_after_clock_rollback_is_accepted() {
++        let mut gate = RecoveryGate::default();
++        assert!(gate.consider(100_000, 100_000, true, false));
++        assert!(gate.consider(1_000, 1_001, true, false));
++        assert!(!gate.consider(1_000, 1_002, true, false));
+     }
+ }
+-- 
+2.54.0 (Apple Git-157)
+

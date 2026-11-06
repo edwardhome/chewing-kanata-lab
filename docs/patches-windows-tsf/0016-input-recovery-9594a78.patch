@@ -1,0 +1,202 @@
+From 9594a78849906e46cd9602be5c6b1521e65fe9ce Mon Sep 17 00:00:00 2001
+From: AGY <agy@local.invalid>
+Date: Fri, 6 Nov 2026 15:48:21 +0800
+Subject: [PATCH] feat(input): add expiring recovery request gate
+
+---
+ tip/src/text_service/recovery.rs | 183 +++++++++++++++++++++++++++++++
+ 1 file changed, 183 insertions(+)
+ create mode 100644 tip/src/text_service/recovery.rs
+
+diff --git a/tip/src/text_service/recovery.rs b/tip/src/text_service/recovery.rs
+new file mode 100644
+index 0000000..180fa5d
+--- /dev/null
++++ b/tip/src/text_service/recovery.rs
+@@ -0,0 +1,183 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++/// Expiry duration for external recovery requests (30 seconds).
++pub const RECOVERY_EXPIRY_MS: u64 = 30_000;
++
++/// Pure helper gate for safely consuming external recovery requests.
++///
++/// External recovery requests are written as QWORD timestamps (unix epoch ms).
++/// The gate ensures:
++/// - Zero request tokens are rejected without updating state.
++/// - Duplicate or older tokens (`request <= last_seen`) are rejected.
++/// - Future tokens (`request > now_ms`) or stale tokens (`now_ms - request > 30000`)
++///   are rejected and consumed (`last_seen = request`).
++/// - Valid tokens received while the context is unsafe or busy (active composition
++///   or held modifier/F) are deferred (not consumed) so they can be fulfilled on
++///   a subsequent safe/idle check before expiring.
++/// - Eligible tokens in safe and idle contexts are consumed once and accepted.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(super) struct RecoveryGate {
++    pub(super) last_seen: u64,
++}
++
++impl Default for RecoveryGate {
++    fn default() -> Self {
++        Self { last_seen: 0 }
++    }
++}
++
++impl RecoveryGate {
++    pub(super) fn new() -> Self {
++        Self::default()
++    }
++
++    /// Evaluates whether an incoming recovery request timestamp should trigger recovery.
++    ///
++    /// # Arguments
++    /// * `request` - Incoming request timestamp in epoch milliseconds (0 = no request).
++    /// * `now_ms` - Current monotonic or epoch timestamp in milliseconds.
++    /// * `safe` - Whether the current document/thread context is safe for input processing.
++    /// * `busy` - Whether the IME is currently busy (e.g. active composition or held modifier/F).
++    ///
++    /// # Returns
++    /// * `true` if the request is eligible, safe, idle, and consumed on this call.
++    /// * `false` otherwise.
++    pub(super) fn consider(&mut self, request: u64, now_ms: u64, safe: bool, busy: bool) -> bool {
++        // Zero represents no request present.
++        if request == 0 {
++            return false;
++        }
++
++        // Duplicate or older than last-seen token.
++        if request <= self.last_seen {
++            return false;
++        }
++
++        // Future token: timestamp is ahead of current time; reject and consume.
++        if request > now_ms {
++            self.last_seen = request;
++            return false;
++        }
++
++        // Stale token: age strictly exceeds 30,000 ms; reject and consume.
++        if now_ms.saturating_sub(request) > RECOVERY_EXPIRY_MS {
++            self.last_seen = request;
++            return false;
++        }
++
++        // Valid token, but context is unsafe or busy (composition active, modifier held).
++        // Defer consumption without advancing last_seen so a retry can succeed.
++        if !safe || busy {
++            return false;
++        }
++
++        // Eligible: consume token and signal recovery action.
++        self.last_seen = request;
++        true
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn test_zero_request_rejected() {
++        let mut gate = RecoveryGate::new();
++        assert_eq!(gate.last_seen, 0);
++        assert!(!gate.consider(0, 1000, true, false));
++        assert_eq!(gate.last_seen, 0);
++    }
++
++    #[test]
++    fn test_eligible_request_consumed_once() {
++        let mut gate = RecoveryGate::new();
++        assert!(gate.consider(1000, 1000, true, false));
++        assert_eq!(gate.last_seen, 1000);
++
++        // Duplicate request is rejected and does not trigger again
++        assert!(!gate.consider(1000, 1000, true, false));
++        assert_eq!(gate.last_seen, 1000);
++    }
++
++    #[test]
++    fn test_future_request_rejected_and_consumed() {
++        let mut gate = RecoveryGate::new();
++        // request (1050) > now_ms (1000)
++        assert!(!gate.consider(1050, 1000, true, false));
++        assert_eq!(gate.last_seen, 1050);
++
++        // Subsequent call when time reaches 1050 is already rejected/duplicate
++        assert!(!gate.consider(1050, 1050, true, false));
++    }
++
++    #[test]
++    fn test_stale_request_rejected_and_consumed() {
++        let mut gate = RecoveryGate::new();
++        // age = 31001 - 1000 = 30001 ms > 30000 ms
++        assert!(!gate.consider(1000, 31_001, true, false));
++        assert_eq!(gate.last_seen, 1000);
++
++        // Repeated check remains rejected
++        assert!(!gate.consider(1000, 31_002, true, false));
++    }
++
++    #[test]
++    fn test_boundary_exact_30000_accepted() {
++        let mut gate = RecoveryGate::new();
++        // age = 31000 - 1000 = 30000 ms (exactly at the 30s limit)
++        assert!(gate.consider(1000, 31_000, true, false));
++        assert_eq!(gate.last_seen, 1000);
++    }
++
++    #[test]
++    fn test_deferred_when_unsafe_then_accepted_when_safe() {
++        let mut gate = RecoveryGate::new();
++        // Received while unsafe: deferred (last_seen remains 0)
++        assert!(!gate.consider(1000, 1050, false, false));
++        assert_eq!(gate.last_seen, 0);
++
++        // Later check in safe context consumes the token
++        assert!(gate.consider(1000, 1100, true, false));
++        assert_eq!(gate.last_seen, 1000);
++    }
++
++    #[test]
++    fn test_deferred_when_busy_then_accepted_when_idle() {
++        let mut gate = RecoveryGate::new();
++        // Received while composition is active (busy=true): deferred
++        assert!(!gate.consider(1000, 1050, true, true));
++        assert_eq!(gate.last_seen, 0);
++
++        // Composition ended (busy=false): now accepted
++        assert!(gate.consider(1000, 1100, true, false));
++        assert_eq!(gate.last_seen, 1000);
++    }
++
++    #[test]
++    fn test_deferred_token_eventually_expires() {
++        let mut gate = RecoveryGate::new();
++        // Deferred at age 50ms because busy
++        assert!(!gate.consider(1000, 1050, true, true));
++        assert_eq!(gate.last_seen, 0);
++
++        // Still busy until past expiry
++        // Now age = 31005 - 1000 = 30005 ms > 30000 ms
++        assert!(!gate.consider(1000, 31_005, true, false));
++        assert_eq!(gate.last_seen, 1000);
++    }
++
++    #[test]
++    fn test_advancing_tokens_monotonic() {
++        let mut gate = RecoveryGate::new();
++        assert!(gate.consider(100, 100, true, false));
++        assert_eq!(gate.last_seen, 100);
++
++        assert!(gate.consider(200, 200, true, false));
++        assert_eq!(gate.last_seen, 200);
++
++        // Out-of-order older token (150 < 200) rejected as duplicate/past
++        assert!(!gate.consider(150, 250, true, false));
++        assert_eq!(gate.last_seen, 200);
++    }
++}
+-- 
+2.54.0 (Apple Git-157)
+
