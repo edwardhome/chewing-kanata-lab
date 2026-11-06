@@ -1,6 +1,6 @@
 # 1.0.2 設定、詞彙與 Ollama 傳輸驗證
 
-更新時間：2026-11-06T10:59:25+08:00
+更新時間：2026-11-06T11:15:18+08:00
 
 ## 已完成的自動化驗證
 
@@ -43,3 +43,22 @@
 - 同目錄 `cargo build --release --locked -p chewing_tip -p tsfreg`：exit 0。日誌 `ckai-102-native-build.log`。既有未使用項目與匯出符號連結器警告仍存在，非本批失敗。
 - 共用 preferences 再以 `--release --locked --features tauri/custom-protocol` 建置：exit 0。前端 `index.html` 的 SHA-256 與 Mac 成品相同，避免使用舊設定資產。日誌 `ckai-102-shared-preferences-build.log`。
 - AGY 接手乾淨打包 worktree、套件驗證、ZIP 與雜湊整理；不安裝、不註冊、不重啟輸入法。成品驗收另附 AGY 打包報告。
+
+## 測試包的獨立驗收
+
+- AGY 打包報告：[`RUN-20261106-AGY-PACKAGE-102.md`](RUN-20261106-AGY-PACKAGE-102.md)，來源提交為 `8af1ec4`；後續提交只增加驗證文件。
+- Codex 在 Mac 直接讀取 ZIP，逐一核對 manifest 的 24 個 payload SHA-256，並拒絕額外檔案、重複路徑及路徑穿越；全部通過。
+- 三個 PE 執行檔皆為 x64；DLL 包含新版個人詞庫檔名，設定 EXE 包含新增儲存與更新命令；來源 commit 與 preferences commit 精確匹配。
+- Codex 另在 WorkstationX 執行 `do_install.ps1 -ValidateOnly`，exit 0，輸出 `Package preflight passed; no changes made.`，未實際安裝。
+- ZIP：`AI-Chewing-Windows-x64-1.0.2-preview.1.zip`（9,120,926 bytes）。SHA-256：`a646e86a6f74670519c414552bf4ab9b8691ac94201a7453894b195d31d25dd4`。
+- Mac 交付副本與獨立繁體中文文本範本位於 `/Users/defu/Documents/AI-Chewing/1.0.2-preview.1/`；Windows 原成品位於 AGY 報告所列 Documents 目錄。
+
+### 使用者驗收步驟
+
+1. 自行解壓測試 ZIP，執行 `install_ime.bat`；儲存工作後重新開啟測試用應用。若系統仍載入舊 DLL，請自行登出再登入。
+2. 開啟同套件的 `ChewingPreferences.exe`，確認版本為 `1.0.2-preview.1`，進入「自訂工程詞彙」。
+3. 新增 `CH4` → `CH₄`，註解「甲烷」，按「儲存詞彙」；重新開啟輸入應用後確認候選、原文選項與註解不會被送出。
+4. 按「開啟工程詞彙文本」，確認註解及提示詞；編輯三欄 Tab 文本、儲存、匯入預覽，再按「儲存詞彙」。可用「匯出已儲存詞彙與提示詞」取出已核准內容。
+5. 在「其他設定」按「檢查更新」，應取得本專案 GitHub 正式版本。正式版本若比此測試版舊，顯示無較新版本；不會要求降版。未實際測試瀏覽器下載操作。
+
+上述實際操作仍為 NOT_RUN，等待使用者回報；不將建置、單元測試或套件檢查當成 GUI 驗收。

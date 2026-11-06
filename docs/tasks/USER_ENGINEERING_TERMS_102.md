@@ -6,7 +6,7 @@
 
 使用者在 Zbook 操作時發現 `SiO₂`、`H₂O₂` 可選，卻沒有 `H₂O`，希望能自行新增工程詞彙。Zbook 是使用者端，由使用者安裝、移除及操作驗收；開發代理不登入該機器。
 
-## 已查證現況
+## 1.0.1 已查證現況
 
 - `policy-core/resources/engineering-terms.json` 內建 103 個詞條，有 `sio2`、`h2o2` 別名，沒有 `h2o`。
 - `EngineeringLexicon::bundled()` 在編譯時嵌入該檔案。修改安裝目錄附近的 JSON 並不會改變候選。
