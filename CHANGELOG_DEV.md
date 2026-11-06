@@ -11,7 +11,7 @@
 - 文本附繁體中文說明、TSV 範例與可貼給外部模型的整理提示詞。儲存後需重開使用輸入法的應用程式。
 - 設定內新增 GitHub 手動檢查更新／下載 Windows x64 套件；使用者自行安裝，不自動啟動安裝程式。
 - 與 AGY 共同完成 Ollama 生命週期、JSON 驗證與有期限的本機 HTTP 傳輸。尚未接入 TSF 候選，AI 不因本批而啟用。
-- 138 項無網路測試與 1 項 GitHub 實際查詢通過；前端、設定程式 Release 建置通過。GUI／Zbook 實鍵驗收待使用者操作。
+- 165 項無外網測試與 1 項 GitHub 實際查詢通過；前端、原生輸入法與設定程式 Release 建置通過。GUI／Zbook 實鍵驗收待使用者操作。
 - [驗證紀錄](docs/verification/runs/RUN-20261106-102-SETTINGS-TRANSPORT.md)；[第二批分工](docs/tasks/OLLAMA_PARALLEL_CHECKPOINT_02.md)。
 
 ---

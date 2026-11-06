@@ -15,7 +15,7 @@
 | 設定頁前端 | `npm ci --ignore-scripts`、`npm run build` 通過；Vite 提示單一 bundle 超過 500 kB，非編譯錯誤 | Mac 工具輸出 |
 | 設定程式 Release | `cargo build --release --locked --bin ChewingPreferences --features tauri/custom-protocol`，exit 0 | `ckai-102-preferences-release.log` |
 
-目前合計 138 項無網路自動測試＋1 項 GitHub 唯讀連線測試。這些數字不包含尚未執行的 GUI 與實體按鍵。
+加上本節後續的原生測試後，合計 165 項無外網自動測試＋1 項 GitHub 唯讀連線測試。這些數字不包含尚未執行的 GUI 與實體按鍵。
 
 設定程式於暫存來源快照建置，`src-tauri/Cargo.lock` 已帶回原始碼。Windows 沒有 npm 可執行檔；前端改在已有 Node 的 Mac 編譯再傳送資產，未安裝 Windows Node。Rustfmt 在此 Windows 工具鏈缺少 component，未將格式檢查記為通過。
 
@@ -34,3 +34,12 @@
 - Ollama 實際模型推論、TSF 候選接線與冷啟動效能：NOT_RUN，本批只完成核心與傳輸。
 - 背景蒐集日常輸入或已送出前後文：未實作、未啟用。
 - 正式 v1.0.2 發布與 Zbook 安裝：未執行。
+
+## 共用來源與原生整合
+
+- 外層 `8af1ec4`、preferences `113736a` 已 fast-forward 回 Windows 共用目錄；TSF 保持 `b5dc92e`，只重新連結更新的 policy-core。
+- 以原生與設定 patch series 的 `-Check` 驗證完整 tree，兩者均通過。另從 preferences 固定上游基準實際重播兩個 patch，tree 精確匹配 `f8c78378ea1e7247aef61ad6de7a5faa829a0139`。
+- Windows 共用原生目錄執行 `cargo test --locked -p chewing_tip_core -p chewing_tip -p tsfreg`：15＋9＋3＝27 passed、0 failed；doc-tests 0。日誌 `ckai-102-native-tests.log`。
+- 同目錄 `cargo build --release --locked -p chewing_tip -p tsfreg`：exit 0。日誌 `ckai-102-native-build.log`。既有未使用項目與匯出符號連結器警告仍存在，非本批失敗。
+- 共用 preferences 再以 `--release --locked --features tauri/custom-protocol` 建置：exit 0。前端 `index.html` 的 SHA-256 與 Mac 成品相同，避免使用舊設定資產。日誌 `ckai-102-shared-preferences-build.log`。
+- AGY 接手乾淨打包 worktree、套件驗證、ZIP 與雜湊整理；不安裝、不註冊、不重啟輸入法。成品驗收另附 AGY 打包報告。
