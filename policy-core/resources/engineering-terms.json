@@ -1511,6 +1511,21 @@
       ]
     },
     {
+      "id": "user.20261106.water",
+      "category": "materials",
+      "aliases": [
+        "h2o"
+      ],
+      "outputs": [
+        "H₂O",
+        "H2O"
+      ],
+      "annotation": "水",
+      "sources": [
+        "user-request:2026-11-06:H2O"
+      ]
+    },
+    {
       "id": "5.40.1",
       "category": "materials",
       "aliases": [
