@@ -1,0 +1,59 @@
+From 5b56b7a756816863aabcd3a20dc560aa252d9378 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Fri, 6 Nov 2026 15:47:02 +0800
+Subject: [PATCH] fix(input): keep compartment notifications read-only
+
+---
+ tip/src/text_service/chewing.rs | 8 +-------
+ tip/src/text_service/mod.rs     | 9 ++-------
+ 2 files changed, 3 insertions(+), 14 deletions(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 1ed0d6b..1567ccc 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -2085,13 +2085,6 @@ pub(crate) struct ReentrantOps<'a> {
+ }
+ 
+ impl<'a> ReentrantOps<'a> {
+-    pub(crate) fn from_ref(
+-        cell: &'a RefCell<Option<ChewingTextService>>,
+-        tip_ref: Ref<'a, Option<ChewingTextService>>,
+-    ) -> ReentrantOps<'a> {
+-        let _ = cell;
+-        ReentrantOps { tip: tip_ref }
+-    }
+     pub(crate) fn from_mut(
+         cell: &'a RefCell<Option<ChewingTextService>>,
+         tip_mut: RefMut<'_, Option<ChewingTextService>>,
+@@ -2136,6 +2129,7 @@ impl<'a> ReentrantOps<'a> {
+             Ok(())
+         })();
+         tip.keyboard_sync_active.set(false);
++        if recovery && result.is_err() { tip.pending_lang_mode_change.set(false); }
+         result
+     }
+ }
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index 2d4e86c..2c58577 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -530,13 +530,8 @@ impl ITfCompartmentEventSink_Impl for TextService_Impl {
+                     error!("Unable to handle compartment change: {error:#}");
+                     return Err(E_UNEXPECTED.into());
+                 }
+-                if rguid == &GUID_COMPARTMENT_KEYBOARD_OPENCLOSE {
+-                    let reentrant_ops = ReentrantOps::from_ref(&self.inner, borrowed_ts);
+-                    if let Err(error) = reentrant_ops.sync_keyboard_openclose(true) {
+-                        error!("Unable to sync lang mode: {error:#}");
+-                        return Err(E_UNEXPECTED.into());
+-                    }
+-                }
++                // The notification already reflects the compartment value.
++                // Never call SetValue from within its OnChange callback.
+             } else {
+                 let Ok(mut borrowed_ts) = self.inner.try_borrow_mut() else {
+                     debug!("reentrent detected - abort compartment::on_change");
+-- 
+2.54.0 (Apple Git-157)
+

@@ -8,6 +8,7 @@ pub mod f_hold;
 pub mod grammar_corrector;
 pub mod shift_letter;
 pub mod technical_lexicon;
+pub mod user_engineering;
 pub mod text_assistance;
 
 pub use double_shift::DoubleShiftGesture;
@@ -175,3 +176,7 @@ mod tests {
 }
 
 pub mod engineering_lexicon;
+pub mod prediction;
+pub mod prediction_session;
+pub mod ollama_protocol;
+pub use prediction::{validate_and_extract_continuation, PredictionLanguage};

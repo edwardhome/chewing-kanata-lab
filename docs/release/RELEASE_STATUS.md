@@ -1,4 +1,22 @@
-# 目前發布版本：v1.0.1
+# 目前正式版本：v1.0.2
+
+更新時間：2026-11-06T17:56:04+08:00
+
+使用者已確認 preview.2 目前功能正常，授權轉為 1.0.2 正式版。正式版只同步版本識別，不混入新的 1.1.0 行為。
+
+- 自訂工程詞彙、附註解與大模型提示詞的批次文本、匯入預覽及匯出。
+- 設定內 GitHub 手動檢查與下載，不自動安裝。
+- 原生選單與設定中的 Restart：恢復中文輸入，保留未完成組字及修飾鍵手勢。
+- 正式來源重跑 49 項測試，前端、原生及設定 Release 建置通過；完整來源 patch 重播、套件 24 個 payload 雜湊、三個 x64 PE 與安裝前檢查通過。
+- Zbook 由使用者安裝與操作，本輪未遠端安裝。一般可用性由使用者回報，不代表所有邊界已逐項實測。
+- 已知後續需求：注音組字時的 F 分層、Shift 英文交接、原生與工程共用候選，排入 1.1.0；本版不宣稱已完成。
+- Ollama 尚未接入 TSF 的 AI 候選，AI 與背景輸入蒐集維持未啟用。
+
+[正式下載](https://github.com/edwardhome/chewing-kanata-lab/releases/tag/v1.0.2)；[驗證紀錄](../verification/runs/RUN-20261106-STABLE-102.md)。
+
+---
+
+# 前一已發布版本：v1.0.1
 
 更新時間：2026-11-05T18:55:22+08:00
 
@@ -13,6 +31,12 @@
 [下載 v1.0.1](https://github.com/edwardhome/chewing-kanata-lab/releases/tag/v1.0.1)；[驗證與使用者回報](../verification/runs/RUN-20261105-NATIVE-PREFERENCES-04.md)；[共用 Windows 工作目錄](../development/SHARED_WINDOWS_WORKSPACE.md)。
 
 前版：[v1.0.0 驗證報告](../verification/runs/RUN-20261105-V1-RELEASE-03.md)。
+
+## 下一版：1.0.2-preview.2（開發驗證，尚未正式發布）
+
+新增 Restart 恢復中文輸入、修正 Shift 殘留與組字期間的 editor 重建。自訂工程詞彙表單、附提示詞的批次文本及 GitHub 手動檢查／下載已實作。Ollama 傳輸與驗證核心已整合，TSF 的 AI 候選接線仍未完成。Zbook 由使用者自行安裝與操作，本輪未遠端安裝。
+
+[本批測試及限制](../verification/runs/RUN-20261106-102-SETTINGS-TRANSPORT.md)。目前已發布版本仍是上方 1.0.1，不能因開發分支完成編譯就視為正式 1.0.2 已可下載。
 
 ## 歷史報告（不代表目前狀態）
 

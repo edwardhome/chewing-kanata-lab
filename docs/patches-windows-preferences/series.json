@@ -1,12 +1,28 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "841bb5fc12ca24cf77d1f379ae7500d54f1b75d0",
-  "preferences_commit": "ed957f4c6dc2fea261e608ead9589cd0719577a4",
+  "tree": "5f63c8492502be9231a1e3d456ded58b35bb7996",
+  "preferences_commit": "a9b224315486caa6dcd1b3f002bd2f905686b771",
   "patches": [
     {
       "file": "0001-fix-preferences-restore-native-settings.patch",
       "sha256": "cfeb4983355461a59fb0c9dbdc23d55cb12eea8c01e742b8ece83b7eff8fcf01"
+    },
+    {
+      "file": "0002-feat-preferences-engineering-terms-and-updates.patch",
+      "sha256": "462145f04977eb94f67fd566fe16d13fd173c2ab8f6d010259485def2a99a037"
+    },
+    {
+      "file": "0003-feat-preferences-request-Chinese-input-recovery.patch",
+      "sha256": "c842bb0518930c962c893216e0d1a189dde2834b4709d9f96f0bb7a1f1deccd9"
+    },
+    {
+      "file": "0004-docs-preferences-explain-Caps-Lock-recovery.patch",
+      "sha256": "a07de605560bbd06d76a329a155d0374c9663698d84b46728ceaba2cdde5143a"
+    },
+    {
+      "file": "0005-chore-release-promote-1.0.2.patch",
+      "sha256": "31099d2c64debfd04d0ba9dd5585f5e5d9426d11d152c4fe7ef58ceac4238023"
     }
   ]
 }

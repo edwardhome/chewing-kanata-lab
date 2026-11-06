@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn reviewed_catalog_loads_with_sources() {
         let l = EngineeringLexicon::bundled();
-        assert_eq!(l.terms.len(), 103);
+        assert_eq!(l.terms.len(), 104);
         assert!(l.terms.iter().all(|t| !t.sources.is_empty()));
     }
     #[test]
@@ -97,6 +97,17 @@ mod tests {
         let (items, _) = EngineeringLexicon::bundled().matches("i2c");
         assert_eq!(items.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["I²C", "I2C"]);
         assert_eq!(items[0].annotation.as_deref(), Some("內部整合電路匯流排"));
+    }
+    #[test]
+    fn water_is_an_exact_match_separate_from_peroxide() {
+        let lexicon = EngineeringLexicon::bundled();
+        let (water, longer) = lexicon.matches("H2O");
+        assert_eq!(water.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["H₂O", "H2O"]);
+        assert_eq!(water[0].annotation.as_deref(), Some("水"));
+        assert!(longer.iter().any(|c| c.text == "H₂O₂"));
+        let (peroxide, _) = lexicon.matches("H2O2");
+        assert_eq!(peroxide.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["H₂O₂", "H2O2"]);
+        assert_eq!(crate::technical_lexicon::TechnicalLexicon::default().completions("H2O")[0], "H₂O");
     }
     #[test]
     fn two_characters_require_exact_alias() {

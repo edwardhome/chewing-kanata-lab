@@ -5,6 +5,8 @@
 use std::collections::BTreeSet;
 use crate::engineering_lexicon::{EngineeringLexicon, TechnicalCandidate};
 use std::path::PathBuf;
+use crate::user_engineering::{UserEngineeringTerm, UserTermsError, validate_user_terms,
+    parse_user_terms, MAX_USER_TERMS_BYTES, USER_TERMS_FILENAME};
 
 pub const BUILTIN_TERMS: &[&str] = &[
     "Apple",
@@ -36,6 +38,7 @@ pub const BUILTIN_TERMS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TechnicalLexicon {
     words: Vec<String>,
+    user_terms: Vec<UserEngineeringTerm>,
 }
 
 impl Default for TechnicalLexicon {
@@ -57,7 +60,14 @@ impl TechnicalLexicon {
         }
         Self {
             words: set.into_iter().collect(),
+            user_terms: vec![],
         }
+    }
+
+    pub fn with_user_terms(mut self, terms: Vec<UserEngineeringTerm>) -> Result<Self, UserTermsError> {
+        validate_user_terms(&terms)?;
+        self.user_terms = terms;
+        Ok(self)
     }
 
     /// 驗證單字格式：
@@ -122,15 +132,23 @@ impl TechnicalLexicon {
 
     /// 從檔案載入自訂技術詞庫
     pub fn load_from_file_or_default() -> Self {
+        let mut lexicon = Self::default();
         if let Some(path) = Self::default_user_lexicon_path() {
             if path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     let terms = Self::parse_terms(&content);
-                    return Self::new(&terms);
+                    lexicon = Self::new(&terms);
+                }
+            }
+            use std::io::Read;
+            if let Ok(file) = std::fs::File::open(path.with_file_name(USER_TERMS_FILENAME)) {
+                let mut bytes = Vec::new();
+                if file.take((MAX_USER_TERMS_BYTES + 1) as u64).read_to_end(&mut bytes).is_ok() {
+                    if let Ok(terms) = parse_user_terms(&bytes) { lexicon.user_terms = terms; }
                 }
             }
         }
-        Self::default()
+        lexicon
     }
 
     /// 前綴補全查詢：
@@ -148,11 +166,17 @@ impl TechnicalLexicon {
             return vec![];
         }
         let lower = prefix.to_ascii_lowercase();
+        let user_matches = |exact: bool| self.user_terms.iter().filter(move |term| {
+            if exact { term.input.eq_ignore_ascii_case(prefix) }
+            else { prefix.len() >= 3 && !term.input.eq_ignore_ascii_case(prefix)
+                && term.input.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) }
+        }).map(|term| TechnicalCandidate { text: term.output.clone(),
+            annotation: if term.annotation.is_empty() { None } else { Some(term.annotation.clone()) } });
         let (exact, engineering_prefix) = EngineeringLexicon::bundled().matches(prefix);
         let legacy = self.words.iter().filter(|w| w.to_ascii_lowercase().starts_with(&lower))
             .map(|w| TechnicalCandidate { text: w.clone(), annotation: None });
         let mut seen = BTreeSet::from([prefix.to_string()]);
-        exact.into_iter().chain(legacy).chain(engineering_prefix)
+        user_matches(true).chain(exact).chain(legacy).chain(user_matches(false)).chain(engineering_prefix)
             .filter(|c| seen.insert(c.text.clone())).take(8).collect()
     }
 
@@ -164,6 +188,18 @@ impl TechnicalLexicon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_aliases_keep_raw_first_and_preserve_legacy_completions() {
+        let terms = vec![UserEngineeringTerm { input: "x2o".into(), output: "X₂O".into(), annotation: "合成測試".into() }];
+        let lexicon = TechnicalLexicon::new(&["ExampleWord".into()]).with_user_terms(terms).unwrap();
+        assert_eq!(lexicon.completions("X2O"), ["X₂O"]);
+        assert!(lexicon.completions("x2").is_empty());
+        assert!(lexicon.completions("Exa").contains(&"ExampleWord".into()));
+        let composition = crate::shift_letter::ASCIIComposition::new("X2O", None, 0, &lexicon);
+        assert_eq!(composition.display(), "X2O");
+        assert!(TechnicalLexicon::default().completions("X2O").is_empty());
+    }
 
     #[test]
     fn test_builtin_terms_loaded() {

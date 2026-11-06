@@ -1,7 +1,38 @@
 # 開發紀錄與變更日誌 (Development Changelog)
 
 > **專案**：新酷音 × Kanata 跨平台輸入法 (Chewing + Kanata Lab)  
-> **當前分支**：`feature/chewing-ascii-first-mvp`
+> **當前開發分支**：`feature/ollama-lifecycle`
+
+---
+
+## [1.0.2] 正式版
+
+- 使用者確認 preview.2 目前功能正常可用，授權轉為正式版本。
+- 保留工程詞彙編輯、批次文本與大模型提示詞、GitHub 手動檢查更新，以及 Restart 恢復中文輸入。
+- 正式版識別同步至 Windows 原生資源、Cargo 與設定程式，未混入 1.1.0 的行為修改。
+- 已知新增需求：注音組字中的 F 分層、Shift 英文交接與共用工程候選，排入 1.1.0；未宣稱本版已修正。
+
+---
+
+## [1.0.2-preview.2] 開發中
+
+- 新增原生右下角選單與完整設定頁「其他設定」中的 `Restart：恢復中文輸入`。
+- 恢復要求有效 30 秒；保留未送出組字、候選及 F／修飾鍵手勢，CapsLock 英文鎖定時需先切回中文狀態。
+- 修正漏掉 Shift 放開事件時的殘留判斷；設定或焦點更新不再重建仍有組字的 editor，重建後同步語言與全半形模式。
+- AGY 實作恢復要求判斷與測試，Codex 完成原生／設定整合及時間校正、可重入通知邊界修正。
+- 本輪 Windows 原生 40 項、設定 9 項測試通過，兩者 Release 與前端建置通過。未安裝、未重啟使用者輸入法，Zbook 實鍵待驗收。
+- [恢復功能與驗證](docs/verification/runs/RUN-20261106-INPUT-RECOVERY.md)。
+
+---
+
+## [1.0.2-preview.1] 開發中
+
+- 新增自訂工程詞彙設定表單、個人輸入碼映射、批次文本匯入預覽與提示詞匯出；內建補上 H2O → H₂O。
+- 文本附繁體中文說明、TSV 範例與可貼給外部模型的整理提示詞。儲存後需重開使用輸入法的應用程式。
+- 設定內新增 GitHub 手動檢查更新／下載 Windows x64 套件；使用者自行安裝，不自動啟動安裝程式。
+- 與 AGY 共同完成 Ollama 生命週期、JSON 驗證與有期限的本機 HTTP 傳輸。尚未接入 TSF 候選，AI 不因本批而啟用。
+- 165 項無外網測試與 1 項 GitHub 實際查詢通過；前端、原生輸入法與設定程式 Release 建置通過。GUI／Zbook 實鍵驗收待使用者操作。
+- [驗證紀錄](docs/verification/runs/RUN-20261106-102-SETTINGS-TRANSPORT.md)；[第二批分工](docs/tasks/OLLAMA_PARALLEL_CHECKPOINT_02.md)。
 
 ---
 

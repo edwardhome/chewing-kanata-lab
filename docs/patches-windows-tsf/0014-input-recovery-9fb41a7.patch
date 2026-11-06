@@ -1,0 +1,87 @@
+From 9fb41a740663f673de87688ee298a72eaa76a5ba Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Fri, 6 Nov 2026 15:43:16 +0800
+Subject: [PATCH] fix(input): bound recovery writes and guard reentrant
+ callbacks
+
+---
+ tip/src/text_service/chewing.rs | 41 ++++++++++++++++++---------------
+ 1 file changed, 23 insertions(+), 18 deletions(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 775fb83..1ed0d6b 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -182,6 +182,7 @@ pub(super) struct ChewingTextService {
+     pending_lang_mode_change: Cell<bool>,
+     recovery_gate: RecoveryGate,
+     recovery_open_pending: Cell<bool>,
++    keyboard_sync_active: Cell<bool>,
+ 
+     has_focus: bool,
+     output_simp_chinese: bool,
+@@ -336,6 +337,7 @@ impl ChewingTextService {
+             pending_lang_mode_change: Cell::new(false),
+             recovery_gate: RecoveryGate::default(),
+             recovery_open_pending: Cell::new(false),
++            keyboard_sync_active: Cell::new(false),
+         };
+ 
+         if let Err(error) = cts.init_openclose(tid) {
+@@ -2103,6 +2105,8 @@ impl<'a> ReentrantOps<'a> {
+         let Some(tip) = self.tip.as_ref() else {
+             bail!("chewing_tip is not initialized");
+         };
++        // Compartment notifications can reenter this method synchronously.
++        if tip.keyboard_sync_active.get() { return Ok(()); }
+         debug!(force, pending_lang_mode_change=tip.pending_lang_mode_change.get(); "sync_keyboard_openclose");
+         let recovery = tip.recovery_open_pending.get();
+         if !force && !tip.pending_lang_mode_change.get() && !recovery {
+@@ -2113,25 +2117,26 @@ impl<'a> ReentrantOps<'a> {
+             tip.pending_lang_mode_change.set(false);
+             return Ok(());
+         }
+-        let compartment_mgr: ITfCompartmentMgr = tip.thread_mgr.cast()?;
+-        unsafe {
+-            let compartment =
+-                compartment_mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)?;
+-            let openclose: i32 = match tip.lang_mode.get() {
+-                TsfLangMode::Chinese => 1,
+-                TsfLangMode::English => 0,
+-                _ => 0,
+-            };
+-            // NB: recursively call this inside compartment callback will fail
+-            // Clear before the reentrant callback; retain the request if SetValue fails.
+-            tip.recovery_open_pending.set(false);
+-            if let Err(error) = compartment.SetValue(tip.tid, &openclose.into()) {
+-                tip.recovery_open_pending.set(recovery);
+-                return Err(error.into());
++        // A recovery attempt is one-shot. A failed COM write must not survive
++        // its context/expiry check and reopen a later, possibly unsafe context.
++        tip.recovery_open_pending.set(false);
++        tip.keyboard_sync_active.set(true);
++        let result = (|| -> Result<()> {
++            let compartment_mgr: ITfCompartmentMgr = tip.thread_mgr.cast()?;
++            unsafe {
++                let compartment =
++                    compartment_mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)?;
++                let openclose: i32 = match tip.lang_mode.get() {
++                    TsfLangMode::Chinese => 1,
++                    TsfLangMode::English => 0,
++                    _ => 0,
++                };
++                compartment.SetValue(tip.tid, &openclose.into())?;
+             }
+-        }
+-
+-        Ok(())
++            Ok(())
++        })();
++        tip.keyboard_sync_active.set(false);
++        result
+     }
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+
