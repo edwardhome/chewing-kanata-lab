@@ -1,0 +1,96 @@
+From a9b224315486caa6dcd1b3f002bd2f905686b771 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Fri, 6 Nov 2026 17:46:25 +0800
+Subject: [PATCH] chore(release): promote preferences to 1.0.2
+
+---
+ package-lock.json         | 4 ++--
+ package.json              | 2 +-
+ src-tauri/Cargo.lock      | 4 ++--
+ src-tauri/Cargo.toml      | 2 +-
+ src-tauri/tauri.conf.json | 2 +-
+ 5 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/package-lock.json b/package-lock.json
+index 6c8231a..7824f1a 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "chewing-preferences",
+-  "version": "1.0.2-preview.2",
++  "version": "1.0.2",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "chewing-preferences",
+-      "version": "1.0.2-preview.2",
++      "version": "1.0.2",
+       "dependencies": {
+         "@fluentui/react-components": "^9.70.0",
+         "@fluentui/react-icons": "^2.0.323",
+diff --git a/package.json b/package.json
+index 0e63755..858d5db 100644
+--- a/package.json
++++ b/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "chewing-preferences",
+   "private": true,
+-  "version": "1.0.2-preview.2",
++  "version": "1.0.2",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index 7a16d8a..a401115 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -497,7 +497,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing-preferences"
+-version = "1.0.2-preview.2"
++version = "1.0.2"
+ dependencies = [
+  "chewing-policy-core",
+  "chewing_tip_core",
+@@ -521,7 +521,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.0.1"
++version = "1.0.2"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+index cd0fa60..a8de705 100644
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -4,7 +4,7 @@
+ 
+ [package]
+ name = "chewing-preferences"
+-version = "1.0.2-preview.2"
++version = "1.0.2"
+ edition = "2024"
+ license = "GPL-3.0-or-later"
+ 
+diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+index f7a332c..63d46dd 100644
+--- a/src-tauri/tauri.conf.json
++++ b/src-tauri/tauri.conf.json
+@@ -1,7 +1,7 @@
+ {
+   "$schema": "https://schema.tauri.app/config/2",
+   "productName": "AI新酷音設定",
+-  "version": "1.0.2-preview.2",
++  "version": "1.0.2",
+   "identifier": "org.aichewing.preferences",
+   "build": {
+     "beforeDevCommand": "npm run dev",
+-- 
+2.54.0 (Apple Git-157)
+

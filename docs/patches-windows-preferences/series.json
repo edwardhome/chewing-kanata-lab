@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "70e24416db653ab76939ff1cbad591da0a5e3581",
-  "preferences_commit": "91e926ad2a89d2594db681dd7001f303e9cbf9b5",
+  "tree": "5f63c8492502be9231a1e3d456ded58b35bb7996",
+  "preferences_commit": "a9b224315486caa6dcd1b3f002bd2f905686b771",
   "patches": [
     {
       "file": "0001-fix-preferences-restore-native-settings.patch",
@@ -19,6 +19,10 @@
     {
       "file": "0004-docs-preferences-explain-Caps-Lock-recovery.patch",
       "sha256": "a07de605560bbd06d76a329a155d0374c9663698d84b46728ceaba2cdde5143a"
+    },
+    {
+      "file": "0005-chore-release-promote-1.0.2.patch",
+      "sha256": "31099d2c64debfd04d0ba9dd5585f5e5d9426d11d152c4fe7ef58ceac4238023"
     }
   ]
 }
