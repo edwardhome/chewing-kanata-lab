@@ -1,0 +1,746 @@
+From 113736a891c24f1ed87f158af715f141fb7162b7 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Fri, 6 Nov 2026 10:57:44 +0800
+Subject: [PATCH] feat(preferences): add engineering terms and GitHub update
+ checks
+
+---
+ package-lock.json                   |   4 +-
+ package.json                        |   2 +-
+ src-tauri/Cargo.lock                |  25 ++++-
+ src-tauri/Cargo.toml                |   7 +-
+ src-tauri/capabilities/default.json |   5 +-
+ src-tauri/src/engineering.rs        | 154 ++++++++++++++++++++++++++++
+ src-tauri/src/lib.rs                |   8 ++
+ src-tauri/src/updates.rs            | 147 ++++++++++++++++++++++++++
+ src-tauri/tauri.conf.json           |   2 +-
+ src/App.tsx                         |  21 ++--
+ src/EngineeringTerms.tsx            |  90 ++++++++++++++++
+ src/Updates.tsx                     |  53 ++++++++++
+ 12 files changed, 505 insertions(+), 13 deletions(-)
+ create mode 100644 src-tauri/src/engineering.rs
+ create mode 100644 src-tauri/src/updates.rs
+ create mode 100644 src/EngineeringTerms.tsx
+ create mode 100644 src/Updates.tsx
+
+diff --git a/package-lock.json b/package-lock.json
+index 13e99b2..12fa4b3 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "chewing-preferences",
+-  "version": "1.0.1",
++  "version": "1.0.2-preview.1",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "chewing-preferences",
+-      "version": "1.0.1",
++      "version": "1.0.2-preview.1",
+       "dependencies": {
+         "@fluentui/react-components": "^9.70.0",
+         "@fluentui/react-icons": "^2.0.323",
+diff --git a/package.json b/package.json
+index 58aa7b8..c9c0030 100644
+--- a/package.json
++++ b/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "chewing-preferences",
+   "private": true,
+-  "version": "1.0.1",
++  "version": "1.0.2-preview.1",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index 26175a1..0539115 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -487,13 +487,24 @@ dependencies = [
+  "scoped-error",
+ ]
+ 
++[[package]]
++name = "chewing-policy-core"
++version = "0.1.0"
++dependencies = [
++ "serde",
++ "serde_json",
++]
++
+ [[package]]
+ name = "chewing-preferences"
+-version = "1.0.1"
++version = "1.0.2-preview.1"
+ dependencies = [
++ "chewing-policy-core",
+  "chewing_tip_core",
++ "fs2",
+  "log",
+  "scoped-error",
++ "semver",
+  "serde",
+  "serde_json",
+  "tauri",
+@@ -501,7 +512,9 @@ dependencies = [
+  "tauri-plugin-dialog",
+  "tauri-plugin-opener",
+  "tauri-plugin-process",
++ "tempfile",
+  "toml 0.9.12+spec-1.1.0",
++ "ureq",
+  "windows 0.61.3",
+  "windows-registry",
+ ]
+@@ -1114,6 +1127,16 @@ dependencies = [
+  "percent-encoding",
+ ]
+ 
++[[package]]
++name = "fs2"
++version = "0.4.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
++dependencies = [
++ "libc",
++ "winapi",
++]
++
+ [[package]]
+ name = "futures-channel"
+ version = "0.3.32"
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+index 256ad48..3ec3066 100644
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -4,7 +4,7 @@
+ 
+ [package]
+ name = "chewing-preferences"
+-version = "1.0.1"
++version = "1.0.2-preview.1"
+ edition = "2024"
+ license = "GPL-3.0-or-later"
+ 
+@@ -26,6 +26,11 @@ log = "0.4"
+ scoped-error = "0.1.4"
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
++chewing-policy-core = { path = "../../../policy-core" }
++fs2 = "0.4"
++tempfile = "3"
++semver = "1"
++ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+ tauri = { version = "2", features = [] }
+ tauri-plugin-dialog = "2"
+ tauri-plugin-opener = "2"
+diff --git a/src-tauri/capabilities/default.json b/src-tauri/capabilities/default.json
+index d68965c..abd4905 100644
+--- a/src-tauri/capabilities/default.json
++++ b/src-tauri/capabilities/default.json
+@@ -19,10 +19,13 @@
+       "allow": [
+         {
+           "url": "https://chewing.im"
++        },
++        {
++          "url": "https://github.com/edwardhome/chewing-kanata-lab/releases/*"
+         }
+       ]
+     },
+     "process:allow-exit",
+     "dialog:default"
+   ]
+-}
+\ No newline at end of file
++}
+diff --git a/src-tauri/src/engineering.rs b/src-tauri/src/engineering.rs
+new file mode 100644
+index 0000000..1990215
+--- /dev/null
++++ b/src-tauri/src/engineering.rs
+@@ -0,0 +1,154 @@
++// SPDX-FileCopyrightText: 2026 AI Chewing contributors
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++use chewing_policy_core::user_engineering::{UserEngineeringTerm, UserTermsError,
++    parse_user_terms, encode_user_terms, parse_user_terms_text,
++    MAX_USER_TERMS_BYTES, USER_TERMS_FILENAME, ENGINEERING_TEXT_TEMPLATE};
++use serde::Serialize;
++use std::{fs, io::{Read, Write}, path::{Path, PathBuf}};
++
++#[derive(Serialize)]
++pub struct EngineeringSnapshot { terms: Vec<UserEngineeringTerm>, revision: Option<String> }
++
++fn terms_error(error: UserTermsError) -> String {
++    match error {
++        UserTermsError::TooLarge => "詞條數量或檔案太大，最多 500 筆、256 KiB。",
++        UserTermsError::InvalidFormat => "詞庫格式不正確；文本請使用 Tab 分隔三欄，不要加入 Markdown 圍欄。",
++        UserTermsError::InvalidTerm => "詞條格式不正確，請檢查輸入碼、長度與不可見字元。",
++        UserTermsError::Duplicate => "有重複的輸入碼與候選文字，請刪除重複列後再儲存。",
++    }.into()
++}
++fn directory() -> Result<PathBuf, String> {
++    std::env::var_os("APPDATA").map(|p| PathBuf::from(p).join("ChewingDev"))
++        .ok_or_else(|| "無法取得使用者資料目錄。".into())
++}
++fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
++    let file = match fs::File::open(path) {
++        Ok(file) => file,
++        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
++        Err(_) => return Err("無法讀取詞庫，原有檔案未變更。".into()),
++    };
++    let mut bytes = Vec::new();
++    file.take((MAX_USER_TERMS_BYTES + 1) as u64).read_to_end(&mut bytes)
++        .map_err(|_| "讀取詞庫失敗。")?;
++    if bytes.len() > MAX_USER_TERMS_BYTES { return Err(terms_error(UserTermsError::TooLarge)); }
++    Ok(Some(bytes))
++}
++fn load_at(path: &Path) -> Result<EngineeringSnapshot, String> {
++    match read_bounded(path)? {
++        None => Ok(EngineeringSnapshot { terms: vec![], revision: None }),
++        Some(bytes) => {
++            let terms = parse_user_terms(&bytes).map_err(terms_error)?;
++            let revision = Some(String::from_utf8(bytes).map_err(|_| "詞庫不是 UTF-8。")?);
++            Ok(EngineeringSnapshot { terms, revision })
++        }
++    }
++}
++fn save_at(directory: &Path, terms: Vec<UserEngineeringTerm>, expected: Option<String>) -> Result<EngineeringSnapshot, String> {
++    let bytes = encode_user_terms(&terms).map_err(terms_error)?;
++    fs::create_dir_all(directory).map_err(|_| "無法建立詞庫目錄。")?;
++    let lock = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
++        .open(directory.join("engineering-terms.lock")).map_err(|_| "無法開啟詞庫鎖定檔。")?;
++    fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| "另一個設定視窗正在儲存，請稍後重試。")?;
++    let path = directory.join(USER_TERMS_FILENAME);
++    if load_at(&path)?.revision != expected {
++        return Err("詞庫已被另一個視窗修改，請重新載入後再編輯；您的編輯內容仍保留在本視窗。".into());
++    }
++    let mut temp = tempfile::NamedTempFile::new_in(directory).map_err(|_| "無法建立暫存詞庫。")?;
++    temp.write_all(&bytes).and_then(|_| temp.as_file().sync_all()).map_err(|_| "儲存失敗，原有詞庫未變更。")?;
++    temp.persist(&path).map_err(|_| "無法替換詞庫，原有詞庫未變更。")?;
++    // Return the bytes just persisted while the lock is still held.
++    load_at(&path)
++}
++
++#[tauri::command]
++pub async fn load_engineering_terms() -> Result<EngineeringSnapshot, String> {
++    tauri::async_runtime::spawn_blocking(|| load_at(&directory()?.join(USER_TERMS_FILENAME)))
++        .await.map_err(|_| "讀取詞庫未完成。")?
++}
++#[tauri::command]
++pub async fn save_engineering_terms(terms: Vec<UserEngineeringTerm>, expected: Option<String>) -> Result<EngineeringSnapshot, String> {
++    tauri::async_runtime::spawn_blocking(move || save_at(&directory()?, terms, expected))
++        .await.map_err(|_| "儲存詞庫未完成。")?
++}
++
++#[tauri::command]
++pub async fn open_engineering_text() -> Result<(), String> {
++    tauri::async_runtime::spawn_blocking(|| {
++        let dir = directory()?;
++        fs::create_dir_all(&dir).map_err(|_| "無法建立詞庫目錄。")?;
++        let path = dir.join("engineering-terms.draft.txt");
++        match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
++            Ok(mut file) => file.write_all(ENGINEERING_TEXT_TEMPLATE.as_bytes()).map_err(|_| "無法寫入範本。")?,
++            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {},
++            Err(_) => return Err("無法建立編輯文本。".into()),
++        }
++        let windows = std::env::var_os("SystemRoot").ok_or("無法取得記事本位置。")?;
++        std::process::Command::new(PathBuf::from(windows).join("System32").join("notepad.exe"))
++            .arg(path).spawn().map_err(|_| "無法開啟記事本。")?;
++        Ok(())
++    }).await.map_err(|_| "開啟文本未完成。")?
++}
++#[tauri::command]
++pub async fn read_engineering_text() -> Result<Vec<UserEngineeringTerm>, String> {
++    tauri::async_runtime::spawn_blocking(|| {
++        let bytes = read_bounded(&directory()?.join("engineering-terms.draft.txt"))?
++            .ok_or("請先開啟工程詞彙文本，編輯並儲存後再匯入。")?;
++        parse_user_terms_text(&bytes).map_err(terms_error)
++    }).await.map_err(|_| "匯入文本未完成。")?
++}
++
++#[tauri::command]
++pub async fn export_engineering_text() -> Result<(), String> {
++    tauri::async_runtime::spawn_blocking(|| {
++        let dir = directory()?;
++        let snapshot = load_at(&dir.join(USER_TERMS_FILENAME))?;
++        fs::create_dir_all(&dir).map_err(|_| "無法建立詞庫目錄。")?;
++        let mut text = ENGINEERING_TEXT_TEMPLATE.to_owned();
++        for term in snapshot.terms { text.push_str(&format!("{}\t{}\t{}\n", term.input, term.output, term.annotation)); }
++        let mut file = tempfile::Builder::new().prefix("engineering-export-").suffix(".txt")
++            .tempfile_in(&dir).map_err(|_| "無法建立匯出文本。")?;
++        file.write_all(text.as_bytes()).map_err(|_| "無法寫入匯出文本。")?;
++        let (_, path) = file.keep().map_err(|_| "無法保留匯出文本。")?;
++        let windows = std::env::var_os("SystemRoot").ok_or("無法取得記事本位置。")?;
++        std::process::Command::new(PathBuf::from(windows).join("System32").join("notepad.exe"))
++            .arg(path).spawn().map_err(|_| "無法開啟記事本。")?;
++        Ok(())
++    }).await.map_err(|_| "匯出文本未完成。")?
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn terms() -> Vec<UserEngineeringTerm> {
++        vec![UserEngineeringTerm { input: "CH4".into(), output: "CH₄".into(), annotation: "甲烷".into() }]
++    }
++    #[test]
++    fn create_edit_delete_and_restart_preserve_user_terms() {
++        let dir = tempfile::tempdir().unwrap(); let path = dir.path().join(USER_TERMS_FILENAME);
++        assert!(load_at(&path).unwrap().terms.is_empty());
++        let saved = save_at(dir.path(), terms(), None).unwrap();
++        assert_eq!(load_at(&path).unwrap().terms, terms());
++        let deleted = save_at(dir.path(), vec![], saved.revision).unwrap();
++        assert!(deleted.terms.is_empty());
++        assert!(load_at(&path).unwrap().terms.is_empty());
++    }
++    #[test]
++    fn invalid_or_conflicting_save_never_overwrites_existing_file() {
++        let dir = tempfile::tempdir().unwrap(); let path = dir.path().join(USER_TERMS_FILENAME);
++        let saved = save_at(dir.path(), terms(), None).unwrap();
++        let before = fs::read(&path).unwrap();
++        assert!(save_at(dir.path(), vec![], None).is_err());
++        let mut invalid = terms(); invalid[0].input = " ".into();
++        assert!(save_at(dir.path(), invalid, saved.revision).is_err());
++        assert_eq!(fs::read(&path).unwrap(), before);
++    }
++    #[test]
++    fn malformed_file_is_not_silently_replaced() {
++        let dir = tempfile::tempdir().unwrap(); let path = dir.path().join(USER_TERMS_FILENAME);
++        fs::write(&path, b"malformed").unwrap();
++        assert!(load_at(&path).is_err());
++        assert!(save_at(dir.path(), terms(), Some("malformed".into())).is_err());
++        assert_eq!(fs::read(&path).unwrap(), b"malformed");
++    }
++}
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index bfb4c87..de8db73 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -15,6 +15,8 @@ use tauri::menu::{MenuBuilder, SubmenuBuilder};
+ mod config;
+ mod fonts;
+ mod version;
++mod updates;
++mod engineering;
+ 
+ #[cfg_attr(mobile, tauri::mobile_entry_point)]
+ pub fn run() {
+@@ -75,6 +77,12 @@ pub fn run() {
+             save_config,
+             get_system_fonts,
+             chewing_version,
++            updates::check_for_updates,
++            engineering::load_engineering_terms,
++            engineering::save_engineering_terms,
++            engineering::open_engineering_text,
++            engineering::read_engineering_text,
++            engineering::export_engineering_text,
+         ])
+         .run(tauri::generate_context!())
+         .expect("error while running tauri application");
+diff --git a/src-tauri/src/updates.rs b/src-tauri/src/updates.rs
+new file mode 100644
+index 0000000..4f5110f
+--- /dev/null
++++ b/src-tauri/src/updates.rs
+@@ -0,0 +1,147 @@
++// SPDX-FileCopyrightText: 2026 AI Chewing contributors
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++use semver::Version;
++use serde::{Deserialize, Serialize};
++use std::time::Duration;
++
++const API: &str = "https://api.github.com/repos/edwardhome/chewing-kanata-lab/releases/latest";
++const REPOSITORY: &str = "https://github.com/edwardhome/chewing-kanata-lab/releases";
++const MAX_METADATA: u64 = 512 * 1024;
++
++#[derive(Deserialize)]
++struct Release {
++    tag_name: String,
++    draft: bool,
++    prerelease: bool,
++    html_url: String,
++    assets: Vec<Asset>,
++}
++
++#[derive(Deserialize)]
++struct Asset {
++    name: String,
++    browser_download_url: String,
++    size: u64,
++    state: String,
++}
++
++#[derive(Serialize)]
++pub struct UpdateStatus {
++    current_version: String,
++    latest_version: String,
++    update_available: bool,
++    release_url: String,
++    download_url: Option<String>,
++}
++
++fn parse_release(bytes: &[u8], current: &str) -> Result<UpdateStatus, String> {
++    if bytes.len() as u64 > MAX_METADATA { return Err("更新資料超過大小上限。".into()); }
++    let release: Release = serde_json::from_slice(bytes).map_err(|_| "GitHub 更新資料格式不正確。")?;
++    let latest = Version::parse(release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name))
++        .map_err(|_| "GitHub 版本號格式不正確。")?;
++    let current = Version::parse(current).map_err(|_| "目前程式版本號格式不正確。")?;
++    if release.draft || release.prerelease || !latest.pre.is_empty() || !latest.build.is_empty()
++        || release.tag_name != format!("v{latest}")
++        || release.html_url != format!("{REPOSITORY}/tag/v{latest}")
++    { return Err("更新資料不是本專案的正式發布版本。".into()); }
++    let expected_name = format!("AI-Chewing-Windows-x64-{latest}.zip");
++    let expected_url = format!("{REPOSITORY}/download/v{latest}/{expected_name}");
++    let download_url = release.assets.iter().find(|asset| {
++        asset.name == expected_name && asset.browser_download_url == expected_url
++            && asset.size > 0 && asset.state == "uploaded"
++    }).map(|asset| asset.browser_download_url.clone());
++    Ok(UpdateStatus {
++        current_version: current.to_string(), latest_version: latest.to_string(),
++        update_available: latest > current, release_url: release.html_url, download_url,
++    })
++}
++
++fn fetch_update() -> Result<UpdateStatus, String> {
++    // Only an explicit button press invokes this request. No typing data or token.
++    let agent = ureq::Agent::config_builder()
++        .timeout_connect(Some(Duration::from_secs(3)))
++        .timeout_global(Some(Duration::from_secs(8)))
++        .max_redirects(0)
++        .max_response_header_size(16 * 1024)
++        .http_status_as_error(false)
++        .build().new_agent();
++    let mut response = agent.get(API)
++        .header("User-Agent", "AI-Chewing-Update-Check")
++        .header("Accept", "application/vnd.github+json")
++        .header("X-GitHub-Api-Version", "2022-11-28")
++        .call().map_err(|_| "無法連線至 GitHub 或連線逾時，請稍後重試。")?;
++    match response.status().as_u16() {
++        200 => {},
++        403 | 429 => return Err("GitHub 暫時限制查詢次數，請稍後再試。".into()),
++        404 => return Err("目前找不到正式發布版本。".into()),
++        _ => return Err("GitHub 暫時無法提供更新資訊。".into()),
++    }
++    let bytes = response.body_mut().with_config().limit(MAX_METADATA).read_to_vec()
++        .map_err(|_| "更新資料讀取失敗、逾時或超過大小上限。")?;
++    parse_release(&bytes, env!("CARGO_PKG_VERSION"))
++}
++
++#[tauri::command]
++pub async fn check_for_updates() -> Result<UpdateStatus, String> {
++    tauri::async_runtime::spawn_blocking(fetch_update).await
++        .map_err(|_| "更新查詢未完成，請稍後重試。")?
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::{json, Value};
++    fn fixture(version: &str) -> Value {
++        let name = format!("AI-Chewing-Windows-x64-{version}.zip");
++        json!({"tag_name":format!("v{version}"),"draft":false,"prerelease":false,
++            "html_url":format!("{REPOSITORY}/tag/v{version}"),"assets":[{
++                "name":name,"browser_download_url":format!("{REPOSITORY}/download/v{version}/{name}"),
++                "size":100,"state":"uploaded"}]})
++    }
++    fn parse(value: Value, current: &str) -> Result<UpdateStatus, String> {
++        parse_release(&serde_json::to_vec(&value).unwrap(), current)
++    }
++    #[test]
++    fn semantic_order_no_downgrade_and_development_version() {
++        assert!(parse(fixture("1.0.10"), "1.0.2").unwrap().update_available);
++        assert!(!parse(fixture("1.0.1"), "1.0.2").unwrap().update_available);
++        assert!(!parse(fixture("1.0.2"), "1.0.2").unwrap().update_available);
++        assert!(parse(fixture("1.0.2"), "1.0.2-dev").unwrap().update_available);
++    }
++    #[test]
++    fn reject_preview_draft_invalid_version_and_foreign_page() {
++        for key in ["draft", "prerelease"] {
++            let mut value = fixture("1.0.2"); value[key] = json!(true);
++            assert!(parse(value, "1.0.1").is_err());
++        }
++        assert!(parse(fixture("1.0.2-preview"), "1.0.1").is_err());
++        assert!(parse(fixture("../../bad"), "1.0.1").is_err());
++        let mut value = fixture("1.0.2"); value["html_url"] = json!("https://example.invalid");
++        assert!(parse(value, "1.0.1").is_err());
++    }
++    #[test]
++    fn only_exact_uploaded_windows_asset_is_offered() {
++        assert!(parse(fixture("1.0.2"), "1.0.1").unwrap().download_url.is_some());
++        for (field, replacement) in [("name", json!("Source.zip")),
++            ("browser_download_url", json!("https://example.invalid/file.zip")),
++            ("size", json!(0)), ("state", json!("new"))] {
++            let mut value = fixture("1.0.2"); value["assets"][0][field] = replacement;
++            assert!(parse(value, "1.0.1").unwrap().download_url.is_none());
++        }
++        let mut value = fixture("1.0.2"); value["assets"] = json!([]);
++        assert!(parse(value, "1.0.1").unwrap().download_url.is_none());
++    }
++    #[test]
++    #[ignore = "Explicit read-only GitHub connectivity probe"]
++    fn live_github_release_metadata() {
++        let status = fetch_update().expect("GitHub release lookup failed");
++        assert!(status.release_url.starts_with(REPOSITORY));
++        assert!(!status.latest_version.is_empty());
++    }
++    #[test]
++    fn reject_invalid_or_oversized_metadata() {
++        assert!(parse_release(b"not json", "1.0.1").is_err());
++        assert!(parse_release(&vec![b' '; MAX_METADATA as usize + 1], "1.0.1").is_err());
++    }
++}
+diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+index 5cff60e..d72c548 100644
+--- a/src-tauri/tauri.conf.json
++++ b/src-tauri/tauri.conf.json
+@@ -1,7 +1,7 @@
+ {
+   "$schema": "https://schema.tauri.app/config/2",
+   "productName": "AI新酷音設定",
+-  "version": "1.0.1",
++  "version": "1.0.2-preview.1",
+   "identifier": "org.aichewing.preferences",
+   "build": {
+     "beforeDevCommand": "npm run dev",
+diff --git a/src/App.tsx b/src/App.tsx
+index 3326be9..6df7c31 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -34,8 +34,10 @@ import React, { ChangeEvent, useEffect } from "react";
+ import { ChewingTsfConfig, Config, KeybindValue } from "./config";
+ import { exit } from "@tauri-apps/plugin-process";
+ import { listen } from "@tauri-apps/api/event";
+-import { message, open, save } from "@tauri-apps/plugin-dialog";
++import { ask, message, open, save } from "@tauri-apps/plugin-dialog";
+ import KeybindingTab from "./KeybindingTab";
++import Updates from "./Updates";
++import EngineeringTerms from "./EngineeringTerms";
+ 
+ type FontFamilyName = {
+   name: string;
+@@ -184,6 +186,7 @@ function App() {
+   const styles = useStyles();
+ 
+   const [systemFonts, setSystemFonts] = React.useState<FontFamilyName[]>([]);
++  const [engineeringDirty, setEngineeringDirty] = React.useState(false);
+   const [selectedTab, setSelectedTab] = React.useState<TabValue>("1");
+   const [config, setConfig] = React.useState<ChewingTsfConfig>();
+   const [symbols_dat, setSymbolsDat] = React.useState<string>("");
+@@ -314,8 +317,9 @@ function App() {
+   };
+ 
+   return (
+-    <form className={styles.root} name="configs">
++    <form className={styles.root} name="configs" onSubmit={(event) => event.preventDefault()}>
+       <TabList
++        style={{ flexWrap: "wrap" }}
+         appearance="subtle"
+         selectedValue={selectedTab}
+         onTabSelect={onTabSelect}
+@@ -326,6 +330,7 @@ function App() {
+         <Tab value="keybind">自訂快捷鍵</Tab>
+         <Tab value="4">特殊符號</Tab>
+         <Tab value="5">快捷符號</Tab>
++        <Tab value="engineering">自訂工程詞彙</Tab>
+         <Tab value="6">其他設定</Tab>
+       </TabList>
+       {selectedTab === "1" && config && (
+@@ -375,17 +380,20 @@ function App() {
+       {selectedTab === "keybind" && config && (
+         <KeybindingTab keybind={config.keybind} setKeybind={setKeybind} />
+       )}
++      <div hidden={selectedTab !== "engineering"}><EngineeringTerms onDirtyChange={setEngineeringDirty} /></div>
+       <div className={styles.action}>
+         <Button
+-          disabled={!config}
++          disabled={!config || engineeringDirty}
+           onClick={() => {
+             save_config().then((saved) => { if (saved) exit(0); });
+           }}
+         >
+           確定
+         </Button>
+-        <Button onClick={() => exit(0)}>取消</Button>
+-        <Button disabled={!config} onClick={save_config}>套用</Button>
++        <Button onClick={async () => {
++          if (!engineeringDirty || await ask("要捨棄尚未儲存的工程詞彙編輯並關閉設定嗎？", { title: "取消編輯", kind: "warning" })) await exit(0);
++        }}>取消</Button>
++        <Button disabled={!config || engineeringDirty} onClick={save_config}>套用</Button>
+       </div>
+     </form>
+   );
+@@ -984,7 +992,8 @@ const Others = ({ config, styles, setConfig }) => (
+         <Slider value={config?.f_hold_delay_ms ?? 150} min={100} max={1000} step={10}
+           onChange={(_ev, data) => setConfig({ ...config, f_hold_delay_ms: data.value } as ChewingTsfConfig)} />
+       </Field>
+-      <Text>設定會在按下「套用」或「確定」後儲存。AI 建議與自動更新目前停用。</Text>
++      <Text>設定會在按下「套用」或「確定」後儲存。AI 建議目前停用。</Text>
++      <Updates />
+     </div>
+   </div>
+ );
+diff --git a/src/EngineeringTerms.tsx b/src/EngineeringTerms.tsx
+new file mode 100644
+index 0000000..49c78cf
+--- /dev/null
++++ b/src/EngineeringTerms.tsx
+@@ -0,0 +1,90 @@
++// SPDX-FileCopyrightText: 2026 AI Chewing contributors
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++import { useEffect, useState } from "react";
++import { Button, Input, Text } from "@fluentui/react-components";
++import { invoke } from "@tauri-apps/api/core";
++import { ask } from "@tauri-apps/plugin-dialog";
++
++type Term = { input: string; output: string; annotation: string };
++type Snapshot = { terms: Term[]; revision: string | null };
++
++export default function EngineeringTerms({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
++  const [terms, setTerms] = useState<Term[]>([]);
++  const [revision, setRevision] = useState<string | null>(null);
++  const [loaded, setLoaded] = useState(false);
++  const [busy, setBusy] = useState(false);
++  const [dirty, setDirty] = useState(false);
++  const [status, setStatus] = useState("");
++  const [error, setError] = useState("");
++  useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
++  async function load() {
++    setBusy(true); setError("");
++    try {
++      const data = await invoke<Snapshot>("load_engineering_terms");
++      setTerms(data.terms); setRevision(data.revision); setLoaded(true); setDirty(false); setStatus("");
++    } catch (e) { setError(String(e)); }
++    finally { setBusy(false); }
++  }
++  useEffect(() => { void load(); }, []);
++  function edit(next: Term[]) { setTerms(next); setDirty(true); setStatus("尚未儲存"); setError(""); }
++  async function save() {
++    setBusy(true); setError("");
++    try {
++      const data = await invoke<Snapshot>("save_engineering_terms", { terms, expected: revision });
++      setTerms(data.terms); setRevision(data.revision); setDirty(false);
++      setStatus("詞彙已儲存。請重新開啟使用輸入法的應用程式後測試。");
++    } catch (e) { setError(String(e)); }
++    finally { setBusy(false); }
++  }
++  async function textAction(command: string) {
++    setBusy(true); setError("");
++    try {
++      if (command === "read_engineering_text") {
++        const imported = await invoke<Term[]>(command);
++        const merged = [...terms];
++        for (const row of imported) {
++          if (!merged.some(old => old.input.toLowerCase() === row.input.toLowerCase() && old.output === row.output)) merged.push(row);
++        }
++        const added = merged.length - terms.length;
++        if (added) edit(merged);
++        setStatus(`新增 ${added} 筆至預覽；相同輸入碼與候選已略過。請檢查後按「儲存詞彙」。`);
++      } else { await invoke(command); setStatus("已開啟文本。批次編輯文本儲存後，請按「從文本匯入」。"); }
++    } catch (e) { setError(String(e)); }
++    finally { setBusy(false); }
++  }
++  async function reload() {
++    if (dirty && !await ask("重新載入會捨棄本視窗尚未儲存的詞彙編輯，是否繼續？", { title: "重新載入詞彙", kind: "warning" })) return;
++    await load();
++  }
++  return <section aria-label="自訂工程詞彙" style={{ margin: 16, display: "flex", flexDirection: "column", gap: 12 }}>
++    <Text>輸入碼例如 H2O，候選文字填 H₂O，註解填「水」。原文仍保留，選取候選才會送出。</Text>
++    <Text>只編輯您的自訂詞條，內建詞庫會繼續提供候選。此頁請按「儲存詞彙」；儲存後重新開啟使用輸入法的應用程式生效。</Text>
++    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
++      <Button type="button" disabled={busy || !loaded || terms.length >= 500} onClick={() => edit([...terms, { input: "", output: "", annotation: "" }])}>新增詞條</Button>
++      <Button type="button" appearance="primary" disabled={busy || !loaded || !dirty} onClick={() => void save()}>儲存詞彙</Button>
++      <Button type="button" disabled={busy} onClick={() => void reload()}>重新載入</Button>
++    </div>
++    <div style={{ maxHeight: 310, overflowY: "auto" }}>
++      <table style={{ width: "100%" }}><thead><tr><th>輸入碼</th><th>候選文字</th><th>註解</th><th>操作</th></tr></thead>
++        <tbody>{terms.map((term, index) => <tr key={index}>
++          {(["input", "output", "annotation"] as const).map((field, col) => <td key={field}>
++            <Input aria-label={`第 ${index + 1} 筆${["輸入碼", "候選文字", "註解"][col]}`}
++              style={{ width: "100%", minWidth: 50 }} value={term[field]} disabled={busy}
++              onChange={(_, data) => edit(terms.map((row, n) => n === index ? { ...row, [field]: data.value } : row))} />
++          </td>)}
++          <td><Button type="button" disabled={busy} onClick={() => edit(terms.filter((_, n) => n !== index))}>刪除</Button></td>
++        </tr>)}</tbody>
++      </table>
++      {loaded && terms.length === 0 && <Text>尚無自訂詞條，按「新增詞條」開始。</Text>}
++    </div>
++    <Text weight="semibold">批次編輯與大模型協作</Text>
++    <Text>文本附格式說明、範例與可貼給 GPT／其他模型的提示詞。既有批次文本會保留；模型產出的內容須先匯入預覽，再自行儲存。</Text>
++    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
++      <Button type="button" disabled={busy} onClick={() => void textAction("open_engineering_text")}>開啟工程詞彙文本</Button>
++      <Button type="button" disabled={busy || !loaded} onClick={() => void textAction("read_engineering_text")}>從文本匯入</Button>
++      <Button type="button" disabled={busy || !loaded || dirty} onClick={() => void textAction("export_engineering_text")}>匯出已儲存詞彙與提示詞</Button>
++    </div>
++    <div aria-live="polite">{status && <Text>{status}</Text>}{error && <Text role="alert">{error}</Text>}</div>
++  </section>;
++}
+diff --git a/src/Updates.tsx b/src/Updates.tsx
+new file mode 100644
+index 0000000..bccb965
+--- /dev/null
++++ b/src/Updates.tsx
+@@ -0,0 +1,53 @@
++// SPDX-FileCopyrightText: 2026 AI Chewing contributors
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++import { useState } from "react";
++import { Button, Text } from "@fluentui/react-components";
++import { invoke } from "@tauri-apps/api/core";
++import { getVersion } from "@tauri-apps/api/app";
++import { openUrl } from "@tauri-apps/plugin-opener";
++import { useEffect } from "react";
++
++type UpdateStatus = {
++  current_version: string;
++  latest_version: string;
++  update_available: boolean;
++  release_url: string;
++  download_url: string | null;
++};
++
++export default function Updates() {
++  const [current, setCurrent] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [result, setResult] = useState<UpdateStatus | null>(null);
++  const [error, setError] = useState("");
++  useEffect(() => { void getVersion().then(setCurrent).catch(() => setCurrent("無法讀取")); }, []);
++  async function check() {
++    setBusy(true); setError(""); setResult(null);
++    try { setResult(await invoke<UpdateStatus>("check_for_updates")); }
++    catch (e) { setError(typeof e === "string" ? e : "更新查詢失敗，請稍後重試。"); }
++    finally { setBusy(false); }
++  }
++  async function open(url: string) {
++    try { await openUrl(url); }
++    catch { setError("無法開啟瀏覽器，請稍後重試。"); }
++  }
++  return <section aria-label="軟體更新" style={{ marginTop: 24, display: "flex", flexDirection: "column", gap: 12 }}>
++    <Text weight="semibold">軟體更新</Text>
++    <Text>目前版本：{current || "讀取中"}</Text>
++    <Text>按下檢查才會連線至 GitHub。下載由瀏覽器處理，安裝由您自行執行。</Text>
++    <Button type="button" disabled={busy} onClick={() => void check()}>{busy ? "檢查中…" : "檢查更新"}</Button>
++    <div aria-live="polite">
++      {result && <Text>{result.update_available
++        ? `發現新版本 ${result.latest_version}`
++        : `目前無較新的正式版本（GitHub 最新：${result.latest_version}）。`}</Text>}
++      {error && <Text role="alert">{error}</Text>}
++    </div>
++    {result && <>
++      {result.update_available && result.download_url &&
++        <Button type="button" appearance="primary" onClick={() => void open(result.download_url!)}>下載 Windows x64 安裝套件</Button>}
++      {result.update_available && !result.download_url && <Text>此版本尚未提供 Windows x64 安裝套件。</Text>}
++      <Button type="button" onClick={() => void open(result.release_url)}>查看 GitHub 發布說明</Button>
++    </>}
++  </section>;
++}
+-- 
+2.54.0 (Apple Git-157)
+
