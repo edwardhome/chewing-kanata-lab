@@ -1,14 +1,14 @@
 # Windows 共用開發目錄
 
-更新時間：2026-11-06T11:05:59+08:00
+更新時間：2026-11-06T16:00:19+08:00
 
 使用者指定的唯一 Windows 工作目錄為 `C:\Users\Defu\Documents\gis-code\chewing-kanata-lab`。Mac 儲存庫可作來源審查、提交同步及保存交付檔；Windows 修改與後續建置以這個共用目錄為準。
 
 | 儲存庫 | 當前工作分支 | 已驗收的原生來源 |
 | --- | --- | --- |
-| 外層 chewing-kanata-lab | feature/ollama-phrase-prediction | 8af1ec4；第二批核心、傳輸及設定整合 |
-| upstream/windows-chewing-tsf | feature/ollama-phrase-prediction | b5dc92e1fb8f974ed40c79b8bd31907fd2b2dd28 |
-| upstream/windows-chewing-preferences | feature/ollama-phrase-prediction | 113736a891c24f1ed87f158af715f141fb7162b7 |
+| 外層 chewing-kanata-lab | feature/ollama-phrase-prediction | ba14cba；恢復中文輸入與設定整合 |
+| upstream/windows-chewing-tsf | feature/ollama-phrase-prediction | acdbd7057d8dc48d57d596b3473c2ca56c3e4909 |
+| upstream/windows-chewing-preferences | feature/ollama-phrase-prediction | 91e926ad2a89d2594db681dd7001f303e9cbf9b5 |
 
 本輪 Codex 負責程式審查、設定與詞庫整合；AGY 負責傳輸模組及打包整理。Zbook 由使用者自行安裝、移除及操作驗收。共用資料夾不是兩個代理可以同時切換分支或修改同一檔案的授權；領取下一項工作前先協調檔案範圍。未完成的 AI 實驗不得直接覆蓋已驗收版本。
 
@@ -25,3 +25,9 @@ Agy 原有四個未提交檔案已保存於原生分支 `research/agy-ai-before-
 ## 目前工作：1.0.2 第二批
 
 AGY 的傳輸提交 `6746219`、`cd63e83` 已保留作者歷史整合；完整設定頁新增自訂工程詞彙與 GitHub 手動檢查／下載。外層與 nested preferences 已以 fast-forward 同步至共用目錄，原生 TSF 分支及既有未追蹤報告保留。詳細測試、打包與未完成項目見 [第二批紀錄](../verification/runs/RUN-20261106-102-SETTINGS-TRANSPORT.md)。
+
+## 1.0.2-preview.2：中文恢復
+
+已驗收來源包含 AGY 的 RecoveryGate 與 Codex 的原生／設定整合。原生與設定完整 patch tree 均已對齊；49 項本輪測試與兩者 Release 建置通過。AGY 後續 503 導致封裝改由 Codex 完成，未安裝到使用者端；詳見 [恢復驗證](../verification/runs/RUN-20261106-INPUT-RECOVERY.md)。
+
+下一輪先確認共用 Git 狀態及既有 AGY 程序／對話；本輪主對話 `9718153a-085c-4fb6-bfa4-219555c0aaac` 保留。切勿把尚未完成的 AGY 報告當成新增程式碼或自動合併其後續改動。

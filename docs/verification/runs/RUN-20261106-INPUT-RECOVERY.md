@@ -46,3 +46,19 @@
 - 中文空組字 Enter／退格、Shift 切換焦點、F 長短按、雙 Shift、CapsLock、密碼與不可編輯脈絡：需手動回歸，詳見 [驗收案例](../../tasks/INPUT_RECOVERY_102.md)。
 - DLL 在應用程序內無法由此按鈕熱更新；安裝新包後須重新開啟測試用應用。
 - 未安裝、未終止應用或系統程序、未發布正式 v1.0.2、未合併 main。
+
+## 測試包與共用來源
+
+- Windows 共用原生分支已 fast-forward 至 `acdbd70`，設定至 `91e926a`，外層整合來源 `ba14cba`。既有未追蹤 `RUN-20261105-OLLAMA-AGY-01.md` 保留。
+- AGY 尚未提交的原始 gate 檔案先保存到 `%TEMP%\ckai-agy-recovery-before-integration-20261106155917.rs`，再整合帶有 AGY 作者歷史與 Codex 修正的來源；沒有直接丟棄 AGY 工作。
+- 共用目錄的 `apply_patches.ps1 -Check` 與 `apply_preferences_patches.ps1 -Check` 均 PASS。
+- AGY 主工作階段已產出純邏輯與 9 個初版測試。直接以 rustc 編譯該子模組因 pub(super) 位置失敗，後改由 Cargo 執行；本報告以 Codex 固定來源的完整測試為準。
+- AGY 後續審查／封裝委派又遇到 Gemini 503 capacity unavailable；未把它的未完成報告列為通過。取消當時的回應後保留互動程序與對話，封裝由 Codex 直接完成。
+- 封裝來源為乾淨外層 worktree `ba14cba`、固定原生 `acdbd70`、設定 `91e926a`；只複製六個指定公開詞庫。
+- `do_install.ps1 -ValidateOnly`：PASS，輸出 `Package preflight passed; no changes made.`。沒有執行安裝。
+- Mac 直接讀 ZIP 核對 manifest 的 **24 個 payload SHA-256、25 個 ZIP 檔案**，三個執行檔都是 x64，無額外、重複或穿越路徑。DLL 包含 Restart 選單與恢復要求名；設定 EXE 包含新命令；來源 ID 精確匹配。
+- ZIP：`AI-Chewing-Windows-x64-1.0.2-preview.2.zip`，9,131,755 bytes。
+- SHA-256：`21c4d2a27b16a77cbbfa73dea2576b4df6566ca95b58fd21d0ec48e61e1e4f9c`。
+- Mac 交付：`/Users/defu/Documents/AI-Chewing/1.0.2-preview.2/`；Windows 成品：`C:\Users\Defu\Documents\AI-Chewing\1.0.2-preview.2`（ZIP 在上一層）。
+
+安裝後請先重新開啟測試用應用，再從右下角原生選單或同版本設定程式的「其他設定」操作 Restart。要求送出後 30 秒內回到輸入欄位；有組字時先自行完成或取消。實際中文恢復仍待使用者回報。
