@@ -41,3 +41,10 @@
 - 附件另含 package-manifest.json、SHA256SUMS.txt；Mac 副本 `/Users/defu/Documents/AI-Chewing/1.1.0/`，Windows 套件 `Documents\AI-Chewing\1.1.0`。
 - 共用 Windows nested 來源已同步到上述固定提交，外層已同步 8c03249。兩份既有未追蹤歷史報告保留，不納入套件。
 - 本節不宣稱 GitHub 已發布；實體按鍵／GUI 驗收仍為 NOT_RUN。
+
+## GitHub 正式發布驗證
+
+- PR #6 已合併；main 發布提交與 v1.1.0 tag 均為 `43bef989d67711beb697170606c275f08816dfbd`。
+- Release ID `437480758`，發布時間 `2026-11-07T17:48:08+08:00`，draft=false、prerelease=false；Latest API 回傳 v1.1.0。
+- 四個附件名稱、大小、GitHub SHA-256 digest 與本機驗證成品逐一一致。
+- 正式網址：https://github.com/edwardhome/chewing-kanata-lab/releases/tag/v1.1.0 。本版未遠端安裝；實體按鍵驗收仍與自動測試分開。
