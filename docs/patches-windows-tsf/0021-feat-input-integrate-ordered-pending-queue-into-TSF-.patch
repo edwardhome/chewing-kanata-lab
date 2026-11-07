@@ -1,0 +1,302 @@
+From 3bd3961bebd94c0b60849648abb1978122a76619 Mon Sep 17 00:00:00 2001
+From: AGY <defu@local.dev>
+Date: Sat, 7 Nov 2026 16:54:00 +0800
+Subject: [PATCH 21/23] feat(input): integrate ordered pending queue into TSF
+ composition sessions
+
+---
+ tip/src/text_service/chewing.rs      | 63 +++++++++-----------
+ tip/src/text_service/edit_session.rs | 87 ++++++++++++++++++++--------
+ 2 files changed, 89 insertions(+), 61 deletions(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 1567ccc..2097825 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -53,6 +53,7 @@ use windows_core::{ComObject, ComObjectInner, GUID, HSTRING, Interface};
+ use zhconv::{Variant, zhconv};
+ 
+ use super::CommandType;
++use super::pending_transition::PendingTransitionQueue;
+ use super::recovery::RecoveryGate;
+ use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardState;
+ use super::kanata_layer;
+@@ -157,12 +158,6 @@ impl PartialEq<LanguageMode> for TsfLangMode {
+     }
+ }
+ 
+-pub(super) struct CompositionString {
+-    pub(super) commit: String,
+-    pub(super) preedit: String,
+-    pub(super) segments: Vec<(usize, usize)>,
+-    pub(super) cursor: usize,
+-}
+ 
+ pub(super) struct ChewingTextService {
+     thread_mgr: ITfThreadMgr,
+@@ -202,7 +197,8 @@ pub(super) struct ChewingTextService {
+     notification: Option<ComObject<Notification>>,
+     candidate_list: Option<ComObject<CandidateList>>,
+     composition: Rc<RefCell<Option<ITfComposition>>>,
+-    pending_edit: Weak<RefCell<Option<CompositionString>>>,
++    pending_queue: Rc<RefCell<PendingTransitionQueue>>,
++    pending_session: Weak<()>,
+ }
+ 
+ impl ChewingTextService {
+@@ -333,7 +329,8 @@ impl ChewingTextService {
+             notification: Default::default(),
+             candidate_list: Default::default(),
+             composition: Default::default(),
+-            pending_edit: Weak::new(),
++            pending_queue: Rc::new(RefCell::new(PendingTransitionQueue::new())),
++            pending_session: Weak::new(),
+             pending_lang_mode_change: Cell::new(false),
+             recovery_gate: RecoveryGate::default(),
+             recovery_open_pending: Cell::new(false),
+@@ -416,7 +413,10 @@ impl ChewingTextService {
+         self.is_composing() || !self.chewing_editor.is_empty()
+             || !self.chewing_editor.syllable_buffer_display().is_empty()
+             || self.chewing_editor.is_selecting() || self.shift_session.is_some()
+-            || self.f_buffer.is_some() || self.pending_edit.upgrade().is_some()
++            || self.f_buffer.is_some()
++            || self.pending_session.upgrade().is_some()
++            || self.pending_queue.borrow().has_pending_commits()
++            || self.pending_queue.borrow().has_unsubmitted_changes()
+     }
+ 
+     fn recovery_time_ms() -> Result<u64> {
+@@ -1201,11 +1201,8 @@ impl ChewingTextService {
+         }
+         editor.clear_syllable_editor();
+         editor.clear_composition_editor();
+-        if let Some(cell) = self.pending_edit.upgrade() {
+-            debug!("Clear pending edits to avoid double commits");
+-            cell.replace(None);
+-        }
+-        self.pending_edit = Weak::new();
++        self.pending_queue.borrow_mut().reset();
++        self.pending_session = Weak::new();
+         self.composition.replace(None);
+         Ok(())
+     }
+@@ -1558,7 +1555,7 @@ impl ChewingTextService {
+     fn end_composition(&mut self, context: &ITfContext) -> Result<()> {
+         // Transfer the ownership of this composition to the EndComposition edit session.
+         let composition = mem::replace(&mut self.composition, Rc::new(RefCell::new(None)));
+-        self.pending_edit = Weak::new();
++        self.pending_session = Weak::new();
+         let session = EndComposition::new(context.clone(), composition).into_object();
+         request_edit_session(
+             context,
+@@ -1578,40 +1575,34 @@ impl ChewingTextService {
+         cursor: usize,
+     ) -> Result<()> {
+         debug!("set composition string");
+-        let commit = if self.output_simp_chinese {
+-            zhconv(commit, Variant::ZhHans).into()
++        let commit: String = if self.output_simp_chinese {
++            zhconv(commit, Variant::ZhHans)
+         } else {
+-            commit.into()
++            commit.to_string()
+         };
+-        let preedit = if self.output_simp_chinese {
+-            zhconv(preedit, Variant::ZhHans).into()
++        let preedit: String = if self.output_simp_chinese {
++            zhconv(preedit, Variant::ZhHans)
+         } else {
+-            preedit.into()
++            preedit.to_string()
+         };
+-        if let Some(cell) = self.pending_edit.upgrade() {
++        self.pending_queue
++            .borrow_mut()
++            .enqueue(&commit, &preedit, segments, cursor);
++
++        if self.pending_session.upgrade().is_some() {
+             debug!("Reuse existing edit session");
+-            cell.replace(Some(CompositionString {
+-                commit,
+-                preedit,
+-                segments,
+-                cursor,
+-            }));
+         } else {
+-            let pending = Rc::new(RefCell::new(Some(CompositionString {
+-                commit,
+-                preedit,
+-                segments,
+-                cursor,
+-            })));
++            let session_token = Rc::new(());
+             let session = SetCompositionString::new(
+                 context.clone(),
+                 self.composition.clone(),
+                 self.composition_sink.clone(),
+                 self.input_da_atom.clone(),
+-                pending.clone(),
++                self.pending_queue.clone(),
++                session_token.clone(),
+             )
+             .into_object();
+-            self.pending_edit = Rc::downgrade(&pending);
++            self.pending_session = Rc::downgrade(&session_token);
+             request_edit_session(
+                 context,
+                 self.tid,
+diff --git a/tip/src/text_service/edit_session.rs b/tip/src/text_service/edit_session.rs
+index dc76f77..23f9608 100644
+--- a/tip/src/text_service/edit_session.rs
++++ b/tip/src/text_service/edit_session.rs
+@@ -18,7 +18,7 @@ use windows::Win32::UI::TextServices::{
+ };
+ use windows_core::{BOOL, HSTRING, Interface, Param, Result, implement};
+ 
+-use super::chewing::CompositionString;
++use super::pending_transition::PendingTransitionQueue;
+ 
+ pub(crate) fn request_edit_session(
+     context: &ITfContext,
+@@ -88,7 +88,8 @@ pub(super) struct SetCompositionString {
+     composition: Rc<RefCell<Option<ITfComposition>>>,
+     composition_sink: ITfCompositionSink,
+     da_atom: [VARIANT; 2],
+-    pending: Rc<RefCell<Option<CompositionString>>>,
++    pending_queue: Rc<RefCell<PendingTransitionQueue>>,
++    _session_token: Rc<()>,
+ }
+ 
+ impl SetCompositionString {
+@@ -97,14 +98,16 @@ impl SetCompositionString {
+         composition: Rc<RefCell<Option<ITfComposition>>>,
+         composition_sink: ITfCompositionSink,
+         da_atom: [VARIANT; 2],
+-        pending: Rc<RefCell<Option<CompositionString>>>,
++        pending_queue: Rc<RefCell<PendingTransitionQueue>>,
++        session_token: Rc<()>,
+     ) -> SetCompositionString {
+         Self {
+             context,
+             composition,
+             composition_sink,
+             da_atom,
+-            pending,
++            pending_queue,
++            _session_token: session_token,
+         }
+     }
+ }
+@@ -112,7 +115,16 @@ impl SetCompositionString {
+ impl ITfEditSession_Impl for SetCompositionString_Impl {
+     fn DoEditSession(&self, ec: u32) -> Result<()> {
+         unsafe {
+-            if self.composition.borrow().is_none() && self.pending.borrow().is_some() {
++            let sub = match self.pending_queue.borrow_mut().begin_submission() {
++                Some(sub) => sub,
++                None => return Ok(()),
++            };
++
++            if self.composition.borrow().is_none() {
++                if sub.commit.is_empty() && sub.preedit.is_empty() {
++                    self.pending_queue.borrow_mut().acknowledge_success(sub.generation);
++                    return Ok(());
++                }
+                 debug!("starting a new composition");
+                 let context_composition: ITfContextComposition = self.context.cast()?;
+                 let insert_at_selection: ITfInsertAtSelection = self.context.cast()?;
+@@ -123,33 +135,54 @@ impl ITfEditSession_Impl for SetCompositionString_Impl {
+                     context_composition.StartComposition(ec, &range, &self.composition_sink);
+                 if let Err(error) = &composition {
+                     error!("unable to start composition: {error}");
++                    self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
++                    return Err(error.clone());
+                 }
+                 self.composition.replace(Some(composition?));
+             }
+-            if let Some(composition) = self.composition.borrow().as_ref()
+-                && let Some(pending) = self.pending.borrow().as_ref()
+-            {
+-                let range = composition.GetRange()?;
++
++            if let Some(composition) = self.composition.borrow().as_ref() {
++                let range = match composition.GetRange() {
++                    Ok(r) => r,
++                    Err(err) => {
++                        error!("composition GetRange failed: {err}");
++                        self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
++                        return Err(err);
++                    }
++                };
++
+                 debug!("set composition string");
+-                let text = HSTRING::from(format!("{}{}", pending.commit, pending.preedit));
+-                // Set text then shift the range to commit the string.
+-                // It seems Cicero doesn't handle multiple edit session very well, so we do
+-                // the commit and update composition in one single transaction.
++                let text = HSTRING::from(format!("{}{}", sub.commit, sub.preedit));
++
++                // 1. Set text: if this fails, fail-closed without shifting range or acking success
+                 if let Err(error) = range.SetText(ec, 0, &text) {
+                     error!("set composition string failed: {error}");
++                    self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
++                    return Err(error);
+                 }
+-                let mut moved = 0;
+-                range.ShiftStart(
+-                    ec,
+-                    pending.commit.encode_utf16().count() as i32,
+-                    &mut moved,
+-                    ptr::null(),
+-                )?;
+-                composition.ShiftStart(ec, &range)?;
++
++                // 2. Shift start for commit
++                let shift_count = sub.commit.encode_utf16().count() as i32;
++                if shift_count > 0 {
++                    let mut moved = 0;
++                    if let Err(err) = range.ShiftStart(ec, shift_count, &mut moved, ptr::null()) {
++                        error!("range ShiftStart failed: {err}");
++                        self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
++                        return Err(err);
++                    }
++                    if let Err(err) = composition.ShiftStart(ec, &range) {
++                        error!("composition ShiftStart failed: {err}");
++                        self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
++                        return Err(err);
++                    }
++                }
++
++                // 3. Display attributes
+                 let disp_attr_prop = self.context.GetProperty(&GUID_PROP_ATTRIBUTE)?;
+                 let mut atoms = self.da_atom.iter().cycle();
+-                for seg in &pending.segments {
++                for seg in &sub.segments {
+                     let segment_range = range.Clone()?;
++                    let mut moved = 0;
+                     segment_range.Collapse(ec, TF_ANCHOR_START)?;
+                     segment_range.ShiftEnd(ec, seg.1 as i32, &mut moved, ptr::null())?;
+                     segment_range.ShiftStart(ec, seg.0 as i32, &mut moved, ptr::null())?;
+@@ -160,12 +193,16 @@ impl ITfEditSession_Impl for SetCompositionString_Impl {
+                     }
+                 }
+ 
++                // 4. Cursor position
+                 let cursor_range = range.Clone()?;
+                 let mut moved = 0;
+                 cursor_range.Collapse(ec, TF_ANCHOR_START)?;
+-                cursor_range.ShiftEnd(ec, pending.cursor as i32, &mut moved, ptr::null())?;
+-                cursor_range.ShiftStart(ec, pending.cursor as i32, &mut moved, ptr::null())?;
+-                set_selection(&self.context, ec, cursor_range, TF_AE_END)?;
++                cursor_range.ShiftEnd(ec, sub.cursor as i32, &mut moved, ptr::null())?;
++                cursor_range.ShiftStart(ec, sub.cursor as i32, &mut moved, ptr::null())?;
++                let _ = set_selection(&self.context, ec, cursor_range, TF_AE_END);
++
++                // Acknowledge successfully applied generation
++                self.pending_queue.borrow_mut().acknowledge_success(sub.generation);
+             }
+         }
+         Ok(())
+-- 
+2.54.0 (Apple Git-157)
+

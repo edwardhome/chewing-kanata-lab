@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "2a89559973b02b754de9c8f4405f39c1f9439dcc",
+  "tree": "668795be38a4a77bfb9708dea1951842e5f94381",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -82,6 +82,18 @@
     {
       "file": "0020-fix-input-fail-closed-on-generation-exhaustion-witho.patch",
       "sha256": "2cac738e1e1aed3220186cf721e6ea14e5fe936cd1ffffdf8af301835011ff37"
+    },
+    {
+      "file": "0021-feat-input-integrate-ordered-pending-queue-into-TSF-.patch",
+      "sha256": "a01741d9a14ff9080f88fb7134ddae097010200a9a9632d4827b6e3b8eccc004"
+    },
+    {
+      "file": "0022-feat-input-add-reliable-Chinese-F-layer-and-Shift-co.patch",
+      "sha256": "91ebd85b20eb993feed75119e7fbcaa3e15bde756c54c933093dd505560f66e0"
+    },
+    {
+      "file": "0023-fix-tsf-drain-context-bound-composition-sessions-bef.patch",
+      "sha256": "899045dfb1cb7fe1ffac3e10e7b9cee3ae5d091dc5c9098f4d8092d72beaadeb"
     }
   ],
   "native_commit": "f342e38e711442d5768593fd287d38ed98215ec8"
