@@ -16,3 +16,12 @@
 - 最終 native／preferences Release、patch 重播、套件雜湊及 GitHub 正式發布：尚待完成。
 - 實體 F 長按／短按、Shift 交接、未完成注音、候選跨頁、焦點切換及真實 TSF COM 失敗：NOT_RUN；不以無介面測試取代。
 - Zbook 安裝與操作由使用者執行；本輪未遠端安裝。
+
+## 後續修正重測
+
+- 原生來源 `3279313`：移除測試專用的重複 handoff 邏輯，正式攔截／執行與測試共用防護；拒絕 F 分層的當前鍵繼續交給原生輸入流程。
+- `cargo test --locked --workspace`：66＋9＋6＋3＝84 passed，0 failed，exit 0。日誌 `%TEMP%\ckai-final-110-native-tests.log`。
+- 首次新增 guard 測試誤把既有 F＋Esc（反引號）映射視為透明鍵，測試失敗後依既有映射修正，改以透明 T 測試拒絕；未更動 Kanata 或原有映射。
+- 設定來源 `914f05f`：Windows `cargo test --manifest-path src-tauri/Cargo.toml --locked --lib`，10 passed、0 failed、1 ignored（網路測試），日誌 `%TEMP%\ckai-110-prefs-final-tests.log`。
+- 原生 29 個 patch 與設定 7 個 patch 完整重播；tree 分別精確匹配 `bd9d5f5feeac6e2e7ae7fed956b0096f99cf488b`、`43f044ab7a2d303443c915d692894b300a550e2b`。
+- Release 建置進行中；以上仍不代表實體按鍵驗收或已發布。

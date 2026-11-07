@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "10eba3edc891e9bffc135e0d721d4556576b9aec",
+  "tree": "bd9d5f5feeac6e2e7ae7fed956b0096f99cf488b",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -102,6 +102,22 @@
     {
       "file": "0025-chore-release-prepare-native-version-1.1.0.patch",
       "sha256": "b4a71067aca7676c8fbd36cd2836b656465d8289697520c12c5387e89724355a"
+    },
+    {
+      "file": "0026-fix-input-guard-entering_syllable-and-empty-F-backsp.patch",
+      "sha256": "c41dc8f4eed6c981429246a45647234163d96020af5fc681cdbfafb1bd46c55b"
+    },
+    {
+      "file": "0027-fix-tsf-separate-queue-admission-from-scheduling-fai.patch",
+      "sha256": "928f846609af89f57ad7ac59ade75dc84ad6ce4f0d918562d19a5cc995c5188a"
+    },
+    {
+      "file": "0028-fix-input-share-production-handoff-guards-and-retain.patch",
+      "sha256": "f7aa35b424edaaf923d97c9158e0841f743f65e187f0347e99ccb8c7d9a7aabc"
+    },
+    {
+      "file": "0029-test-input-preserve-existing-F-escape-and-transparen.patch",
+      "sha256": "4eaf921a729d2ccaf74dc63184593610a56d81e916f696435572ad423b60589a"
     }
   ],
   "native_commit": "f342e38e711442d5768593fd287d38ed98215ec8"

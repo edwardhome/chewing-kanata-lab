@@ -1,0 +1,122 @@
+From e0986f914058ccd15bd76d5bd0c8a38e00b39ace Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Sat, 7 Nov 2026 17:37:05 +0800
+Subject: [PATCH 27/28] fix(tsf): separate queue admission from scheduling
+ failures
+
+---
+ tip/src/text_service/chewing.rs             | 19 +++++++--
+ tip/src/text_service/composition_session.rs | 46 +++++++++++++++++++--
+ 2 files changed, 58 insertions(+), 7 deletions(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 6b96acf..cf8bda0 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -1638,7 +1638,15 @@ impl ChewingTextService {
+         if !state.is_active() && !state.has_work() { return Ok(()); }
+         // Mark the existing state for completion. Its queued write must run before EndComposition.
+         state.request_end();
+-        schedule_composition_session(state.clone(), self.composition_sink.clone(), self.input_da_atom.clone(), self.tid)?;
++        // Ending is deferred state, not a new transfer of text ownership. A request failure
++        // must not cause a caller to replay a commit already accepted by this state's queue.
++        if self.retired_states.iter().any(|previous| previous.same_context(&state.context) && previous.has_work()) {
++            debug!("composition end deferred behind retained context state");
++            return Ok(());
++        }
++        if let Err(error) = schedule_composition_session(state, self.composition_sink.clone(), self.input_da_atom.clone(), self.tid) {
++            error!("composition end request retained for recovery: {error}");
++        }
+         Ok(())
+     }
+ 
+@@ -1680,10 +1688,15 @@ impl ChewingTextService {
+         if !state.enqueue(&commit, &preedit, segments, cursor) {
+             bail!("composition lifecycle cannot accept updates");
+         }
++        // The queue owns the text now, regardless of whether TSF can run it immediately.
++        // Returning an error after admission would leave engine/candidate ownership duplicated.
+         if self.retired_states.iter().any(|previous| previous.same_context(context) && previous.has_work()) {
+-            bail!("previous composition in this context is retained for recovery");
++            debug!("composition update retained behind earlier context state");
++            return Ok(());
++        }
++        if let Err(error) = schedule_composition_session(state, self.composition_sink.clone(), self.input_da_atom.clone(), self.tid) {
++            error!("accepted composition update retained for recovery: {error}");
+         }
+-        schedule_composition_session(state, self.composition_sink.clone(), self.input_da_atom.clone(), self.tid)?;
+         Ok(())
+     }
+ 
+diff --git a/tip/src/text_service/composition_session.rs b/tip/src/text_service/composition_session.rs
+index 458c5e5..5e4f930 100644
+--- a/tip/src/text_service/composition_session.rs
++++ b/tip/src/text_service/composition_session.rs
+@@ -29,11 +29,11 @@ impl SessionControl {
+     }
+     pub fn enqueue(&mut self, commit: &str, preedit: &str, segments: Vec<(usize, usize)>, cursor: usize) -> bool {
+         if !self.active { return false; }
+-        // Preserve incoming text even in quarantine. Failure is reported to the caller,
+-        // but text is never silently discarded or applied to a different context.
++        // Admission transfers ownership, even in quarantine. Scheduling status is separate:
++        // returning false after storing a commit would invite the caller to enqueue it twice.
+         self.end_requested = false;
+         self.queue.enqueue(commit, preedit, segments, cursor);
+-        self.failed.is_none()
++        true
+     }
+     pub fn request_end(&mut self) { if self.active { self.end_requested = true; } }
+     pub fn has_work(&self) -> bool {
+@@ -298,10 +298,48 @@ mod tests {
+     fn quarantine_retains_new_input_without_scheduling_it() {
+         let mut state = pending(); state.schedule(); state.begin_callback(); state.begin_submission();
+         state.mark_write_attempted(); state.fail(); state.finish_callback();
+-        assert!(!state.enqueue("新的", "字", vec![], 1));
++        assert!(state.enqueue("新的", "字", vec![], 1));
+         assert_eq!(state.queue.pending_commit_str(), "中文新的"); assert!(!state.schedule());
+     }
+     #[test]
++    fn admitted_candidate_survives_rejected_request_and_is_not_replayed() {
++        let mut state = SessionControl::new();
++        // The caller consumes its candidate on admission, not on scheduling success.
++        let mut selected_candidate = Some("CH₄");
++        let admitted = state.enqueue(selected_candidate.unwrap(), "", vec![], 0);
++        if admitted { selected_candidate = None; }
++        assert!(state.schedule());
++        state.request_failed();
++        state.request_end();
++        assert!(selected_candidate.is_none());
++        assert!(!state.schedule());
++        assert_eq!(state.queue.pending_commit_str(), "CH₄");
++        // A later input retries only the retained operation and adds new preedit, not CH₄ again.
++        assert!(state.retry_before_write());
++        assert!(state.enqueue("", "下", vec![(0, 1)], 1));
++        assert!(state.schedule()); assert!(state.begin_callback());
++        let snapshot = state.begin_submission().unwrap();
++        assert_eq!(snapshot.commit, "CH₄"); assert_eq!(snapshot.preedit, "下");
++        state.mark_write_attempted(); state.mark_written(); assert!(state.retire(snapshot.generation));
++        state.finish_callback();
++        assert!(!state.queue.has_pending_commits()); assert!(!state.schedule());
++    }
++    #[test]
++    fn accepted_commit_stays_owned_when_deferred_end_request_is_rejected() {
++        let mut state = SessionControl::new();
++        assert!(state.enqueue("中文", "", vec![], 0));
++        assert!(state.schedule()); assert!(state.begin_callback());
++        let snapshot = state.begin_submission().unwrap();
++        state.mark_write_attempted(); state.mark_written(); assert!(state.retire(snapshot.generation));
++        state.finish_callback();
++        state.request_end(); assert!(state.schedule()); state.request_failed();
++        assert!(!state.queue.has_pending_commits());
++        assert!(state.retry_before_write()); assert!(state.schedule()); assert!(state.begin_callback());
++        assert!(state.begin_submission().is_none());
++        assert!(state.begin_end()); state.complete_end(); state.finish_callback();
++        assert!(!state.active); assert!(!state.queue.has_pending_commits());
++    }
++    #[test]
+     fn failed_end_preserves_lifetime_and_rejected_request_is_not_spun() {
+         let mut state = pending(); state.schedule(); state.request_failed();
+         assert!(!state.schedule()); assert_eq!(state.queue.pending_commit_str(), "中文");
+-- 
+2.54.0 (Apple Git-157)
+
