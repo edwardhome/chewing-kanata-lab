@@ -25,7 +25,7 @@
 
 ## 目前執行調整
 
-Gemini High 已讀任務及檢查分支，但後續發生 5 分鐘 stream idle timeout，尚未產生提交。已在同一互動對話取消該回應並改以 Gemini Low 先做 A1：新增純邏輯 `pending_transition.rs` 與必要模組宣告／測試，保留依序待提交文字、只合併最新 preedit，處理失敗保留與世代確認；先不修改 chewing.rs／edit_session.rs 接線。A1 提交後再審查並接回下方 A 的完整需求。這是縮小工作批次，不是取消 F／Shift 或候選需求。
+A1 已由 AGY 提交 `23cb1f7`、`54591a6`，Codex 已獨立驗收 11 項 helper 測試及 39 項 chewing_tip 測試，20 個 patches 重播 tree 相符。詳見 [A1 驗收](../verification/runs/RUN-20261107-110-A1.md)。目前已交付 A2：接入真實 TSF 組字流程與 F／Shift 交接；仍僅授權下方 A 的檔案範圍，完成後先審查再進 B／C。
 
 ## A：可靠組字銜接、F 分層與 Shift（立即實作）
 

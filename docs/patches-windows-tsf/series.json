@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "2d5ed5d6be52408740baebeb5d2b5a88db936f7c",
+  "tree": "2a89559973b02b754de9c8f4405f39c1f9439dcc",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -74,6 +74,14 @@
     {
       "file": "0018-chore-release-promote-1.0.2.patch",
       "sha256": "221e7ad95215f4e7791d05cad68b2e144c63dda8ddfc044cd7220efe84e8e346"
+    },
+    {
+      "file": "0019-feat-input-add-ordered-pending-composition-transitio.patch",
+      "sha256": "7a4d54c2b0e8d3840c84701cecf61ded2310c9243b0a27b28da9ec66c1c6af92"
+    },
+    {
+      "file": "0020-fix-input-fail-closed-on-generation-exhaustion-witho.patch",
+      "sha256": "2cac738e1e1aed3220186cf721e6ea14e5fe936cd1ffffdf8af301835011ff37"
     }
   ],
   "native_commit": "f342e38e711442d5768593fd287d38ed98215ec8"

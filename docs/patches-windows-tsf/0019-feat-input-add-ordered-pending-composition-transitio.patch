@@ -1,0 +1,615 @@
+From 23cb1f76c2dd9bbe24166d54b5688d9e6bd57557 Mon Sep 17 00:00:00 2001
+From: AGY <defu@local.dev>
+Date: Sat, 7 Nov 2026 01:49:15 +0800
+Subject: [PATCH 19/20] feat(input): add ordered pending composition transition
+ helper
+
+---
+ tip/src/text_service/mod.rs                |   1 +
+ tip/src/text_service/pending_transition.rs | 582 +++++++++++++++++++++
+ 2 files changed, 583 insertions(+)
+ create mode 100644 tip/src/text_service/pending_transition.rs
+
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index 2c58577..dedd31a 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -36,6 +36,7 @@ mod kanata_layer;
+ mod key_event;
+ mod lang_bar;
+ mod menu;
++mod pending_transition;
+ mod resources;
+ mod recovery;
+ mod theme;
+diff --git a/tip/src/text_service/pending_transition.rs b/tip/src/text_service/pending_transition.rs
+new file mode 100644
+index 0000000..8c8b38c
+--- /dev/null
++++ b/tip/src/text_service/pending_transition.rs
+@@ -0,0 +1,582 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++use std::fmt;
++
++/// Pure helper for tracking and transitioning pending composition updates.
++///
++/// Ensures ordered commit preservation and preedit coalescing across
++/// asynchronous TSF edit session boundaries:
++/// - Accumulated commit text is preserved in strict FIFO order.
++/// - Rapid successive preedit edits coalesce into the latest preedit snapshot.
++/// - Gated strictly on `has_unsubmitted_changes` to prevent duplicate submissions
++///   of unchanged preedit while reliably conveying explicit deletions/empty updates.
++/// - When an edit session fails or encounters an invariant prefix mismatch, pending
++///   text is strictly retained (fail-closed) so text is never swallowed.
++/// - Generational identifiers increase monotonically across resets to prevent late
++///   asynchronous callbacks from targeting stale or reused generations.
++/// - Debug representations are redacted to avoid logging raw user input.
++
++#[derive(Clone, PartialEq, Eq, Default)]
++pub(super) struct CompositionPayload {
++    pub commit: String,
++    pub preedit: String,
++    pub segments: Vec<(usize, usize)>,
++    pub cursor: usize,
++}
++
++impl CompositionPayload {
++    pub(super) fn new(
++        commit: impl Into<String>,
++        preedit: impl Into<String>,
++        segments: Vec<(usize, usize)>,
++        cursor: usize,
++    ) -> Self {
++        Self {
++            commit: commit.into(),
++            preedit: preedit.into(),
++            segments,
++            cursor,
++        }
++    }
++
++    pub(super) fn is_empty(&self) -> bool {
++        self.commit.is_empty() && self.preedit.is_empty()
++    }
++}
++
++impl fmt::Debug for CompositionPayload {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("CompositionPayload")
++            .field("commit_len", &self.commit.len())
++            .field("preedit_len", &self.preedit.len())
++            .field("segments_count", &self.segments.len())
++            .field("cursor", &self.cursor)
++            .finish()
++    }
++}
++
++/// A snapshot taken for an edit session submission.
++#[derive(Clone, PartialEq, Eq)]
++pub(super) struct SubmissionSnapshot {
++    pub generation: u64,
++    pub commit: String,
++    pub preedit: String,
++    pub segments: Vec<(usize, usize)>,
++    pub cursor: usize,
++}
++
++impl SubmissionSnapshot {
++    pub(super) fn payload(&self) -> CompositionPayload {
++        CompositionPayload {
++            commit: self.commit.clone(),
++            preedit: self.preedit.clone(),
++            segments: self.segments.clone(),
++            cursor: self.cursor,
++        }
++    }
++}
++
++impl fmt::Debug for SubmissionSnapshot {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("SubmissionSnapshot")
++            .field("generation", &self.generation)
++            .field("commit_len", &self.commit.len())
++            .field("preedit_len", &self.preedit.len())
++            .field("segments_count", &self.segments.len())
++            .field("cursor", &self.cursor)
++            .finish()
++    }
++}
++
++#[derive(Clone, PartialEq, Eq)]
++struct InFlightSubmission {
++    generation: u64,
++    committed_text: String,
++}
++
++impl fmt::Debug for InFlightSubmission {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("InFlightSubmission")
++            .field("generation", &self.generation)
++            .field("committed_len", &self.committed_text.len())
++            .finish()
++    }
++}
++
++/// Queue and state tracker for pending composition transitions.
++#[derive(Clone, PartialEq, Eq)]
++pub(super) struct PendingTransitionQueue {
++    /// Accumulated uncommitted text in chronological order.
++    pending_commit: String,
++    /// Latest coalesced preedit string.
++    preedit: String,
++    /// Latest display attribute segments.
++    segments: Vec<(usize, usize)>,
++    /// Latest cursor position.
++    cursor: usize,
++    /// Whether there are unsubmitted changes since the last submission.
++    has_unsubmitted_changes: bool,
++    /// Monotonically increasing generation counter.
++    next_generation: u64,
++    /// Currently in-flight submission awaiting acknowledgment.
++    in_flight: Option<InFlightSubmission>,
++}
++
++impl Default for PendingTransitionQueue {
++    fn default() -> Self {
++        Self {
++            pending_commit: String::new(),
++            preedit: String::new(),
++            segments: Vec::new(),
++            cursor: 0,
++            has_unsubmitted_changes: false,
++            next_generation: 1,
++            in_flight: None,
++        }
++    }
++}
++
++impl fmt::Debug for PendingTransitionQueue {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("PendingTransitionQueue")
++            .field("pending_commit_len", &self.pending_commit.len())
++            .field("preedit_len", &self.preedit.len())
++            .field("has_unsubmitted_changes", &self.has_unsubmitted_changes)
++            .field("next_generation", &self.next_generation)
++            .field("is_in_flight", &self.in_flight.is_some())
++            .finish()
++    }
++}
++
++impl PendingTransitionQueue {
++    pub(super) fn new() -> Self {
++        Self::default()
++    }
++
++    /// Enqueues a composition update.
++    ///
++    /// - Non-empty `commit` strings are appended to `pending_commit` in arrival order.
++    /// - `preedit`, `segments`, and `cursor` are updated to the latest values, coalescing
++    ///   interim keystrokes.
++    /// - Marks `has_unsubmitted_changes` as true.
++    pub(super) fn enqueue(
++        &mut self,
++        commit: &str,
++        preedit: &str,
++        segments: Vec<(usize, usize)>,
++        cursor: usize,
++    ) {
++        if !commit.is_empty() {
++            self.pending_commit.push_str(commit);
++        }
++        self.preedit = preedit.to_string();
++        self.segments = segments;
++        self.cursor = cursor;
++        self.has_unsubmitted_changes = true;
++    }
++
++    /// Returns the current coalesced payload without altering submission state.
++    pub(super) fn current_payload(&self) -> CompositionPayload {
++        CompositionPayload {
++            commit: self.pending_commit.clone(),
++            preedit: self.preedit.clone(),
++            segments: self.segments.clone(),
++            cursor: self.cursor,
++        }
++    }
++
++    /// Prepares a submission snapshot for an edit session.
++    ///
++    /// Returns `None` if:
++    /// - A prior submission is currently in flight awaiting acknowledgment, OR
++    /// - There are no unsubmitted changes (`!has_unsubmitted_changes`).
++    ///
++    /// This strictly prevents repeatedly resubmitting unchanged preedit text, while
++    /// preserving explicit changes (such as backspacing to an empty preedit).
++    pub(super) fn begin_submission(&mut self) -> Option<SubmissionSnapshot> {
++        if self.in_flight.is_some() || !self.has_unsubmitted_changes {
++            return None;
++        }
++
++        let generation = self.next_generation;
++        self.next_generation = self.next_generation.checked_add(1).unwrap_or(1);
++
++        let committed_text = self.pending_commit.clone();
++        self.in_flight = Some(InFlightSubmission {
++            generation,
++            committed_text: committed_text.clone(),
++        });
++        self.has_unsubmitted_changes = false;
++
++        Some(SubmissionSnapshot {
++            generation,
++            commit: committed_text,
++            preedit: self.preedit.clone(),
++            segments: self.segments.clone(),
++            cursor: self.cursor,
++        })
++    }
++
++    /// Acknowledges successful application of a submission generation.
++    ///
++    /// - Removes only the committed text prefix that was part of this generation.
++    /// - If the generation matches but `pending_commit` does NOT start with the committed
++    ///   prefix (invariant divergence), fails closed by retaining all pending state and
++    ///   returning `false`.
++    /// - Any newer commits or preedits enqueued after this generation was submitted survive.
++    /// - Returns `true` only on successful prefix retirement.
++    pub(super) fn acknowledge_success(&mut self, generation: u64) -> bool {
++        match &self.in_flight {
++            Some(inflight) if inflight.generation == generation => {
++                let committed_len = inflight.committed_text.len();
++                if self.pending_commit.starts_with(&inflight.committed_text) {
++                    self.pending_commit.drain(..committed_len);
++                    self.in_flight = None;
++                    true
++                } else {
++                    // Fail closed: retain data intact and report failure.
++                    false
++                }
++            }
++            _ => false,
++        }
++    }
++
++    /// Acknowledges failure of a submission generation (e.g. COM or TSF SetText failure).
++    ///
++    /// Retains pending commits so text is not lost, and marks unsubmitted changes as true
++    /// so a subsequent submission or recovery path will retry.
++    /// Returns `true` if the generation matched the active in-flight submission.
++    pub(super) fn acknowledge_failure(&mut self, generation: u64) -> bool {
++        match &self.in_flight {
++            Some(inflight) if inflight.generation == generation => {
++                // Keep self.pending_commit intact.
++                self.in_flight = None;
++                self.has_unsubmitted_changes = true;
++                true
++            }
++            _ => false,
++        }
++    }
++
++    /// Whether there are unsubmitted changes since the last submission snapshot.
++    pub(super) fn has_unsubmitted_changes(&self) -> bool {
++        self.has_unsubmitted_changes
++    }
++
++    /// Whether any commit text is pending.
++    pub(super) fn has_pending_commits(&self) -> bool {
++        !self.pending_commit.is_empty()
++    }
++
++    /// Read-only slice of accumulated pending commit text.
++    pub(super) fn pending_commit_str(&self) -> &str {
++        &self.pending_commit
++    }
++
++    /// Read-only slice of current coalesced preedit.
++    pub(super) fn preedit_str(&self) -> &str {
++        &self.preedit
++    }
++
++    /// Whether an edit session is currently in flight.
++    pub(super) fn is_in_flight(&self) -> bool {
++        self.in_flight.is_some()
++    }
++
++    /// Returns active in-flight generation ID if present.
++    pub(super) fn in_flight_generation(&self) -> Option<u64> {
++        self.in_flight.as_ref().map(|f| f.generation)
++    }
++
++    /// Resets transient state. Pending commit and preedit are cleared.
++    /// Monotonic generation counter is preserved and incremented to invalidate
++    /// any late callbacks from pre-reset sessions.
++    pub(super) fn reset(&mut self) {
++        self.pending_commit.clear();
++        self.preedit.clear();
++        self.segments.clear();
++        self.cursor = 0;
++        self.has_unsubmitted_changes = false;
++        self.in_flight = None;
++        self.next_generation = self.next_generation.checked_add(1).unwrap_or(1);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn test_fast_next_preedit_before_edit_session() {
++        let mut queue = PendingTransitionQueue::new();
++
++        // Keystroke 1: user types "注", no commit.
++        queue.enqueue("", "注", vec![(0, 1)], 1);
++        assert_eq!(queue.preedit_str(), "注");
++        assert_eq!(queue.pending_commit_str(), "");
++        assert!(queue.has_unsubmitted_changes());
++
++        // Fast keystroke 2 arrives before any edit session runs.
++        queue.enqueue("", "注音", vec![(0, 2)], 2);
++
++        // Coalescing check: latest preedit replaces interim preedit.
++        assert_eq!(queue.preedit_str(), "注音");
++        assert_eq!(queue.pending_commit_str(), "");
++
++        // Edit session now begins and retrieves latest coalesced snapshot.
++        let sub = queue.begin_submission().expect("submission should be available");
++        assert_eq!(sub.generation, 1);
++        assert_eq!(sub.commit, "");
++        assert_eq!(sub.preedit, "注音");
++        assert_eq!(sub.cursor, 2);
++        assert!(!queue.has_unsubmitted_changes());
++
++        assert!(queue.acknowledge_success(1));
++        assert_eq!(queue.preedit_str(), "注音");
++        assert_eq!(queue.pending_commit_str(), "");
++        assert!(!queue.has_unsubmitted_changes());
++    }
++
++    #[test]
++    fn test_idle_after_successful_nonempty_preedit() {
++        let mut queue = PendingTransitionQueue::new();
++
++        queue.enqueue("", "abc", vec![(0, 3)], 3);
++        let sub = queue.begin_submission().expect("submission available");
++        assert_eq!(sub.generation, 1);
++        assert_eq!(sub.preedit, "abc");
++
++        assert!(queue.acknowledge_success(sub.generation));
++        assert_eq!(queue.preedit_str(), "abc");
++        assert!(!queue.has_unsubmitted_changes());
++        assert!(!queue.is_in_flight());
++
++        // Regression: with preedit retained nonempty, queue MUST remain idle.
++        assert!(
++            queue.begin_submission().is_none(),
++            "must not repeatedly resubmit unchanged nonempty preedit"
++        );
++    }
++
++    #[test]
++    fn test_commit_plus_newer_preedit_before_submission() {
++        let mut queue = PendingTransitionQueue::new();
++
++        // First transition produces commit "第一" and preedit "注".
++        queue.enqueue("第一", "注", vec![(0, 1)], 1);
++        assert_eq!(queue.pending_commit_str(), "第一");
++
++        // Immediately before submission, fast next keystroke extends preedit to "注音".
++        queue.enqueue("", "注音", vec![(0, 2)], 2);
++        assert_eq!(queue.pending_commit_str(), "第一");
++        assert_eq!(queue.preedit_str(), "注音");
++
++        let sub = queue.begin_submission().expect("submission ready");
++        assert_eq!(sub.commit, "第一");
++        assert_eq!(sub.preedit, "注音");
++
++        assert!(queue.acknowledge_success(sub.generation));
++        assert_eq!(queue.pending_commit_str(), "");
++        assert_eq!(queue.preedit_str(), "注音");
++        assert!(queue.begin_submission().is_none());
++    }
++
++    #[test]
++    fn test_two_ordered_commits() {
++        let mut queue = PendingTransitionQueue::new();
++
++        // First transition produces commit "第一" and preedit "一".
++        queue.enqueue("第一", "一", vec![(0, 1)], 1);
++        assert_eq!(queue.pending_commit_str(), "第一");
++
++        // Second transition produces commit "第二" and preedit "二".
++        queue.enqueue("第二", "二", vec![(0, 1)], 1);
++
++        // Commits must be strictly concatenated in FIFO order.
++        assert_eq!(queue.pending_commit_str(), "第一第二");
++        // Preedit coalesced to latest.
++        assert_eq!(queue.preedit_str(), "二");
++
++        let sub = queue.begin_submission().expect("submission ready");
++        assert_eq!(sub.generation, 1);
++        assert_eq!(sub.commit, "第一第二");
++        assert_eq!(sub.preedit, "二");
++
++        assert!(queue.acknowledge_success(1));
++        assert_eq!(queue.pending_commit_str(), "");
++        assert_eq!(queue.preedit_str(), "二");
++    }
++
++    #[test]
++    fn test_simulated_failed_apply() {
++        let mut queue = PendingTransitionQueue::new();
++
++        queue.enqueue("中文", "ㄗ", vec![(0, 1)], 1);
++        assert_eq!(queue.pending_commit_str(), "中文");
++
++        let sub1 = queue.begin_submission().expect("sub1 ready");
++        assert_eq!(sub1.generation, 1);
++        assert_eq!(sub1.commit, "中文");
++        assert_eq!(sub1.preedit, "ㄗ");
++
++        // Simulate COM/TSF SetText failure on generation 1.
++        assert!(queue.acknowledge_failure(1));
++
++        // Critical safety invariant: pending commits MUST be retained on failure!
++        assert_eq!(queue.pending_commit_str(), "中文");
++        assert!(queue.has_unsubmitted_changes());
++        assert!(!queue.is_in_flight());
++
++        // Subsequent retry submission must retain the uncommitted text.
++        let sub2 = queue.begin_submission().expect("retry submission ready");
++        assert_eq!(sub2.generation, 2);
++        assert_eq!(sub2.commit, "中文");
++        assert_eq!(sub2.preedit, "ㄗ");
++
++        // Retry succeeds.
++        assert!(queue.acknowledge_success(2));
++        assert_eq!(queue.pending_commit_str(), "");
++        assert_eq!(queue.preedit_str(), "ㄗ");
++    }
++
++    #[test]
++    fn test_mismatch_retaining_text() {
++        let mut queue = PendingTransitionQueue::new();
++        queue.enqueue("正確", "", vec![], 0);
++
++        let sub = queue.begin_submission().expect("sub ready");
++        assert_eq!(sub.generation, 1);
++
++        // Tamper directly with inflight snapshot's expectations to simulate external corruption
++        if let Some(inflight) = &mut queue.in_flight {
++            inflight.committed_text = "歧異".to_string();
++        }
++
++        // On prefix divergence, acknowledge_success must fail closed (return false)
++        // and NEVER clear pending_commit!
++        assert!(!queue.acknowledge_success(1));
++        assert_eq!(
++            queue.pending_commit_str(),
++            "正確",
++            "must never clear or swallow text on prefix mismatch"
++        );
++        assert!(queue.is_in_flight());
++    }
++
++    #[test]
++    fn test_success_acknowledgement_while_newer_edit_queued() {
++        let mut queue = PendingTransitionQueue::new();
++
++        // Enqueue first commit "中" with preedit "a".
++        queue.enqueue("中", "a", vec![(0, 1)], 1);
++
++        let sub1 = queue.begin_submission().expect("sub1 ready");
++        assert_eq!(sub1.generation, 1);
++        assert_eq!(sub1.commit, "中");
++        assert_eq!(sub1.preedit, "a");
++        assert!(queue.is_in_flight());
++
++        // While sub1 is in-flight, a newer edit is queued with commit "文" and preedit "b".
++        queue.enqueue("文", "b", vec![(0, 1)], 1);
++        assert_eq!(queue.pending_commit_str(), "中文");
++        assert_eq!(queue.preedit_str(), "b");
++        assert!(queue.has_unsubmitted_changes());
++
++        // Now sub1 succeeds. Only generation 1's commit ("中") should be retired.
++        assert!(queue.acknowledge_success(1));
++
++        // Invariant: newer queued commit "文" must survive!
++        assert_eq!(queue.pending_commit_str(), "文");
++        assert_eq!(queue.preedit_str(), "b");
++        assert!(queue.has_unsubmitted_changes());
++        assert!(!queue.is_in_flight());
++
++        // Sub2 takes the remaining commit and latest preedit.
++        let sub2 = queue.begin_submission().expect("sub2 ready");
++        assert_eq!(sub2.generation, 2);
++        assert_eq!(sub2.commit, "文");
++        assert_eq!(sub2.preedit, "b");
++
++        assert!(queue.acknowledge_success(2));
++        assert_eq!(queue.pending_commit_str(), "");
++        assert_eq!(queue.preedit_str(), "b");
++        assert!(!queue.has_unsubmitted_changes());
++    }
++
++    #[test]
++    fn test_reset_then_stale_acknowledgement() {
++        let mut queue = PendingTransitionQueue::new();
++        queue.enqueue("前段", "pre", vec![], 0);
++
++        let sub1 = queue.begin_submission().expect("sub1");
++        assert_eq!(sub1.generation, 1);
++
++        // Reset happens while sub1 was in-flight (e.g. focus loss or cancel).
++        queue.reset();
++        assert!(!queue.is_in_flight());
++        assert_eq!(queue.pending_commit_str(), "");
++        assert_eq!(queue.preedit_str(), "");
++
++        // Late callback for stale generation 1 arrives: must be rejected.
++        assert!(!queue.acknowledge_success(1));
++        assert!(!queue.acknowledge_failure(1));
++
++        // New update begins after reset. Generation counter must be strictly greater.
++        queue.enqueue("新段", "new", vec![], 0);
++        let sub2 = queue.begin_submission().expect("sub2");
++        assert!(
++            sub2.generation > sub1.generation,
++            "generations must monotonically increase across reset"
++        );
++        assert_eq!(sub2.commit, "新段");
++
++        // Stale ack for sub1 still rejected.
++        assert!(!queue.acknowledge_success(sub1.generation));
++
++        // Valid ack for sub2 accepted.
++        assert!(queue.acknowledge_success(sub2.generation));
++        assert_eq!(queue.pending_commit_str(), "");
++    }
++
++    #[test]
++    fn test_backspace_to_empty_preedit_creates_unsubmitted_change() {
++        let mut queue = PendingTransitionQueue::new();
++
++        queue.enqueue("", "注", vec![(0, 1)], 1);
++        let sub1 = queue.begin_submission().expect("sub1");
++        assert!(queue.acknowledge_success(sub1.generation));
++
++        // User pressed backspace: preedit is now empty.
++        queue.enqueue("", "", vec![], 0);
++        assert!(queue.has_unsubmitted_changes());
++        assert_eq!(queue.preedit_str(), "");
++
++        // Empty preedit must be submitted so TSF clears composition on screen.
++        let sub2 = queue.begin_submission().expect("sub2 to clear preedit");
++        assert_eq!(sub2.commit, "");
++        assert_eq!(sub2.preedit, "");
++        assert!(queue.acknowledge_success(sub2.generation));
++        assert!(!queue.has_unsubmitted_changes());
++
++        // Further begin_submission without changes yields None.
++        assert!(queue.begin_submission().is_none());
++    }
++
++    #[test]
++    fn test_redacted_debug_does_not_leak_raw_text() {
++        let payload = CompositionPayload::new("機密", "密碼", vec![(0, 2)], 2);
++        let debug_str = format!("{:?}", payload);
++        assert!(!debug_str.contains("機密"), "raw commit must not leak into debug");
++        assert!(!debug_str.contains("密碼"), "raw preedit must not leak into debug");
++        assert!(debug_str.contains("commit_len"));
++        assert!(debug_str.contains("preedit_len"));
++
++        let mut queue = PendingTransitionQueue::new();
++        queue.enqueue("機密", "密碼", vec![(0, 2)], 2);
++        let q_debug = format!("{:?}", queue);
++        assert!(!q_debug.contains("機密"));
++        assert!(!q_debug.contains("密碼"));
++        assert!(q_debug.contains("pending_commit_len"));
++    }
++}
+-- 
+2.54.0 (Apple Git-157)
+
