@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "532fcc0d8ae0b4a02394e8f0b21943dc1a17a7dc",
+  "tree": "10eba3edc891e9bffc135e0d721d4556576b9aec",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -98,6 +98,10 @@
     {
       "file": "0024-feat-candidates-integrate-shared-engineering-and-nat.patch",
       "sha256": "61734e753a879b6cc5a2abf90fe139f4c2b50dfee2add3339fbe0e84b04692fc"
+    },
+    {
+      "file": "0025-chore-release-prepare-native-version-1.1.0.patch",
+      "sha256": "b4a71067aca7676c8fbd36cd2836b656465d8289697520c12c5387e89724355a"
     }
   ],
   "native_commit": "f342e38e711442d5768593fd287d38ed98215ec8"
