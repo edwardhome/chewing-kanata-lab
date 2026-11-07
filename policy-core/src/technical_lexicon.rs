@@ -180,6 +180,19 @@ impl TechnicalLexicon {
             .filter(|c| seen.insert(c.text.clone())).take(8).collect()
     }
 
+    /// Exact whole-composition lookup, never substring or annotation matching.
+    /// Original/native candidates are retained by the caller; no result is auto-selected.
+    pub fn chinese_candidate_items(&self, composition: &str) -> Vec<TechnicalCandidate> {
+        if composition.is_empty() || composition.encode_utf16().count() > 128 { return vec![]; }
+        let user = self.user_terms.iter()
+            .filter(|term| term.zh_aliases.iter().any(|alias| alias == composition))
+            .map(|term| TechnicalCandidate { text: term.output.clone(),
+                annotation: if term.annotation.is_empty() { None } else { Some(term.annotation.clone()) } });
+        let mut seen = BTreeSet::from([composition.to_string()]);
+        user.chain(EngineeringLexicon::bundled().chinese_matches(composition))
+            .filter(|candidate| seen.insert(candidate.text.clone())).collect()
+    }
+
     pub fn words(&self) -> &[String] {
         &self.words
     }
@@ -191,7 +204,7 @@ mod tests {
 
     #[test]
     fn custom_aliases_keep_raw_first_and_preserve_legacy_completions() {
-        let terms = vec![UserEngineeringTerm { input: "x2o".into(), output: "X₂O".into(), annotation: "合成測試".into() }];
+        let terms = vec![UserEngineeringTerm { input: "x2o".into(), output: "X₂O".into(), annotation: "合成測試".into(), zh_aliases: vec![] }];
         let lexicon = TechnicalLexicon::new(&["ExampleWord".into()]).with_user_terms(terms).unwrap();
         assert_eq!(lexicon.completions("X2O"), ["X₂O"]);
         assert!(lexicon.completions("x2").is_empty());
@@ -276,4 +289,24 @@ Invalid line with multiple items
         let comps_fin = lexicon.completions("fin");
         assert!(comps_fin.contains(&"FinFET".to_string()));
     }
+    #[test]
+    fn chinese_lookup_is_explicit_exact_and_preserves_ascii_behavior() {
+        let terms = vec![
+            UserEngineeringTerm { input: "CH4".into(), output: "CH₄".into(), annotation: "燃料".into(), zh_aliases: vec!["甲烷".into()] },
+            UserEngineeringTerm { input: "CH4".into(), output: "甲烷".into(), annotation: "氣體".into(), zh_aliases: vec!["甲烷".into()] },
+            UserEngineeringTerm { input: "H2O".into(), output: "H₂O".into(), annotation: "水".into(), zh_aliases: vec![] },
+        ];
+        let lexicon = TechnicalLexicon::default().with_user_terms(terms).unwrap();
+        let chinese = lexicon.chinese_candidate_items("甲烷");
+        assert_eq!(chinese.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["CH₄"]);
+        assert_eq!(chinese[0].annotation.as_deref(), Some("燃料"));
+        for query in ["甲", "甲烷濃度", " 甲烷", "燃料", "水", ""] {
+            assert!(lexicon.chinese_candidate_items(query).is_empty());
+        }
+        assert_eq!(lexicon.candidate_items("CH4")[0].text, "CH₄");
+        assert_eq!(lexicon.candidate_items("H2O")[0].text, "H₂O");
+        assert_eq!(lexicon.candidate_items("H2O2")[0].text, "H₂O₂");
+        assert!(!format!("{:?}", chinese[0]).contains("CH₄"));
+    }
+
 }
