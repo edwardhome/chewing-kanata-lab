@@ -35,8 +35,12 @@ AGY 的傳輸提交 `6746219`、`cd63e83` 已保留作者歷史整合；完整�
 
 ## 1.1.0 交付與目前程序
 
-正式 1.0.2 已發布且不再接收本輪新行為。AGY 的原互動程序已於 16:29 結束；本輪恢復同一對話 `9718153a-085c-4fb6-bfa4-219555c0aaac`，新的 Remote Control 顯示名稱為 `workstationx-cosmic-eclipse`，使用 SSH 持續互動程序，非逐任務 --print。
+更新時間：2026-11-07T17:46:34+08:00
 
-已實際送入並由 AGY 讀取 [1.1.0 開發契約](../tasks/V110_AGY_IMPLEMENTATION.md)，接著檢查三個共用分支。A 階段只授權 nested native 組字銜接、F／Shift 與測試；B/C 的共用資料模型、中文別名、原生候選與設定接線依序驗收後開始。沒有把「任務已送出」當成「1.1.0 已完成」。
+共用 Windows 來源已對齊外層 `8c03249`、原生 `3279313`、設定 `914f05f`，均在 feature/1.1.0。AGY 的 A 階段及防護提交保留作者歷史；Codex 完成佇列生命週期、共用候選、中文別名／設定及驗收修正。上方起點表與舊版程序名稱屬歷史資料。
 
-Codex 正式建置固定在 `%TEMP%\ckai-stable-102`；AGY 不可改該來源或使用 `%TEMP%\ckai-native-codex-target` 覆寫正式二進位。既有未追蹤報告保留，不納入正式來源或未審查的結論。
+AGY 保持對話 `9718153a-085c-4fb6-bfa4-219555c0aaac`；目前 Codex 已要求停止程式修改，改作唯讀建置需求查核。接手前仍須核對實際程序與工作樹，不可依歷史 Remote Control 名稱判定程序存活。
+
+本版隔離建置來源 `%TEMP%\ckai-catalog-110-review`、target `%TEMP%\ckai-catalog-110-target`；封裝來源 worktree `%TEMP%\ckai-package-final-110` 固定外層提交。196 個建置來源／dist 雜湊與固定來源一致，舊 1.0.2 成品及 target 保留。
+
+詳見 [1.1.0 整合驗證](../verification/runs/RUN-20261107-110-INTEGRATION.md)。使用者自行安裝及實體按鍵驗收；沒有遠端安裝 Zbook。

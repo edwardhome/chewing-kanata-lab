@@ -25,3 +25,19 @@
 - 設定來源 `914f05f`：Windows `cargo test --manifest-path src-tauri/Cargo.toml --locked --lib`，10 passed、0 failed、1 ignored（網路測試），日誌 `%TEMP%\ckai-110-prefs-final-tests.log`。
 - 原生 29 個 patch 與設定 7 個 patch 完整重播；tree 分別精確匹配 `bd9d5f5feeac6e2e7ae7fed956b0096f99cf488b`、`43f044ab7a2d303443c915d692894b300a550e2b`。
 - Release 建置進行中；以上仍不代表實體按鍵驗收或已發布。
+
+## 發布套件核對
+
+更新時間：2026-11-07T17:46:34+08:00
+
+- 原生與設定 Release build：PASS，exit 0。保留既有 unused 與 LNK4104 警告；日誌 `%TEMP%\ckai-110-native-release.log`、`ckai-110-prefs-release.log`。
+- 隔離建置來源與固定 Git 來源及前端 dist 共 196 個檔案 SHA-256 逐一一致。
+- 固定套件來源：外層 `8c032496fecdddf7a9dd57855e7bcc5ac756fc9f`、原生 `32793133aaa10752da17eabde617f0da9a42f4c8`、設定 `914f05f5f5f6dae0129e04ff327b26963019108b`。
+- 套件 25 個 ZIP 項目、24 個 payload 雜湊、三個 x64 PE、manifest 來源與 1.1.0 版本：PASS。Windows ZIP 字典路徑使用反斜線，核對時正規化分隔符並檢查重複與路徑穿越。
+- `chewing_tip.dll` PE 版本 1.1.0.0；`ChewingPreferences.exe` 1.1.0；`tsfreg.exe` 沒有 PE 版本資源，以固定來源與雜湊識別，不宣稱三者都有版本資源。
+- `do_install.ps1 -ValidateOnly`：PASS，未安裝或變更註冊。
+- Windows ZIP 9,168,265 bytes，SHA-256 `4f590e930bb9d8b1e23583fffb3a16b72abaf32b3eff2ac496a4098215c83e7d`。
+- 完整 Source ZIP 1,199,992 bytes，SHA-256 `eed6e53588c0117ac93e41039da358195f06dbc2ce9dc4936c143b56bc391542`；含三個固定 Git 來源與 SOURCE-COMMITS.json，無 .git、target、node_modules。
+- 附件另含 package-manifest.json、SHA256SUMS.txt；Mac 副本 `/Users/defu/Documents/AI-Chewing/1.1.0/`，Windows 套件 `Documents\AI-Chewing\1.1.0`。
+- 共用 Windows nested 來源已同步到上述固定提交，外層已同步 8c03249。兩份既有未追蹤歷史報告保留，不納入套件。
+- 本節不宣稱 GitHub 已發布；實體按鍵／GUI 驗收仍為 NOT_RUN。
