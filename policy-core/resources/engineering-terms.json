@@ -17,6 +17,9 @@
         "report-row:1.1",
         "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt",
         "https://www.nxp.com/docs/en/user-guide/UM10204.pdf"
+      ],
+      "zh_aliases": [
+        "內部整合電路匯流排"
       ]
     },
     {
@@ -50,6 +53,9 @@
       "sources": [
         "report-row:1.3",
         "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt"
+      ],
+      "zh_aliases": [
+        "金屬氧化物半導體場效電晶體"
       ]
     },
     {
@@ -128,6 +134,9 @@
       "sources": [
         "report-row:1.8",
         "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt"
+      ],
+      "zh_aliases": [
+        "運算放大器"
       ]
     },
     {
@@ -143,6 +152,9 @@
       "sources": [
         "report-row:1.9",
         "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt"
+      ],
+      "zh_aliases": [
+        "印刷電路板"
       ]
     },
     {
@@ -912,6 +924,9 @@
       "sources": [
         "report-row:5.1",
         "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt"
+      ],
+      "zh_aliases": [
+        "矽"
       ]
     },
     {
@@ -957,6 +972,9 @@
       "sources": [
         "report-row:5.4",
         "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt"
+      ],
+      "zh_aliases": [
+        "氮化鎵"
       ]
     },
     {
@@ -1157,6 +1175,9 @@
       "sources": [
         "report-row:5.17",
         "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt"
+      ],
+      "zh_aliases": [
+        "二氧化矽"
       ]
     },
     {
@@ -1523,6 +1544,9 @@
       "annotation": "水",
       "sources": [
         "user-request:2026-11-06:H2O"
+      ],
+      "zh_aliases": [
+        "水"
       ]
     },
     {
@@ -1539,6 +1563,9 @@
       "sources": [
         "report-row:5.40",
         "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt"
+      ],
+      "zh_aliases": [
+        "過氧化氫"
       ]
     },
     {

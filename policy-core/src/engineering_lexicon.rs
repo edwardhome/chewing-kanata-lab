@@ -4,10 +4,15 @@ use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TechnicalCandidate {
     pub text: String,
     pub annotation: Option<String>,
+}
+impl std::fmt::Debug for TechnicalCandidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TechnicalCandidate(<private>)")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -21,6 +26,8 @@ struct Term {
     id: String,
     category: String,
     aliases: Vec<String>,
+    #[serde(default)]
+    zh_aliases: Vec<String>,
     outputs: Vec<String>,
     annotation: String,
     sources: Vec<String>,
@@ -52,11 +59,21 @@ impl EngineeringLexicon {
             !t.id.is_empty() && ids.insert(&t.id) && !t.category.is_empty()
                 && !t.annotation.is_empty() && t.annotation.chars().count() <= 80
                 && safe_output(&t.annotation) && !t.sources.is_empty()
+                && crate::user_engineering::valid_zh_aliases(&t.zh_aliases)
                 && (1..=16).contains(&t.aliases.len()) && t.aliases.iter().all(|a| {
                     (2..=64).contains(&a.len()) && a.bytes().all(|b| (33..=126).contains(&b))
                 }) && (1..=8).contains(&t.outputs.len()) && t.outputs.iter().all(|s| safe_output(s))
         }) { return Self::default(); }
         Self { terms: catalog.terms }
+    }
+
+    /// Only explicitly supplied aliases match the entire uncommitted composition.
+    pub fn chinese_matches(&self, composition: &str) -> Vec<TechnicalCandidate> {
+        if composition.is_empty() || composition.encode_utf16().count() > 128 { return vec![]; }
+        self.terms.iter().filter(|term| term.zh_aliases.iter().any(|alias| alias == composition))
+            .flat_map(|term| term.outputs.iter().map(|output| TechnicalCandidate {
+                text: output.clone(), annotation: Some(term.annotation.clone()),
+            })).collect()
     }
 
     /// Exact matches precede prefixes; two-character aliases only match exactly.
@@ -125,4 +142,18 @@ mod tests {
         let value = base.replace("I²C", "I\\u202eC");
         assert!(EngineeringLexicon::from_json(&value).terms.is_empty());
     }
+    #[test]
+    fn bundled_annotations_are_not_implicit_chinese_aliases() {
+        assert!(EngineeringLexicon::bundled().chinese_matches("智慧型手機品牌").is_empty());
+        assert_eq!(EngineeringLexicon::bundled().chinese_matches("水")[0].text, "H₂O");
+        assert!(EngineeringLexicon::bundled().chinese_matches("水溶液").is_empty());
+        let mut catalog: serde_json::Value = serde_json::from_str(include_str!("../resources/engineering-terms.json")).unwrap();
+        catalog["terms"][0]["zh_aliases"] = serde_json::json!(["測試別名"]);
+        let lexicon = EngineeringLexicon::from_json(&catalog.to_string());
+        assert!(!lexicon.chinese_matches("測試別名").is_empty());
+        assert!(lexicon.chinese_matches("測試別名加長").is_empty());
+        catalog["terms"][0]["zh_aliases"] = serde_json::json!(["錯誤、別名"]);
+        assert!(EngineeringLexicon::from_json(&catalog.to_string()).terms.is_empty());
+    }
+
 }

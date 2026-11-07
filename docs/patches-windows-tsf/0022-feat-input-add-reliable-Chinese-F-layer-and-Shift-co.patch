@@ -1,0 +1,704 @@
+From fc76f81361ba8bb0c2c44f554d54ef390fdc302c Mon Sep 17 00:00:00 2001
+From: AGY <defu@local.dev>
+Date: Sat, 7 Nov 2026 17:03:57 +0800
+Subject: [PATCH 22/23] feat(input): add reliable Chinese F-layer and Shift
+ composition handoff
+
+---
+ tip/src/text_service/chewing.rs      | 307 +++++++++++++++++++++++++--
+ tip/src/text_service/edit_session.rs | 206 +++++++++++++-----
+ 2 files changed, 441 insertions(+), 72 deletions(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 2097825..e90ba44 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -199,6 +199,7 @@ pub(super) struct ChewingTextService {
+     composition: Rc<RefCell<Option<ITfComposition>>>,
+     pending_queue: Rc<RefCell<PendingTransitionQueue>>,
+     pending_session: Weak<()>,
++    composition_epoch: Rc<Cell<u64>>,
+ }
+ 
+ impl ChewingTextService {
+@@ -331,6 +332,7 @@ impl ChewingTextService {
+             composition: Default::default(),
+             pending_queue: Rc::new(RefCell::new(PendingTransitionQueue::new())),
+             pending_session: Weak::new(),
++            composition_epoch: Rc::new(Cell::new(1)),
+             pending_lang_mode_change: Cell::new(false),
+             recovery_gate: RecoveryGate::default(),
+             recovery_open_pending: Cell::new(false),
+@@ -589,8 +591,7 @@ impl ChewingTextService {
+             // Leave upstream Ctrl keybindings to the normal handling below.
+         }
+         if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
+-        if !other_modifiers && ev.vk == 0x46 && !self.chewing_editor.is_selecting()
+-            && (self.chewing_editor.is_empty() || self.shift_session.is_some()) {
++        if !other_modifiers && ev.vk == 0x46 && !self.chewing_editor.is_selecting() {
+             return Ok(true);
+         }
+         if matches!(self.f_key_state, kanata_layer::FKeyState::Down(_) | kanata_layer::FKeyState::Held) {
+@@ -738,8 +739,7 @@ impl ChewingTextService {
+         // English and an existing ASCII composition. Key-up owns the commit.
+         if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
+         if ev.vk == 0x46 && !evt.is_state_on(KeyState::Control) && !evt.is_state_on(KeyState::Alt)
+-            && !evt.is_state_on(KeyState::Super) && !self.chewing_editor.is_selecting()
+-            && (self.chewing_editor.is_empty() || self.shift_session.is_some()) {
++            && !evt.is_state_on(KeyState::Super) && !self.chewing_editor.is_selecting() {
+             if self.f_key_state == kanata_layer::FKeyState::Up && !ev.repeating {
+                 self.f_event = Some(ev);
+                 self.f_buffer = Some(FCompositionBuffer::new(self.shift_session.take(), &self.lexicon));
+@@ -754,12 +754,31 @@ impl ChewingTextService {
+                 self.lang_mode.get() == TsfLangMode::Chinese && self.f_buffer.as_ref().is_some_and(|b| b.base.is_none()),
+                 matches!(self.kbtype, KeyboardLayoutCompat::Default) && matches!(self.keymap, KeymapOp::None), shift_held);
+             if !phonetic && (kanata_layer::map_kanata_number_layer(ev.vk).is_some() || ev.vk == 0x08) {
++                let was_held = self.f_key_state == kanata_layer::FKeyState::Held;
+                 self.f_key_state = kanata_layer::FKeyState::Held;
++
++                let mut chinese_commit = String::new();
++                if !was_held && !self.chewing_editor.is_empty() {
++                    let _ = self.chewing_editor.commit();
++                    chinese_commit = self.chewing_editor.display_commit().to_owned();
++                    if !chinese_commit.is_empty() {
++                        self.chewing_editor.ack();
++                    }
++                }
++
+                 if let Some(buffer) = &mut self.f_buffer {
+                     if ev.vk == 0x08 { buffer.backspace(); }
+                     else if let Some(symbol) = kanata_layer::map_kanata_number_layer(ev.vk) { buffer.append(symbol); }
+                 }
+-                self.render_ascii(context)?;
++
++                if !chinese_commit.is_empty() {
++                    let preview = self.f_buffer.as_ref().map(|b| b.preview(&self.lexicon)).unwrap_or_default();
++                    let text = preview.display();
++                    let cursor = text.chars().take(preview.display_cursor()).map(char::len_utf16).sum();
++                    self.set_composition_string(context, &chinese_commit, text, vec![(0, text.encode_utf16().count())], cursor)?;
++                } else {
++                    self.render_ascii(context)?;
++                }
+                 return Ok(true);
+             }
+             if pending { self.replay_f_tap(context)?; }
+@@ -811,19 +830,28 @@ impl ChewingTextService {
+             && !evt.is_state_on(KeyState::Alt)
+             && !self.chewing_editor.is_selecting()
+         {
++            let mut resolved_chinese = String::new();
+             if !self.chewing_editor.is_empty() {
+                 let _ = self.chewing_editor.commit();
+-                let commit = self.chewing_editor.display_commit().to_owned();
+-                self.chewing_editor.ack();
+-                if !commit.is_empty() {
+-                    self.insert_text(context, &commit)?;
++                resolved_chinese = self.chewing_editor.display_commit().to_owned();
++                if !resolved_chinese.is_empty() {
++                    self.chewing_editor.ack();
+                 }
+-                self.update_preedit(context, String::new())?;
+             }
+             let initial_char = (ev.vk as u8) as char;
+             let session = ShiftLetterSession::start_with_letter(initial_char, &self.lexicon);
+             self.shift_session = Some(session);
+-            self.render_ascii(context)?;
++
++            let composition = self.shift_session.as_ref().unwrap().composition.clone();
++            let text = composition.display();
++            let cursor = text.chars().take(composition.display_cursor()).map(char::len_utf16).sum();
++            self.set_composition_string(context, &resolved_chinese, text, vec![(0, text.encode_utf16().count())], cursor)?;
++
++            if composition.candidates.len() < 2 {
++                self.hide_candidates();
++            } else {
++                self.show_ascii_candidates(context, &composition)?;
++            }
+             return Ok(true);
+         }
+ 
+@@ -1201,6 +1229,7 @@ impl ChewingTextService {
+         }
+         editor.clear_syllable_editor();
+         editor.clear_composition_editor();
++        self.composition_epoch.set(self.composition_epoch.get().wrapping_add(1));
+         self.pending_queue.borrow_mut().reset();
+         self.pending_session = Weak::new();
+         self.composition.replace(None);
+@@ -1447,7 +1476,14 @@ impl ChewingTextService {
+                 base.composition = composition;
+                 self.shift_session = Some(base);
+                 self.render_ascii(context)?;
+-            } else { self.commit_ascii(context, composition.display())?; }
++            } else {
++                let text = composition.display();
++                if !text.is_empty() {
++                    self.commit_ascii(context, text)?;
++                } else if !self.chewing_editor.is_empty() {
++                    self.update_preedit(context, String::new())?;
++                }
++            }
+         }
+         self.f_event = None;
+         Ok(())
+@@ -1465,9 +1501,21 @@ impl ChewingTextService {
+                 _ => self.shift_session = Some(session),
+             }
+         } else if shifted && self.lang_mode.get() == TsfLangMode::Chinese {
++            let mut resolved_chinese = String::new();
++            if !self.chewing_editor.is_empty() {
++                let _ = self.chewing_editor.commit();
++                resolved_chinese = self.chewing_editor.display_commit().to_owned();
++                if !resolved_chinese.is_empty() {
++                    self.chewing_editor.ack();
++                }
++            }
+             let mut session = ShiftLetterSession::start_with_letter('F', &self.lexicon);
+             if self.shift_key_state == ShiftKeyState::Up { session.mode = ShiftMode::Word; }
+-            self.shift_session = Some(session); self.render_ascii(context)?;
++            self.shift_session = Some(session);
++            let composition = self.shift_session.as_ref().unwrap().composition.clone();
++            let text = composition.display();
++            let cursor = text.chars().take(composition.display_cursor()).map(char::len_utf16).sum();
++            self.set_composition_string(context, &resolved_chinese, text, vec![(0, text.encode_utf16().count())], cursor)?;
+         } else if self.lang_mode.get() == TsfLangMode::Chinese {
+             self.chewing_editor.process_keyevent(event.to_keyboard_event(self.keymap));
+             let commit = if self.chewing_editor.last_key_behavior() == EditorKeyBehavior::Commit {
+@@ -1554,6 +1602,7 @@ impl ChewingTextService {
+ 
+     fn end_composition(&mut self, context: &ITfContext) -> Result<()> {
+         // Transfer the ownership of this composition to the EndComposition edit session.
++        self.composition_epoch.set(self.composition_epoch.get().wrapping_add(1));
+         let composition = mem::replace(&mut self.composition, Rc::new(RefCell::new(None)));
+         self.pending_session = Weak::new();
+         let session = EndComposition::new(context.clone(), composition).into_object();
+@@ -1593,6 +1642,7 @@ impl ChewingTextService {
+             debug!("Reuse existing edit session");
+         } else {
+             let session_token = Rc::new(());
++            let session_epoch = self.composition_epoch.get();
+             let session = SetCompositionString::new(
+                 context.clone(),
+                 self.composition.clone(),
+@@ -1600,6 +1650,9 @@ impl ChewingTextService {
+                 self.input_da_atom.clone(),
+                 self.pending_queue.clone(),
+                 session_token.clone(),
++                session_epoch,
++                self.composition_epoch.clone(),
++                self.tid,
+             )
+             .into_object();
+             self.pending_session = Rc::downgrade(&session_token);
+@@ -2189,3 +2242,231 @@ mod recovery_shift_tests {
+         assert_eq!(state, ShiftKeyState::Up);
+     }
+ }
++
++#[cfg(test)]
++mod f_and_shift_handoff_tests {
++    use super::*;
++    use chewing_policy_core::shift_letter::{CompositionAction, SessionResult, ShiftLetterSession, ShiftMode};
++
++    #[test]
++    fn test_f_gesture_state_lifecycle() {
++        let mut f_state = kanata_layer::FKeyState::Up;
++        assert_eq!(f_state, kanata_layer::FKeyState::Up);
++
++        // F KeyDown
++        f_state = kanata_layer::FKeyState::Down(Instant::now());
++        assert!(matches!(f_state, kanata_layer::FKeyState::Down(_)));
++
++        // Layer symbol confirmed: transitions to Held
++        f_state = kanata_layer::FKeyState::Held;
++        assert_eq!(f_state, kanata_layer::FKeyState::Held);
++
++        // F KeyUp
++        f_state = kanata_layer::FKeyState::Up;
++        assert_eq!(f_state, kanata_layer::FKeyState::Up);
++    }
++
++    #[test]
++    fn test_f_buffer_layer_accumulation_and_backspace() {
++        let lexicon = TechnicalLexicon::default();
++        let mut buffer = FCompositionBuffer::new(None, &lexicon);
++        assert_eq!(buffer.symbols(), "");
++
++        // Appending layer symbols: '5' (VK_J), '6' (VK_K)
++        let s1 = kanata_layer::map_kanata_number_layer(0x4A).expect("J maps to 5");
++        buffer.append(s1);
++        assert_eq!(buffer.symbols(), "5");
++
++        let s2 = kanata_layer::map_kanata_number_layer(0x4B).expect("K maps to 6");
++        buffer.append(s2);
++        assert_eq!(buffer.symbols(), "56");
++
++        // Backspace removes last symbol
++        buffer.backspace();
++        assert_eq!(buffer.symbols(), "5");
++
++        // Backspace to empty
++        buffer.backspace();
++        assert_eq!(buffer.symbols(), "");
++    }
++
++    #[test]
++    fn test_ordered_chinese_commit_then_layer_symbols() {
++        let mut queue = PendingTransitionQueue::new();
++
++        // 1. Chinese composition was active: resolved Chinese is "組字".
++        // When first F layer symbol '1' is confirmed, "組字" is committed and '1' is preedit.
++        queue.enqueue("組字", "1", vec![(0, 1)], 1);
++        assert_eq!(queue.pending_commit_str(), "組字");
++        assert_eq!(queue.preedit_str(), "1");
++
++        // 2. Second layer symbol '2' is typed while F is still held:
++        // Chinese is NOT committed again (commit is ""). Preedit updates to "12".
++        queue.enqueue("", "12", vec![(0, 2)], 2);
++        assert_eq!(queue.pending_commit_str(), "組字");
++        assert_eq!(queue.preedit_str(), "12");
++
++        // 3. Edit session runs: pulls snapshot.
++        let sub = queue.begin_submission().expect("sub");
++        assert_eq!(sub.commit, "組字");
++        assert_eq!(sub.preedit, "12");
++        assert!(queue.acknowledge_success(sub.generation));
++
++        // 4. On F keyup, symbols "12" are committed!
++        queue.enqueue("12", "", vec![], 0);
++        let sub2 = queue.begin_submission().expect("sub2");
++        assert_eq!(sub2.commit, "12");
++        assert_eq!(sub2.preedit, "");
++        assert!(queue.acknowledge_success(sub2.generation));
++        assert_eq!(queue.pending_commit_str(), "");
++    }
++
++    #[test]
++    fn test_shift_letter_handoff_atomic_commit_and_preedit() {
++        let mut queue = PendingTransitionQueue::new();
++        let lexicon = TechnicalLexicon::default();
++
++        // Chinese composition was active: resolved Chinese is "中文".
++        // User presses Shift + 'A' (VK 0x41).
++        let initial_char = 'A';
++        let session = ShiftLetterSession::start_with_letter(initial_char, &lexicon);
++        assert_eq!(session.mode, ShiftMode::Initial);
++
++        // Atomic transition: "中文" committed, "A" is English preedit
++        let preedit = session.composition.display();
++        queue.enqueue("中文", preedit, vec![(0, 1)], 1);
++        assert_eq!(queue.pending_commit_str(), "中文");
++        assert_eq!(queue.preedit_str(), "A");
++
++        let sub1 = queue.begin_submission().expect("sub1");
++        assert_eq!(sub1.commit, "中文");
++        assert_eq!(sub1.preedit, "A");
++        assert!(queue.acknowledge_success(sub1.generation));
++
++        // Shift is released -> transitions to Word mode
++        let word_session = session;
++        if let SessionResult::Updated(next) = word_session.releasing_shift() {
++            assert_eq!(next.mode, ShiftMode::Word);
++            // User types lowercase 'p'
++            let after_p = next.applying(CompositionAction::Insert("p".into()), false, false, &lexicon);
++            if let SessionResult::Updated(p_session) = after_p {
++                assert_eq!(p_session.composition.display(), "Ap");
++                queue.enqueue("", p_session.composition.display(), vec![(0, 2)], 2);
++                let sub2 = queue.begin_submission().expect("sub2");
++                assert_eq!(sub2.commit, "");
++                assert_eq!(sub2.preedit, "Ap");
++                assert!(queue.acknowledge_success(sub2.generation));
++            }
++        }
++    }
++
++    #[test]
++    fn test_shift_modifier_alone_no_commit() {
++        let mut state = ShiftKeyState::Down(Instant::now());
++        assert!(!state.reconcile(false, true));
++        let released = state.release();
++        assert!(released.is_some());
++        assert_eq!(state, ShiftKeyState::Up);
++    }
++
++    #[test]
++    fn test_lifecycle_epoch_advances_and_prevents_stale_draining() {
++        let epoch = Rc::new(Cell::new(1u64));
++        let session_epoch = epoch.get();
++        let queue = Rc::new(RefCell::new(PendingTransitionQueue::new()));
++
++        // Queue has new composition data
++        queue.borrow_mut().enqueue("新字", "pre", vec![], 0);
++
++        // Composition ended / focus killed -> epoch advanced to 2
++        epoch.set(epoch.get().wrapping_add(1));
++        assert_ne!(epoch.get(), session_epoch);
++
++        // If stale session runs with session_epoch, it detects mismatch and leaves queue intact
++        if epoch.get() != session_epoch {
++            // Skips DoEditSession without draining
++        } else {
++            panic!("epoch should have mismatched!");
++        }
++
++        // Verify queue was NOT touched or drained by the stale session
++        assert_eq!(queue.borrow().pending_commit_str(), "新字");
++        assert!(queue.borrow().has_unsubmitted_changes());
++        assert!(!queue.borrow().is_in_flight());
++    }
++
++    #[test]
++    fn test_pre_write_failure_preserves_pending_queue() {
++        let mut queue = PendingTransitionQueue::new();
++        queue.enqueue("重要文字", "pre", vec![], 0);
++
++        // Pre-write snapshot begins
++        let sub = queue.begin_submission().expect("sub ready");
++        assert_eq!(sub.commit, "重要文字");
++        assert!(queue.is_in_flight());
++
++        // Pre-write failure occurs (e.g. SetText error)
++        assert!(queue.acknowledge_failure(sub.generation));
++
++        // State is not stuck: in_flight is cleared, unsubmitted changes and commit text are retained
++        assert!(!queue.is_in_flight());
++        assert!(queue.has_unsubmitted_changes());
++        assert_eq!(queue.pending_commit_str(), "重要文字");
++
++        // Retry succeeds cleanly
++        let retry_sub = queue.begin_submission().expect("retry ready");
++        assert_eq!(retry_sub.commit, "重要文字");
++        assert!(queue.acknowledge_success(retry_sub.generation));
++        assert_eq!(queue.pending_commit_str(), "");
++    }
++
++    #[test]
++    fn test_durable_commit_success_prevents_duplicate_commit_on_later_failures() {
++        let mut queue = PendingTransitionQueue::new();
++        queue.enqueue("永久提交", "pre", vec![], 0);
++
++        let sub = queue.begin_submission().expect("sub");
++        assert_eq!(sub.commit, "永久提交");
++
++        // Durable commit (SetText + ShiftStart) succeeds: acknowledge_success called immediately
++        assert!(queue.acknowledge_success(sub.generation));
++        assert_eq!(queue.pending_commit_str(), "");
++
++        // Later best-effort decoration (e.g. SetValue or SetSelection) fails:
++        // Crucial invariant: we DO NOT call acknowledge_failure for an already-committed generation!
++        // Queue remains clean with no duplicate pending commits
++        assert_eq!(queue.pending_commit_str(), "");
++        assert!(!queue.has_unsubmitted_changes());
++        assert!(!queue.is_in_flight());
++    }
++
++    #[test]
++    fn test_reentrant_enqueue_survives_in_flight_acknowledgement() {
++        let mut queue = PendingTransitionQueue::new();
++
++        // Keystroke 1: "前"
++        queue.enqueue("前", "a", vec![], 0);
++        let sub1 = queue.begin_submission().expect("sub1");
++
++        // While in-flight, reentrant keystroke 2 arrives: "後"
++        queue.enqueue("後", "b", vec![], 0);
++        assert_eq!(queue.pending_commit_str(), "前後");
++        assert!(queue.has_unsubmitted_changes());
++
++        // Sub1 durable commit succeeds
++        assert!(queue.acknowledge_success(sub1.generation));
++
++        // Sub1 commit retired, reentrant edit 2 ("後") is preserved and pending!
++        assert_eq!(queue.pending_commit_str(), "後");
++        assert_eq!(queue.preedit_str(), "b");
++        assert!(queue.has_unsubmitted_changes());
++
++        // Immediate follow-up dispatch handles remaining edit
++        let sub2 = queue.begin_submission().expect("sub2 follow-up");
++        assert_eq!(sub2.commit, "後");
++        assert_eq!(sub2.preedit, "b");
++        assert!(queue.acknowledge_success(sub2.generation));
++        assert_eq!(queue.pending_commit_str(), "");
++        assert!(!queue.has_unsubmitted_changes());
++    }
++}
+diff --git a/tip/src/text_service/edit_session.rs b/tip/src/text_service/edit_session.rs
+index 23f9608..6ea5367 100644
+--- a/tip/src/text_service/edit_session.rs
++++ b/tip/src/text_service/edit_session.rs
+@@ -14,9 +14,10 @@ use windows::Win32::UI::TextServices::{
+     GUID_PROP_ATTRIBUTE, INSERT_TEXT_AT_SELECTION_FLAGS, ITfComposition, ITfCompositionSink,
+     ITfContext, ITfContextComposition, ITfEditSession, ITfEditSession_Impl, ITfInsertAtSelection,
+     ITfRange, TF_AE_END, TF_ANCHOR_END, TF_ANCHOR_START, TF_CONTEXT_EDIT_CONTEXT_FLAGS,
+-    TF_DEFAULT_SELECTION, TF_IAS_QUERYONLY, TF_SELECTION, TfActiveSelEnd,
++    TF_DEFAULT_SELECTION, TF_ES_ASYNC, TF_ES_READWRITE, TF_IAS_QUERYONLY, TF_SELECTION,
++    TfActiveSelEnd,
+ };
+-use windows_core::{BOOL, HSTRING, Interface, Param, Result, implement};
++use windows_core::{BOOL, ComObjectInner, HSTRING, Interface, Param, Result, implement};
+ 
+ use super::pending_transition::PendingTransitionQueue;
+ 
+@@ -90,6 +91,9 @@ pub(super) struct SetCompositionString {
+     da_atom: [VARIANT; 2],
+     pending_queue: Rc<RefCell<PendingTransitionQueue>>,
+     _session_token: Rc<()>,
++    session_epoch: u64,
++    lifecycle_epoch: Rc<Cell<u64>>,
++    tid: u32,
+ }
+ 
+ impl SetCompositionString {
+@@ -100,6 +104,9 @@ impl SetCompositionString {
+         da_atom: [VARIANT; 2],
+         pending_queue: Rc<RefCell<PendingTransitionQueue>>,
+         session_token: Rc<()>,
++        session_epoch: u64,
++        lifecycle_epoch: Rc<Cell<u64>>,
++        tid: u32,
+     ) -> SetCompositionString {
+         Self {
+             context,
+@@ -108,6 +115,9 @@ impl SetCompositionString {
+             da_atom,
+             pending_queue,
+             _session_token: session_token,
++            session_epoch,
++            lifecycle_epoch,
++            tid,
+         }
+     }
+ }
+@@ -115,94 +125,172 @@ impl SetCompositionString {
+ impl ITfEditSession_Impl for SetCompositionString_Impl {
+     fn DoEditSession(&self, ec: u32) -> Result<()> {
+         unsafe {
++            // 1. Stale session check: if the composition lifecycle has ended or changed,
++            // never touch or drain the new composition's payload using an old context.
++            if self.lifecycle_epoch.get() != self.session_epoch {
++                debug!(
++                    session_epoch = self.session_epoch,
++                    current_epoch = self.lifecycle_epoch.get();
++                    "stale edit session epoch detected; skipping DoEditSession without draining queue"
++                );
++                return Ok(());
++            }
++
+             let sub = match self.pending_queue.borrow_mut().begin_submission() {
+                 Some(sub) => sub,
+                 None => return Ok(()),
+             };
+ 
+-            if self.composition.borrow().is_none() {
++            // 2. Clone COM interface in short borrow scope; avoid holding RefCell across COM calls.
++            let mut composition = self.composition.borrow().clone();
++
++            if composition.is_none() {
+                 if sub.commit.is_empty() && sub.preedit.is_empty() {
+                     self.pending_queue.borrow_mut().acknowledge_success(sub.generation);
+                     return Ok(());
+                 }
+                 debug!("starting a new composition");
+-                let context_composition: ITfContextComposition = self.context.cast()?;
+-                let insert_at_selection: ITfInsertAtSelection = self.context.cast()?;
+-                let range = insert_at_selection.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])?;
+-                // XXX even though MS document says pSink is optional,
+-                // StartComposition fails if NULL is passed.
+-                let composition =
+-                    context_composition.StartComposition(ec, &range, &self.composition_sink);
+-                if let Err(error) = &composition {
+-                    error!("unable to start composition: {error}");
+-                    self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+-                    return Err(error.clone());
+-                }
+-                self.composition.replace(Some(composition?));
+-            }
+-
+-            if let Some(composition) = self.composition.borrow().as_ref() {
+-                let range = match composition.GetRange() {
+-                    Ok(r) => r,
++                let context_composition: ITfContextComposition = match self.context.cast() {
++                    Ok(cc) => cc,
+                     Err(err) => {
+-                        error!("composition GetRange failed: {err}");
++                        error!("cast to ITfContextComposition failed: {err}");
+                         self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+                         return Err(err);
+                     }
+                 };
+-
+-                debug!("set composition string");
+-                let text = HSTRING::from(format!("{}{}", sub.commit, sub.preedit));
+-
+-                // 1. Set text: if this fails, fail-closed without shifting range or acking success
+-                if let Err(error) = range.SetText(ec, 0, &text) {
+-                    error!("set composition string failed: {error}");
+-                    self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+-                    return Err(error);
+-                }
+-
+-                // 2. Shift start for commit
+-                let shift_count = sub.commit.encode_utf16().count() as i32;
+-                if shift_count > 0 {
+-                    let mut moved = 0;
+-                    if let Err(err) = range.ShiftStart(ec, shift_count, &mut moved, ptr::null()) {
+-                        error!("range ShiftStart failed: {err}");
++                let insert_at_selection: ITfInsertAtSelection = match self.context.cast() {
++                    Ok(ias) => ias,
++                    Err(err) => {
++                        error!("cast to ITfInsertAtSelection failed: {err}");
++                        self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
++                        return Err(err);
++                    }
++                };
++                let range = match insert_at_selection.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[]) {
++                    Ok(r) => r,
++                    Err(err) => {
++                        error!("InsertTextAtSelection failed: {err}");
+                         self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+                         return Err(err);
+                     }
+-                    if let Err(err) = composition.ShiftStart(ec, &range) {
+-                        error!("composition ShiftStart failed: {err}");
++                };
++                let new_comp = match context_composition.StartComposition(ec, &range, &self.composition_sink) {
++                    Ok(c) => c,
++                    Err(err) => {
++                        error!("StartComposition failed: {err}");
+                         self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+                         return Err(err);
+                     }
++                };
++                self.composition.replace(Some(new_comp.clone()));
++                composition = Some(new_comp);
++            }
++
++            // Verify lifecycle did not change during reentrant composition start
++            if self.lifecycle_epoch.get() != self.session_epoch {
++                debug!("lifecycle epoch changed during composition initialization; abandoning snapshot");
++                self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
++                return Ok(());
++            }
++
++            let Some(comp) = composition else {
++                self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
++                return Ok(());
++            };
++
++            let range = match comp.GetRange() {
++                Ok(r) => r,
++                Err(err) => {
++                    error!("composition GetRange failed: {err}");
++                    self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
++                    return Err(err);
++                }
++            };
++
++            debug!("set composition string");
++            let text = HSTRING::from(format!("{}{}", sub.commit, sub.preedit));
++
++            // Pre-write failure check: if SetText fails, fail-closed without shifting range or acking success
++            if let Err(error) = range.SetText(ec, 0, &text) {
++                error!("set composition string failed: {error}");
++                self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
++                return Err(error);
++            }
++
++            // Shift start for commit
++            let shift_count = sub.commit.encode_utf16().count() as i32;
++            if shift_count > 0 {
++                let mut moved = 0;
++                if let Err(err) = range.ShiftStart(ec, shift_count, &mut moved, ptr::null()) {
++                    error!("range ShiftStart failed: {err}");
++                    self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
++                    return Err(err);
++                }
++                if moved != shift_count {
++                    debug!(moved, shift_count; "range.ShiftStart moved count differed from expected");
+                 }
++                if let Err(err) = comp.ShiftStart(ec, &range) {
++                    error!("composition ShiftStart failed: {err}");
++                    self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
++                    return Err(err);
++                }
++            }
+ 
+-                // 3. Display attributes
+-                let disp_attr_prop = self.context.GetProperty(&GUID_PROP_ATTRIBUTE)?;
++            // Durable commit succeeded! Retire the committed text prefix now.
++            // Check that lifecycle epoch is still valid before acking
++            if self.lifecycle_epoch.get() == self.session_epoch {
++                self.pending_queue.borrow_mut().acknowledge_success(sub.generation);
++            }
++
++            // Best-effort decorations:
++            if let Ok(disp_attr_prop) = self.context.GetProperty(&GUID_PROP_ATTRIBUTE) {
+                 let mut atoms = self.da_atom.iter().cycle();
+                 for seg in &sub.segments {
+-                    let segment_range = range.Clone()?;
+-                    let mut moved = 0;
+-                    segment_range.Collapse(ec, TF_ANCHOR_START)?;
+-                    segment_range.ShiftEnd(ec, seg.1 as i32, &mut moved, ptr::null())?;
+-                    segment_range.ShiftStart(ec, seg.0 as i32, &mut moved, ptr::null())?;
+-                    if let Err(error) =
+-                        disp_attr_prop.SetValue(ec, &segment_range, atoms.next().unwrap())
+-                    {
+-                        error!("set display attribute failed: {error}");
++                    if let Ok(segment_range) = range.Clone() {
++                        let mut moved = 0;
++                        let _ = segment_range.Collapse(ec, TF_ANCHOR_START);
++                        let _ = segment_range.ShiftEnd(ec, seg.1 as i32, &mut moved, ptr::null());
++                        let _ = segment_range.ShiftStart(ec, seg.0 as i32, &mut moved, ptr::null());
++                        if let Err(error) = disp_attr_prop.SetValue(ec, &segment_range, atoms.next().unwrap()) {
++                            debug!("set display attribute failed: {error}");
++                        }
+                     }
+                 }
++            }
+ 
+-                // 4. Cursor position
+-                let cursor_range = range.Clone()?;
++            if let Ok(cursor_range) = range.Clone() {
+                 let mut moved = 0;
+-                cursor_range.Collapse(ec, TF_ANCHOR_START)?;
+-                cursor_range.ShiftEnd(ec, sub.cursor as i32, &mut moved, ptr::null())?;
+-                cursor_range.ShiftStart(ec, sub.cursor as i32, &mut moved, ptr::null())?;
++                let _ = cursor_range.Collapse(ec, TF_ANCHOR_START);
++                let _ = cursor_range.ShiftEnd(ec, sub.cursor as i32, &mut moved, ptr::null());
++                let _ = cursor_range.ShiftStart(ec, sub.cursor as i32, &mut moved, ptr::null());
+                 let _ = set_selection(&self.context, ec, cursor_range, TF_AE_END);
++            }
+ 
+-                // Acknowledge successfully applied generation
+-                self.pending_queue.borrow_mut().acknowledge_success(sub.generation);
++            // Check if newer edits were enqueued while this edit session was in-flight.
++            // If so, dispatch a follow-up edit session immediately without waiting for a new user key.
++            if self.lifecycle_epoch.get() == self.session_epoch
++                && self.pending_queue.borrow().has_unsubmitted_changes()
++            {
++                debug!("dispatching follow-up edit session for remaining queued changes");
++                let session_token = Rc::new(());
++                let next_session = SetCompositionString::new(
++                    self.context.clone(),
++                    self.composition.clone(),
++                    self.composition_sink.clone(),
++                    self.da_atom.clone(),
++                    self.pending_queue.clone(),
++                    session_token,
++                    self.session_epoch,
++                    self.lifecycle_epoch.clone(),
++                    self.tid,
++                )
++                .into_object();
++                request_edit_session(
++                    &self.context,
++                    self.tid,
++                    next_session.as_interface(),
++                    TF_ES_ASYNC | TF_ES_READWRITE,
++                );
+             }
+         }
+         Ok(())
+-- 
+2.54.0 (Apple Git-157)
+

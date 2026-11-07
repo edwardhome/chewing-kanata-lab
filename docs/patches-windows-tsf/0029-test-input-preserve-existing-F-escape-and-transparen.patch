@@ -1,0 +1,27 @@
+From 32793133aaa10752da17eabde617f0da9a42f4c8 Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Sat, 7 Nov 2026 17:41:09 +0800
+Subject: [PATCH] test(input): preserve existing F escape and transparent
+ mappings
+
+---
+ tip/src/text_service/chewing.rs | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index abecbce..2528dbc 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -2558,7 +2558,8 @@ mod f_and_shift_handoff_tests {
+         assert!(can_handle_f_layer(&editor, 0x4A, false));
+         assert!(!can_handle_f_layer(&editor, 0x08, false));
+         assert!(can_handle_f_layer(&editor, 0x08, true));
+-        assert!(!can_handle_f_layer(&editor, 0x1B, true));
++        assert!(can_handle_f_layer(&editor, 0x1B, true)); // F+Esc is the existing backtick mapping.
++        assert!(!can_handle_f_layer(&editor, 0x54, true)); // T remains transparent.
+         assert!(editor.is_empty());
+     }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

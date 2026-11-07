@@ -1,0 +1,329 @@
+From effc4319e19acd8c7f0d6886481ded10c8712ba8 Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Sat, 7 Nov 2026 17:40:12 +0800
+Subject: [PATCH 28/28] fix(input): share production handoff guards and retain
+ rejected keys
+
+---
+ tip/src/text_service/chewing.rs | 254 ++++++--------------------------
+ 1 file changed, 48 insertions(+), 206 deletions(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index cf8bda0..abecbce 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -626,8 +626,7 @@ impl ChewingTextService {
+             && (0x41..=0x5A).contains(&ev.vk)
+             && !evt.is_state_on(KeyState::Control)
+             && !evt.is_state_on(KeyState::Alt)
+-            && !self.chewing_editor.is_selecting()
+-            && !self.chewing_editor.entering_syllable()
++            && can_handoff_to_ascii(&self.chewing_editor)
+         {
+             return Ok(true);
+         }
+@@ -767,28 +766,12 @@ impl ChewingTextService {
+             let phonetic = kanata_layer::prefers_phonetic_f_chord(ev.vk, pending,
+                 self.lang_mode.get() == TsfLangMode::Chinese && self.f_buffer.as_ref().is_some_and(|b| b.base.is_none()),
+                 matches!(self.kbtype, KeyboardLayoutCompat::Default) && matches!(self.keymap, KeymapOp::None), shift_held);
+-            if !phonetic && (kanata_layer::map_kanata_number_layer(ev.vk).is_some() || ev.vk == 0x08) {
+-                // If the Chinese editor is currently entering an incomplete syllable,
+-                // do not mutate or swallow it: refuse F-layer handoff and let IME handle it.
+-                if self.chewing_editor.entering_syllable() {
+-                    if pending { self.replay_f_tap(context)?; }
+-                    else { self.finish_f_buffer(context)?; }
+-                    self.f_key_state = kanata_layer::FKeyState::Cancelled;
+-                    return Ok(false);
+-                }
+-
++            let has_symbols = self.f_buffer.as_ref().is_some_and(|b| !b.symbols().is_empty());
++            if !phonetic && can_handle_f_layer(&self.chewing_editor, ev.vk, has_symbols) {
+                 let was_held = self.f_key_state == kanata_layer::FKeyState::Held;
+                 let is_backspace = ev.vk == 0x08;
+                 let mapped_symbol = kanata_layer::map_kanata_number_layer(ev.vk);
+ 
+-                // Backspace on empty layer must not confirm Chinese or enter Held
+-                let has_existing_symbols = self.f_buffer.as_ref().is_some_and(|b| !b.symbols().is_empty());
+-                if is_backspace && !has_existing_symbols {
+-                    // Canceled/empty backspace gesture: cancel F state without committing Chinese
+-                    self.f_key_state = kanata_layer::FKeyState::Cancelled;
+-                    return Ok(false);
+-                }
+-
+                 self.f_key_state = kanata_layer::FKeyState::Held;
+ 
+                 let mut chinese_commit = String::new();
+@@ -815,6 +798,8 @@ impl ChewingTextService {
+                 }
+                 return Ok(true);
+             }
++            // Refusing a layer handoff does not forward the current key to the
++            // host. Resolve the deferred F, then continue through normal input.
+             if pending { self.replay_f_tap(context)?; }
+             else { self.finish_f_buffer(context)?; }
+             self.f_key_state = kanata_layer::FKeyState::Cancelled;
+@@ -862,8 +847,7 @@ impl ChewingTextService {
+             && (0x41..=0x5A).contains(&ev.vk)
+             && !evt.is_state_on(KeyState::Control)
+             && !evt.is_state_on(KeyState::Alt)
+-            && !self.chewing_editor.is_selecting()
+-            && !self.chewing_editor.entering_syllable()
++            && can_handoff_to_ascii(&self.chewing_editor)
+         {
+             let mut resolved_chinese = String::new();
+             if !self.chewing_editor.is_empty() {
+@@ -1520,8 +1504,8 @@ impl ChewingTextService {
+                 _ => self.shift_session = Some(session),
+             }
+         } else if shifted && self.lang_mode.get() == TsfLangMode::Chinese {
+-            // Guard unfinished syllable before Short Shift+F handoff
+-            if self.chewing_editor.entering_syllable() {
++            // Keep unfinished syllables and selection in the native engine.
++            if !can_handoff_to_ascii(&self.chewing_editor) {
+                 self.chewing_editor.process_keyevent(event.to_keyboard_event(self.keymap));
+                 let commit = if self.chewing_editor.last_key_behavior() == EditorKeyBehavior::Commit {
+                     let text = self.chewing_editor.display_commit().to_owned(); self.chewing_editor.ack(); text
+@@ -2346,92 +2330,16 @@ impl<'a> ReentrantOps<'a> {
+     }
+ }
+ 
+-#[derive(Debug, Clone, PartialEq, Eq)]
+-pub(super) enum HandoffDecision {
+-    Refuse,
+-    Accept { commit: String, preedit: String },
+-}
+-
+-pub(super) fn evaluate_f_layer_handoff(
+-    editor: &mut Editor,
+-    vk: u16,
+-    existing_f_buffer: Option<&FCompositionBuffer>,
+-    was_held: bool,
+-) -> HandoffDecision {
+-    if editor.entering_syllable() {
+-        return HandoffDecision::Refuse;
+-    }
+-    let is_backspace = vk == 0x08;
+-    let mapped_symbol = kanata_layer::map_kanata_number_layer(vk);
+-    let has_existing = existing_f_buffer.is_some_and(|b| !b.symbols().is_empty());
+-    if is_backspace && !has_existing {
+-        return HandoffDecision::Refuse;
+-    }
+-
+-    let mut commit = String::new();
+-    if !was_held && !editor.is_empty() {
+-        if editor.commit().is_ok() {
+-            commit = editor.display_commit().to_owned();
+-            if !commit.is_empty() {
+-                editor.ack();
+-            }
+-        }
+-    }
+-    let preedit = mapped_symbol.unwrap_or("").to_string();
+-    HandoffDecision::Accept { commit, preedit }
+-}
+-
+-pub(super) fn evaluate_shift_letter_handoff(
+-    editor: &mut Editor,
+-    letter: char,
+-    _shift_released: bool,
+-    lexicon: &TechnicalLexicon,
+-) -> HandoffDecision {
+-    if editor.entering_syllable() {
+-        return HandoffDecision::Refuse;
+-    }
+-    let mut commit = String::new();
+-    if !editor.is_empty() {
+-        if editor.commit().is_ok() {
+-            commit = editor.display_commit().to_owned();
+-            if !commit.is_empty() {
+-                editor.ack();
+-            }
+-        }
+-    }
+-    let session = ShiftLetterSession::start_with_letter(letter, lexicon);
+-    let preedit = session.composition.display().to_string();
+-    HandoffDecision::Accept { commit, preedit }
++// Handoff only resolved text; an unfinished syllable remains owned by the engine.
++// These guards are shared by interception, execution, and real-Editor tests.
++fn can_handoff_to_ascii(editor: &Editor) -> bool {
++    !editor.entering_syllable() && !editor.is_selecting()
+ }
+ 
+-pub(super) fn evaluate_replay_f_tap(
+-    editor: &mut Editor,
+-    shifted: bool,
+-    shift_released: bool,
+-    lexicon: &TechnicalLexicon,
+-) -> HandoffDecision {
+-    if shifted {
+-        if editor.entering_syllable() {
+-            return HandoffDecision::Refuse;
+-        }
+-        let mut commit = String::new();
+-        if !editor.is_empty() {
+-            if editor.commit().is_ok() {
+-                commit = editor.display_commit().to_owned();
+-                if !commit.is_empty() {
+-                    editor.ack();
+-                }
+-            }
+-        }
+-        let mut session = ShiftLetterSession::start_with_letter('F', lexicon);
+-        if shift_released {
+-            session.mode = ShiftMode::Word;
+-        }
+-        let preedit = session.composition.display().to_string();
+-        HandoffDecision::Accept { commit, preedit }
+-    } else {
+-        HandoffDecision::Refuse
+-    }
++fn can_handle_f_layer(editor: &Editor, vk: u16, has_symbols: bool) -> bool {
++    can_handoff_to_ascii(editor)
++        && (kanata_layer::map_kanata_number_layer(vk).is_some()
++            || (vk == 0x08 && has_symbols))
+ }
+ 
+ fn syl_editor_from_kbtype(kbtype: KeyboardLayoutCompat) -> Box<dyn SyllableEditor> {
+@@ -2617,107 +2525,41 @@ mod f_and_shift_handoff_tests {
+     }
+ 
+     #[test]
+-    fn test_production_handoff_with_real_editor_states() {
+-        let lexicon = TechnicalLexicon::default();
+-
+-        // Case 1: Incomplete syllable active (user typed 'h' -> 'ㄘ')
+-        // In this state, editor.entering_syllable() is true!
+-        let mut editor_incomplete = Editor::fallback();
+-        let ev_h = KeyboardEvent {
++    fn production_guards_preserve_real_editor_syllable() {
++        let mut editor = Editor::fallback();
++        editor.process_keyevent(KeyboardEvent {
+             code: chewing::input::keycode::KEY_H,
+             ksym: chewing::input::keysym::SYM_LOWER_H,
+             state: 0,
+-        };
+-        editor_incomplete.process_keyevent(ev_h);
+-        assert!(editor_incomplete.entering_syllable(), "entering_syllable must be true after typing 'h'");
+-        assert_eq!(editor_incomplete.syllable_buffer_display(), "ㄘ");
+-
+-        // Production helper refuses transition:
+-        let refused_f = evaluate_f_layer_handoff(
+-            &mut editor_incomplete,
+-            0x4A, // VK_J ('5')
+-            None,
+-            false,
+-        );
+-        assert_eq!(refused_f, HandoffDecision::Refuse, "F handoff MUST be refused when incomplete syllable is active");
+-        // Verify syllable buffer was NOT swallowed
+-        assert_eq!(editor_incomplete.syllable_buffer_display(), "ㄘ");
+-
+-        let refused_shift = evaluate_shift_letter_handoff(
+-            &mut editor_incomplete,
+-            'A',
+-            false,
+-            &lexicon,
+-        );
+-        assert_eq!(refused_shift, HandoffDecision::Refuse, "Shift handoff MUST be refused when incomplete syllable is active");
+-        assert_eq!(editor_incomplete.syllable_buffer_display(), "ㄘ");
+-
+-        // Case 2: Resolved Chinese phrase (clean editor or committed phrase)
+-        // With an empty or fully resolved editor, entering_syllable() is false.
+-        let mut editor_resolved = Editor::fallback();
+-        assert!(!editor_resolved.entering_syllable());
+-
+-        let accepted_f = evaluate_f_layer_handoff(
+-            &mut editor_resolved,
+-            0x4A, // VK_J ('5')
+-            None,
+-            false,
+-        );
+-        let HandoffDecision::Accept { commit, preedit } = accepted_f else {
+-            panic!("expected Accept for valid F symbol on resolved editor, got {accepted_f:?}");
+-        };
+-        assert_eq!(commit, "");
+-        assert_eq!(preedit, "5");
+-
+-        // Case 3: Empty F + Backspace produces NO symbol and MUST NOT confirm Chinese
+-        let mut editor_for_bs = Editor::fallback();
+-        let empty_f_bs = evaluate_f_layer_handoff(
+-            &mut editor_for_bs,
+-            0x08, // Backspace
+-            None, // empty buffer
+-            false,
+-        );
+-        assert_eq!(empty_f_bs, HandoffDecision::Refuse, "F+Backspace on empty layer MUST be refused and not commit Chinese");
+-
+-        // Case 4: Shift letter produces valid English session without silent if-let
+-        let mut editor_shift = Editor::fallback();
+-        let accepted_shift = evaluate_shift_letter_handoff(
+-            &mut editor_shift,
+-            'A',
+-            false,
+-            &lexicon,
+-        );
+-        let HandoffDecision::Accept { commit: s_commit, preedit: s_preedit } = accepted_shift else {
+-            panic!("expected Accept for Shift+'A', got {accepted_shift:?}");
+-        };
+-        assert_eq!(s_commit, "");
+-        assert_eq!(s_preedit, "A");
+-
+-        // Case 5: Short Shift+F handoff when resolved
+-        let accepted_shift_f = evaluate_replay_f_tap(
+-            &mut editor_shift,
+-            true, // shifted
+-            false, // shift_released
+-            &lexicon,
+-        );
+-        let HandoffDecision::Accept { commit: f_commit, preedit: f_preedit } = accepted_shift_f else {
+-            panic!("expected Accept for Short Shift+F, got {accepted_shift_f:?}");
+-        };
+-        assert_eq!(f_commit, "");
+-        assert_eq!(f_preedit, "F");
+-
+-        // Case 6: Short Shift+F handoff when incomplete syllable is active -> MUST refuse
+-        let mut editor_f_incomplete = Editor::fallback();
+-        editor_f_incomplete.process_keyevent(ev_h);
+-        assert!(editor_f_incomplete.entering_syllable());
+-        let refused_shift_f = evaluate_replay_f_tap(
+-            &mut editor_f_incomplete,
+-            true,
+-            false,
+-            &lexicon,
+-        );
+-        assert_eq!(refused_shift_f, HandoffDecision::Refuse, "Short Shift+F MUST refuse handoff when incomplete syllable is active");
+-        assert_eq!(editor_f_incomplete.syllable_buffer_display(), "ㄘ");
++        });
++        assert!(editor.entering_syllable());
++        assert_eq!(editor.syllable_buffer_display(), "ㄘ");
++        // All production Shift paths share this guard, including short Shift+F.
++        assert!(!can_handoff_to_ascii(&editor));
++        assert!(!can_handle_f_layer(&editor, 0x4A, false));
++        assert!(!can_handle_f_layer(&editor, 0x08, true));
++        assert_eq!(editor.syllable_buffer_display(), "ㄘ");
++
++        // A rejected layer key must still reach the engine. Backspace removes
++        // the unfinished syllable instead of deleting host document text.
++        editor.process_keyevent(KeyboardEvent {
++            code: chewing::input::keycode::KEY_BACKSPACE,
++            ksym: chewing::input::keysym::SYM_BACKSPACE,
++            state: 0,
++        });
++        assert_eq!(editor.syllable_buffer_display(), "");
++        assert!(can_handoff_to_ascii(&editor));
++    }
++
++    #[test]
++    fn production_f_guard_requires_a_symbol_or_existing_layer_text() {
++        let editor = Editor::fallback();
++        assert!(can_handoff_to_ascii(&editor));
++        assert!(can_handle_f_layer(&editor, 0x4A, false));
++        assert!(!can_handle_f_layer(&editor, 0x08, false));
++        assert!(can_handle_f_layer(&editor, 0x08, true));
++        assert!(!can_handle_f_layer(&editor, 0x1B, true));
++        assert!(editor.is_empty());
+     }
+ 
+     #[test]
+-- 
+2.54.0 (Apple Git-157)
+

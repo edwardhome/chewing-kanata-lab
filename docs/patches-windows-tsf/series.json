@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "2d5ed5d6be52408740baebeb5d2b5a88db936f7c",
+  "tree": "bd9d5f5feeac6e2e7ae7fed956b0096f99cf488b",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -74,6 +74,50 @@
     {
       "file": "0018-chore-release-promote-1.0.2.patch",
       "sha256": "221e7ad95215f4e7791d05cad68b2e144c63dda8ddfc044cd7220efe84e8e346"
+    },
+    {
+      "file": "0019-feat-input-add-ordered-pending-composition-transitio.patch",
+      "sha256": "7a4d54c2b0e8d3840c84701cecf61ded2310c9243b0a27b28da9ec66c1c6af92"
+    },
+    {
+      "file": "0020-fix-input-fail-closed-on-generation-exhaustion-witho.patch",
+      "sha256": "2cac738e1e1aed3220186cf721e6ea14e5fe936cd1ffffdf8af301835011ff37"
+    },
+    {
+      "file": "0021-feat-input-integrate-ordered-pending-queue-into-TSF-.patch",
+      "sha256": "a01741d9a14ff9080f88fb7134ddae097010200a9a9632d4827b6e3b8eccc004"
+    },
+    {
+      "file": "0022-feat-input-add-reliable-Chinese-F-layer-and-Shift-co.patch",
+      "sha256": "91ebd85b20eb993feed75119e7fbcaa3e15bde756c54c933093dd505560f66e0"
+    },
+    {
+      "file": "0023-fix-tsf-drain-context-bound-composition-sessions-bef.patch",
+      "sha256": "899045dfb1cb7fe1ffac3e10e7b9cee3ae5d091dc5c9098f4d8092d72beaadeb"
+    },
+    {
+      "file": "0024-feat-candidates-integrate-shared-engineering-and-nat.patch",
+      "sha256": "61734e753a879b6cc5a2abf90fe139f4c2b50dfee2add3339fbe0e84b04692fc"
+    },
+    {
+      "file": "0025-chore-release-prepare-native-version-1.1.0.patch",
+      "sha256": "b4a71067aca7676c8fbd36cd2836b656465d8289697520c12c5387e89724355a"
+    },
+    {
+      "file": "0026-fix-input-guard-entering_syllable-and-empty-F-backsp.patch",
+      "sha256": "c41dc8f4eed6c981429246a45647234163d96020af5fc681cdbfafb1bd46c55b"
+    },
+    {
+      "file": "0027-fix-tsf-separate-queue-admission-from-scheduling-fai.patch",
+      "sha256": "928f846609af89f57ad7ac59ade75dc84ad6ce4f0d918562d19a5cc995c5188a"
+    },
+    {
+      "file": "0028-fix-input-share-production-handoff-guards-and-retain.patch",
+      "sha256": "f7aa35b424edaaf923d97c9158e0841f743f65e187f0347e99ccb8c7d9a7aabc"
+    },
+    {
+      "file": "0029-test-input-preserve-existing-F-escape-and-transparen.patch",
+      "sha256": "4eaf921a729d2ccaf74dc63184593610a56d81e916f696435572ad423b60589a"
     }
   ],
   "native_commit": "f342e38e711442d5768593fd287d38ed98215ec8"

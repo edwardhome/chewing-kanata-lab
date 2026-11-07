@@ -1,0 +1,1061 @@
+From 4d73af2d2595f8ebb43e58aff7b4adeb8936dccb Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Sat, 7 Nov 2026 17:17:58 +0800
+Subject: [PATCH 23/23] fix(tsf): drain context-bound composition sessions
+ before ending
+
+---
+ tip/src/text_service/chewing.rs             | 178 +++++------
+ tip/src/text_service/composition_session.rs | 315 ++++++++++++++++++
+ tip/src/text_service/edit_session.rs        | 335 ++++++++------------
+ tip/src/text_service/mod.rs                 |  33 +-
+ 4 files changed, 549 insertions(+), 312 deletions(-)
+ create mode 100644 tip/src/text_service/composition_session.rs
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index e90ba44..708d9de 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -3,8 +3,7 @@
+ 
+ use std::cell::{Cell, Ref, RefCell, RefMut};
+ use std::ffi::c_void;
+-use std::mem;
+-use std::rc::{Rc, Weak};
++use std::rc::Rc;
+ use std::sync::atomic::Ordering;
+ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+ 
+@@ -49,7 +48,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
+     MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_LEFTBUTTON, TPM_NONOTIFY, TPM_RETURNCMD,
+     TrackPopupMenu,
+ };
+-use windows_core::{ComObject, ComObjectInner, GUID, HSTRING, Interface};
++use windows_core::{ComObject, ComObjectInner, GUID, HSTRING, IUnknown, Interface};
+ use zhconv::{Variant, zhconv};
+ 
+ use super::CommandType;
+@@ -61,7 +60,8 @@ use super::GUID_INPUT_DISPLAY_ATTRIBUTE_1;
+ use super::GUID_INPUT_DISPLAY_ATTRIBUTE_2;
+ use super::display_attribute::register_display_attribute;
+ use super::edit_session::InsertText;
+-use super::edit_session::{EndComposition, SelectionRect, SetCompositionString};
++use super::edit_session::{SelectionRect, schedule_composition_session};
++use super::composition_session::CompositionSession;
+ use super::key_event::SystemKeyboardEvent;
+ use super::lang_bar::LangBarButton;
+ use super::menu::Menu;
+@@ -197,9 +197,9 @@ pub(super) struct ChewingTextService {
+     notification: Option<ComObject<Notification>>,
+     candidate_list: Option<ComObject<CandidateList>>,
+     composition: Rc<RefCell<Option<ITfComposition>>>,
+-    pending_queue: Rc<RefCell<PendingTransitionQueue>>,
+-    pending_session: Weak<()>,
+-    composition_epoch: Rc<Cell<u64>>,
++    pending_state: Option<Rc<CompositionSession>>,
++    retired_states: Vec<Rc<CompositionSession>>,
++    termination_notifications: Rc<RefCell<Vec<(ITfComposition, Option<IUnknown>)>>>,
+ }
+ 
+ impl ChewingTextService {
+@@ -330,9 +330,9 @@ impl ChewingTextService {
+             notification: Default::default(),
+             candidate_list: Default::default(),
+             composition: Default::default(),
+-            pending_queue: Rc::new(RefCell::new(PendingTransitionQueue::new())),
+-            pending_session: Weak::new(),
+-            composition_epoch: Rc::new(Cell::new(1)),
++            pending_state: None,
++            retired_states: Vec::new(),
++            termination_notifications: ts.composition_terminated.clone(),
+             pending_lang_mode_change: Cell::new(false),
+             recovery_gate: RecoveryGate::default(),
+             recovery_open_pending: Cell::new(false),
+@@ -416,9 +416,8 @@ impl ChewingTextService {
+             || !self.chewing_editor.syllable_buffer_display().is_empty()
+             || self.chewing_editor.is_selecting() || self.shift_session.is_some()
+             || self.f_buffer.is_some()
+-            || self.pending_session.upgrade().is_some()
+-            || self.pending_queue.borrow().has_pending_commits()
+-            || self.pending_queue.borrow().has_unsubmitted_changes()
++            || self.pending_state.as_ref().is_some_and(|state| state.is_busy() || state.has_work())
++            || self.retired_states.iter().any(|state| state.is_busy() || state.has_work())
+     }
+ 
+     fn recovery_time_ms() -> Result<u64> {
+@@ -1180,40 +1179,21 @@ impl ChewingTextService {
+     }
+ 
+     pub(super) fn on_composition_terminated(
+-        &mut self,
+-        ecwrite: u32,
+-        composition: &ITfComposition,
++        &mut self, _ecwrite: u32, composition: &ITfComposition,
+     ) -> Result<()> {
+-        unsafe {
+-            let composition_range = composition
+-                .GetRange()
+-                .inspect_err(|_| debug!("failed to get composition range"))?;
+-            let doc_mgr = self
+-                .thread_mgr
+-                .GetFocus()
+-                .context("failed to get current ITfDocumentMgr")?;
+-            let context = doc_mgr
+-                .GetTop()
+-                .context("failed to get current ITfContext")?;
+-
+-            // When a composition is interrupted by the application we only need to
+-            // clear the display attributes. When I tested this, clearing the display attribute
+-            // is not necessary, but this is what mozc was doing.
+-            //
+-            // In pure TSF mode, the composition string is automatically committed on termination.
+-            // In TSF/IMM32 bridge mode, the bridge sets a default property which we override to
+-            // have the same commit on unselect behavior. See [`TextService_Impl::Activate`].
+-            let disp_attr_prop =
+-                context.GetProperty(&windows::Win32::UI::TextServices::GUID_PROP_ATTRIBUTE)?;
+-            disp_attr_prop
+-                .Clear(ecwrite, &composition_range)
+-                .inspect_err(|_| debug!("failed to clear display attribute"))?;
+-        }
+-        self.on_composition_terminated_tail()
++        // The host already owns termination; never inspect the newly focused document.
++        self.on_composition_terminated_tail(composition).map(|_| ())
+     }
+ 
+     // SAFETY: this method must not cause TSF callback reentrant
+-    pub(super) fn on_composition_terminated_tail(&mut self) -> Result<()> {
++    pub(super) fn on_composition_terminated_tail(&mut self, terminated: &ITfComposition) -> Result<bool> {
++        let mut matched = false;
++        for state in &self.retired_states {
++            if state.owns_composition(terminated) { state.invalidate(); matched = true; }
++        }
++        let is_current = self.pending_state.as_ref().is_some_and(|state| state.owns_composition(terminated));
++        if !is_current { return Ok(matched); }
++        if let Some(state) = &self.pending_state { state.invalidate(); }
+         debug!(has_focus=self.has_focus; "on_composition_terminated_tail");
+         self.f_key_state = kanata_layer::FKeyState::Up;
+         self.f_event = None;
+@@ -1229,11 +1209,9 @@ impl ChewingTextService {
+         }
+         editor.clear_syllable_editor();
+         editor.clear_composition_editor();
+-        self.composition_epoch.set(self.composition_epoch.get().wrapping_add(1));
+-        self.pending_queue.borrow_mut().reset();
+-        self.pending_session = Weak::new();
+-        self.composition.replace(None);
+-        Ok(())
++        if let Some(state) = self.pending_state.take() { self.retired_states.push(state); }
++        self.composition = Rc::new(RefCell::new(None));
++        Ok(true)
+     }
+ 
+     pub(super) fn on_compartment_change_ro(&self, guid: &GUID) -> Result<()> {
+@@ -1601,68 +1579,59 @@ impl ChewingTextService {
+     }
+ 
+     fn end_composition(&mut self, context: &ITfContext) -> Result<()> {
+-        // Transfer the ownership of this composition to the EndComposition edit session.
+-        self.composition_epoch.set(self.composition_epoch.get().wrapping_add(1));
+-        let composition = mem::replace(&mut self.composition, Rc::new(RefCell::new(None)));
+-        self.pending_session = Weak::new();
+-        let session = EndComposition::new(context.clone(), composition).into_object();
+-        request_edit_session(
+-            context,
+-            self.tid,
+-            session.as_interface(),
+-            TF_ES_ASYNC | TF_ES_READWRITE,
+-        );
++        if self.pending_state.is_none() && self.composition.borrow().is_none() { return Ok(()); }
++        let state = self.pending_state.get_or_insert_with(|| CompositionSession::new(
++            context.clone(), self.composition.clone(), self.termination_notifications.clone(),
++        )).clone();
++        if !state.is_active() && !state.has_work() { return Ok(()); }
++        // Mark the existing state for completion. Its queued write must run before EndComposition.
++        state.request_end();
++        schedule_composition_session(state.clone(), self.composition_sink.clone(), self.input_da_atom.clone(), self.tid)?;
+         Ok(())
+     }
+ 
+     fn set_composition_string(
+-        &mut self,
+-        context: &ITfContext,
+-        commit: &str,
+-        preedit: &str,
+-        segments: Vec<(usize, usize)>,
+-        cursor: usize,
++        &mut self, context: &ITfContext, commit: &str, preedit: &str,
++        segments: Vec<(usize, usize)>, cursor: usize,
+     ) -> Result<()> {
+-        debug!("set composition string");
+-        let commit: String = if self.output_simp_chinese {
+-            zhconv(commit, Variant::ZhHans)
+-        } else {
+-            commit.to_string()
+-        };
+-        let preedit: String = if self.output_simp_chinese {
+-            zhconv(preedit, Variant::ZhHans)
+-        } else {
+-            preedit.to_string()
+-        };
+-        self.pending_queue
+-            .borrow_mut()
+-            .enqueue(&commit, &preedit, segments, cursor);
+-
+-        if self.pending_session.upgrade().is_some() {
+-            debug!("Reuse existing edit session");
+-        } else {
+-            let session_token = Rc::new(());
+-            let session_epoch = self.composition_epoch.get();
+-            let session = SetCompositionString::new(
+-                context.clone(),
+-                self.composition.clone(),
+-                self.composition_sink.clone(),
+-                self.input_da_atom.clone(),
+-                self.pending_queue.clone(),
+-                session_token.clone(),
+-                session_epoch,
+-                self.composition_epoch.clone(),
+-                self.tid,
+-            )
+-            .into_object();
+-            self.pending_session = Rc::downgrade(&session_token);
+-            request_edit_session(
+-                context,
+-                self.tid,
+-                session.as_interface(),
+-                TF_ES_ASYNC | TF_ES_READWRITE,
+-            );
++        if let Some(old) = &self.pending_state {
++            if !old.same_context(context) {
++                let old_context = old.context.clone();
++                if let Err(error) = self.end_composition(&old_context) {
++                    error!("previous context composition retained after failed close: {error}");
++                }
++                if let Some(previous) = self.pending_state.take() { self.retired_states.push(previous); }
++                self.composition = Rc::new(RefCell::new(None));
++            }
++        }
++        if self.pending_state.as_ref().is_some_and(|state| !state.is_active()) {
++            if let Some(previous) = self.pending_state.take() {
++                if previous.has_work() { self.retired_states.push(previous); }
++            }
++            self.composition = Rc::new(RefCell::new(None));
++        }
++        self.retired_states.retain(|state| state.is_active() || state.has_work());
++        if self.pending_state.is_none() {
++            if let Some(index) = self.retired_states.iter().rposition(|state| state.same_context(context) && state.is_active()) {
++                let previous = self.retired_states.remove(index);
++                self.composition = previous.composition.clone();
++                self.pending_state = Some(previous);
++            }
++        }
++        let state = self.pending_state.get_or_insert_with(|| CompositionSession::new(
++            context.clone(), self.composition.clone(), self.termination_notifications.clone(),
++        )).clone();
++        let commit = if self.output_simp_chinese { zhconv(commit, Variant::ZhHans) } else { commit.to_owned() };
++        let preedit = if self.output_simp_chinese { zhconv(preedit, Variant::ZhHans) } else { preedit.to_owned() };
++        // A new user update may retry a request that failed before any write; never replay uncertain writes.
++        state.retry_before_write();
++        if !state.enqueue(&commit, &preedit, segments, cursor) {
++            bail!("composition lifecycle cannot accept updates");
++        }
++        if self.retired_states.iter().any(|previous| previous.same_context(context) && previous.has_work()) {
++            bail!("previous composition in this context is retained for recovery");
+         }
++        schedule_composition_session(state, self.composition_sink.clone(), self.input_da_atom.clone(), self.tid)?;
+         Ok(())
+     }
+ 
+@@ -1948,6 +1917,7 @@ impl ChewingTextService {
+     fn is_composing(&self) -> bool {
+         // when candidate window is shown we are composing even without a composition
+         self.composition.borrow().is_some() || self.candidate_list.is_some()
++            || self.pending_state.as_ref().is_some_and(|state| state.has_work() || state.is_busy())
+     }
+ 
+     fn init_chewing_context(&mut self) -> Result<()> {
+diff --git a/tip/src/text_service/composition_session.rs b/tip/src/text_service/composition_session.rs
+new file mode 100644
+index 0000000..458c5e5
+--- /dev/null
++++ b/tip/src/text_service/composition_session.rs
+@@ -0,0 +1,315 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++//! State belonging to exactly one TSF context/composition lifetime.
++use std::cell::RefCell;
++use std::rc::Rc;
++use windows::Win32::UI::TextServices::{ITfComposition, ITfContext, ITfRange};
++use windows_core::{Interface, IUnknown};
++use super::pending_transition::{PendingTransitionQueue, SubmissionSnapshot};
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(super) enum ApplyPhase { Idle, BeforeWrite, WriteAttempted, Written, Retired, Ending, Ended }
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(super) enum SessionFailure { BeforeWrite, UncertainWrite, EndFailed, Interrupted, Invariant }
++
++/// This is the production lifecycle adapter; tests run without COM mocks or host text.
++pub(super) struct SessionControl {
++    pub queue: PendingTransitionQueue,
++    active: bool,
++    scheduled: bool,
++    running: bool,
++    end_requested: bool,
++    phase: ApplyPhase,
++    failed: Option<SessionFailure>,
++    snapshot: Option<SubmissionSnapshot>,
++}
++impl SessionControl {
++    pub fn new() -> Self {
++        Self { queue: PendingTransitionQueue::new(), active: true, scheduled: false,
++            running: false, end_requested: false, phase: ApplyPhase::Idle, failed: None, snapshot: None }
++    }
++    pub fn enqueue(&mut self, commit: &str, preedit: &str, segments: Vec<(usize, usize)>, cursor: usize) -> bool {
++        if !self.active { return false; }
++        // Preserve incoming text even in quarantine. Failure is reported to the caller,
++        // but text is never silently discarded or applied to a different context.
++        self.end_requested = false;
++        self.queue.enqueue(commit, preedit, segments, cursor);
++        self.failed.is_none()
++    }
++    pub fn request_end(&mut self) { if self.active { self.end_requested = true; } }
++    pub fn has_work(&self) -> bool {
++        self.queue.has_unsubmitted_changes() || self.end_requested || self.queue.is_in_flight()
++            || self.queue.has_pending_commits() || self.failed.is_some()
++    }
++    pub fn schedule(&mut self) -> bool {
++        if !self.active || self.failed.is_some() || self.scheduled || self.running || !self.has_work() { return false; }
++        self.scheduled = true;
++        true
++    }
++    pub fn request_failed(&mut self) {
++        // A request may execute synchronously. Do not roll back a completed callback.
++        if self.scheduled && !self.running {
++            self.scheduled = false;
++            self.failed = Some(SessionFailure::BeforeWrite);
++        }
++    }
++    pub fn begin_callback(&mut self) -> bool {
++        if !self.scheduled || self.running || !self.active || self.failed.is_some() { return false; }
++        self.scheduled = false;
++        self.running = true;
++        true
++    }
++    pub fn begin_submission(&mut self) -> Option<SubmissionSnapshot> {
++        if !self.active || self.failed.is_some() { return None; }
++        let snapshot = self.queue.begin_submission();
++        if let Some(value) = &snapshot {
++            self.snapshot = Some(value.clone());
++            self.phase = ApplyPhase::BeforeWrite;
++        } else if self.queue.has_unsubmitted_changes() && !self.queue.is_in_flight() {
++            self.failed = Some(SessionFailure::Invariant); // exhausted generation; never spin
++        }
++        snapshot
++    }
++    pub fn mark_write_attempted(&mut self) { self.phase = ApplyPhase::WriteAttempted; }
++    pub fn mark_written(&mut self) { self.phase = ApplyPhase::Written; }
++    pub fn retire(&mut self, generation: u64) -> bool {
++        if !self.active || self.failed.is_some() || !self.queue.acknowledge_success(generation) {
++            self.failed = Some(SessionFailure::Invariant);
++            return false;
++        }
++        self.snapshot = None;
++        self.phase = ApplyPhase::Retired;
++        true
++    }
++    pub fn fail(&mut self) {
++        if self.failed.is_some() { return; }
++        self.failed = Some(match self.phase {
++            ApplyPhase::Idle | ApplyPhase::BeforeWrite => {
++                if let Some(snapshot) = &self.snapshot { self.queue.acknowledge_failure(snapshot.generation); }
++                SessionFailure::BeforeWrite
++            }
++            ApplyPhase::WriteAttempted | ApplyPhase::Written => SessionFailure::UncertainWrite,
++            ApplyPhase::Ending => SessionFailure::EndFailed,
++            ApplyPhase::Retired | ApplyPhase::Ended => return,
++        });
++    }
++    pub fn invalidate(&mut self) {
++        self.active = false;
++        self.scheduled = false;
++        if self.queue.is_in_flight() || self.queue.has_pending_commits() || self.queue.has_unsubmitted_changes() {
++            self.failed = Some(SessionFailure::Interrupted);
++        }
++        // Preserve pending text and exact submission phase; never recycle into another context.
++    }
++    pub fn begin_end(&mut self) -> bool {
++        if !self.active || self.failed.is_some() || !self.end_requested || self.queue.is_in_flight()
++            || self.queue.has_unsubmitted_changes() || self.queue.has_pending_commits() { return false; }
++        self.end_requested = false;
++        self.phase = ApplyPhase::Ending;
++        true
++    }
++    pub fn complete_end(&mut self) {
++        if !self.active { return; }
++        self.scheduled = false;
++        // New input may have arrived reentrantly while EndComposition was executing.
++        self.active = self.queue.has_unsubmitted_changes() || self.end_requested;
++        self.phase = if self.active { ApplyPhase::Idle } else { ApplyPhase::Ended };
++    }
++    pub fn finish_callback(&mut self) { self.running = false; }
++    pub fn retry_before_write(&mut self) -> bool {
++        if self.active && !self.running && self.failed == Some(SessionFailure::BeforeWrite) {
++            self.failed = None;
++            self.snapshot = None;
++            self.phase = ApplyPhase::Idle;
++            return true;
++        }
++        false
++    }
++}
++
++pub(super) struct CompositionSession {
++    pub context: ITfContext,
++    pub composition: Rc<RefCell<Option<ITfComposition>>>,
++    pub control: RefCell<SessionControl>,
++    notifications: Rc<RefCell<Vec<(ITfComposition, Option<IUnknown>)>>>,
++    context_identity: Option<IUnknown>,
++    composition_identity: RefCell<Option<(ITfComposition, Option<IUnknown>)>>,
++    // Retain the written range if a later operation failed. It must never be replayed blindly.
++    pub written_range: RefCell<Option<ITfRange>>,
++}
++impl CompositionSession {
++    pub fn new(context: ITfContext, composition: Rc<RefCell<Option<ITfComposition>>>,
++        notifications: Rc<RefCell<Vec<(ITfComposition, Option<IUnknown>)>>>) -> Rc<Self> {
++        let context_identity = context.cast::<IUnknown>().ok();
++        let initial = composition.borrow().clone();
++        let composition_identity = initial.map(|value| {
++            let identity = value.cast::<IUnknown>().ok();
++            (value, identity)
++        });
++        let state = Rc::new(Self { context, composition, control: RefCell::new(SessionControl::new()), notifications,
++            context_identity, composition_identity: RefCell::new(composition_identity),
++            written_range: RefCell::new(None) });
++        // QueryInterface above may have delivered synchronous termination notifications.
++        state.is_active();
++        state
++    }
++    pub fn same_context(&self, context: &ITfContext) -> bool {
++        if self.context.as_raw() == context.as_raw() { return true; }
++        let other = context.cast::<IUnknown>().ok();
++        self.is_active();
++        self.context_identity.as_ref().zip(other.as_ref()).is_some_and(|(a, b)| a == b)
++    }
++    pub fn owns_composition(&self, composition: &ITfComposition) -> bool {
++        let current = self.composition.borrow().clone();
++        let Some(current) = current else { return false; };
++        if current.as_raw() == composition.as_raw() { return true; }
++        let identity = self.composition_identity.borrow().clone();
++        let other = composition.cast::<IUnknown>().ok();
++        self.is_active();
++        identity.as_ref().and_then(|(_, identity)| identity.as_ref())
++            .zip(other.as_ref()).is_some_and(|(a, b)| a == b)
++    }
++    pub fn observe_composition(&self, composition: &ITfComposition) -> bool {
++        // Cache identity once before publishing a newly created composition. Read notifications
++        // AFTER QueryInterface so a synchronous termination during that call is not missed.
++        let identity = composition.cast::<IUnknown>().ok();
++        self.composition_identity.replace(Some((composition.clone(), identity.clone())));
++        if self.was_terminated(composition, identity.as_ref()) { self.invalidate(); }
++        self.control.borrow().active
++    }
++    fn was_terminated(&self, composition: &ITfComposition, identity: Option<&IUnknown>) -> bool {
++        let notifications = self.notifications.borrow().clone();
++        notifications.iter().any(|(ended, ended_identity)| {
++            ended.as_raw() == composition.as_raw()
++                || identity.zip(ended_identity.as_ref()).is_some_and(|(a, b)| a == b)
++        })
++    }
++    pub fn is_active(&self) -> bool {
++        // This validity check never invokes COM. It is safe immediately before a write.
++        let composition = self.composition.borrow().clone();
++        let cached = self.composition_identity.borrow().clone();
++        if let Some(composition) = composition {
++            let identity = cached.as_ref().filter(|(cached, _)| cached.as_raw() == composition.as_raw())
++                .and_then(|(_, identity)| identity.as_ref());
++            if self.was_terminated(&composition, identity) { self.invalidate(); }
++        }
++        self.control.borrow().active
++    }
++    pub fn is_failed(&self) -> bool { self.control.borrow().failed.is_some() }
++    pub fn is_busy(&self) -> bool {
++        let state = self.control.borrow();
++        state.scheduled || state.running || state.has_work() || state.queue.is_in_flight() || state.failed.is_some()
++    }
++    pub fn has_work(&self) -> bool { self.control.borrow().has_work() }
++    pub fn is_ending(&self) -> bool { self.control.borrow().phase == ApplyPhase::Ending }
++    pub fn enqueue(&self, commit: &str, preedit: &str, segments: Vec<(usize, usize)>, cursor: usize) -> bool {
++        self.is_active() && self.control.borrow_mut().enqueue(commit, preedit, segments, cursor)
++    }
++    pub fn request_end(&self) { self.control.borrow_mut().request_end(); }
++    pub fn invalidate(&self) { self.control.borrow_mut().invalidate(); }
++    pub fn retry_before_write(&self) -> bool {
++        self.is_active() && self.control.borrow_mut().retry_before_write()
++    }
++}
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn pending() -> SessionControl {
++        let mut state = SessionControl::new();
++        assert!(state.enqueue("中文", "", vec![], 0));
++        state
++    }
++    #[test]
++    fn commit_then_end_drains_before_ending_in_same_callback() {
++        let mut state = pending(); state.request_end();
++        assert!(state.schedule()); assert!(state.begin_callback());
++        assert!(!state.begin_end());
++        let snapshot = state.begin_submission().unwrap();
++        state.mark_write_attempted(); state.mark_written();
++        assert!(state.retire(snapshot.generation));
++        assert!(state.begin_end()); state.complete_end(); state.finish_callback();
++        assert!(!state.active); assert!(!state.schedule()); assert!(!state.queue.has_pending_commits());
++    }
++    #[test]
++    fn queued_next_preedit_keeps_commit_and_cancels_not_yet_started_end() {
++        let mut state = pending(); state.request_end();
++        assert!(state.enqueue("", "下一字", vec![], 3));
++        state.schedule(); state.begin_callback();
++        let snapshot = state.begin_submission().unwrap();
++        assert_eq!((snapshot.commit.as_str(), snapshot.preedit.as_str()), ("中文", "下一字"));
++        state.mark_write_attempted(); state.mark_written(); state.retire(snapshot.generation);
++        assert!(!state.begin_end());
++    }
++    #[test]
++    fn failed_prewrite_retains_data_and_only_explicit_retry_unblocks() {
++        let mut state = pending(); state.schedule(); state.begin_callback(); state.begin_submission();
++        state.fail(); state.finish_callback();
++        assert_eq!(state.queue.pending_commit_str(), "中文"); assert!(!state.queue.is_in_flight());
++        assert!(!state.schedule()); assert!(state.retry_before_write());
++        assert!(state.schedule()); assert!(state.begin_callback());
++        assert_eq!(state.begin_submission().unwrap().commit, "中文");
++    }
++    #[test]
++    fn partial_write_and_shift_failure_never_replay_commits() {
++        for written in [false, true] {
++            let mut state = pending(); state.schedule(); state.begin_callback(); state.begin_submission();
++            state.mark_write_attempted(); if written { state.mark_written(); }
++            state.fail(); state.finish_callback();
++            assert_eq!(state.failed, Some(SessionFailure::UncertainWrite));
++            assert_eq!(state.queue.pending_commit_str(), "中文"); assert!(state.snapshot.is_some());
++            assert!(!state.retry_before_write()); assert!(!state.schedule());
++        }
++    }
++    #[test]
++    fn retired_commit_is_not_restored_by_decoration_failure() {
++        let mut state = pending(); state.schedule(); state.begin_callback();
++        let snapshot = state.begin_submission().unwrap();
++        state.mark_write_attempted(); state.mark_written(); state.retire(snapshot.generation);
++        state.fail(); state.finish_callback();
++        assert!(!state.queue.has_pending_commits()); assert!(state.failed.is_none()); assert!(!state.schedule());
++    }
++    #[test]
++    fn old_invalidated_callbacks_cannot_drain_new_context_state() {
++        let mut old = pending(); old.schedule(); old.invalidate();
++        let mut new = SessionControl::new(); new.enqueue("新", "組字", vec![], 2);
++        assert!(!old.begin_callback()); assert!(!old.schedule());
++        assert_eq!(old.queue.pending_commit_str(), "中文");
++        new.schedule(); new.begin_callback();
++        assert_eq!(new.begin_submission().unwrap().commit, "新");
++    }
++    #[test]
++    fn reentrant_enqueue_schedules_once_after_current_callback() {
++        let mut state = pending(); state.schedule(); state.begin_callback();
++        let snapshot = state.begin_submission().unwrap();
++        assert!(state.enqueue("第二次", "最新", vec![], 2));
++        assert!(!state.schedule()); state.mark_write_attempted(); state.mark_written();
++        state.retire(snapshot.generation); state.finish_callback();
++        assert_eq!(state.queue.pending_commit_str(), "第二次");
++        assert!(state.schedule()); assert!(!state.schedule());
++    }
++    #[test]
++    fn new_input_during_end_starts_after_end_without_loss() {
++        let mut state = SessionControl::new(); state.request_end(); state.schedule(); state.begin_callback();
++        assert!(state.begin_end()); assert!(state.enqueue("新", "字", vec![], 1));
++        state.complete_end(); state.finish_callback();
++        assert!(state.active); assert!(state.schedule()); state.begin_callback();
++        assert_eq!(state.begin_submission().unwrap().commit, "新");
++    }
++    #[test]
++    fn quarantine_retains_new_input_without_scheduling_it() {
++        let mut state = pending(); state.schedule(); state.begin_callback(); state.begin_submission();
++        state.mark_write_attempted(); state.fail(); state.finish_callback();
++        assert!(!state.enqueue("新的", "字", vec![], 1));
++        assert_eq!(state.queue.pending_commit_str(), "中文新的"); assert!(!state.schedule());
++    }
++    #[test]
++    fn failed_end_preserves_lifetime_and_rejected_request_is_not_spun() {
++        let mut state = pending(); state.schedule(); state.request_failed();
++        assert!(!state.schedule()); assert_eq!(state.queue.pending_commit_str(), "中文");
++        state.retry_before_write(); state.schedule(); state.begin_callback();
++        let snapshot = state.begin_submission().unwrap(); state.retire(snapshot.generation);
++        state.request_end(); assert!(state.begin_end());
++        state.fail(); state.finish_callback();
++        assert_eq!(state.failed, Some(SessionFailure::EndFailed));
++        assert!(state.active); assert!(!state.retry_before_write()); assert!(!state.schedule());
++    }
++}
+diff --git a/tip/src/text_service/edit_session.rs b/tip/src/text_service/edit_session.rs
+index 6ea5367..b598ea5 100644
+--- a/tip/src/text_service/edit_session.rs
++++ b/tip/src/text_service/edit_session.rs
+@@ -8,7 +8,7 @@ use std::ptr;
+ use std::rc::Rc;
+ 
+ use log::{debug, error};
+-use windows::Win32::Foundation::{FALSE, RECT};
++use windows::Win32::Foundation::{E_ABORT, E_FAIL, FALSE, RECT};
+ use windows::Win32::System::Variant::VARIANT;
+ use windows::Win32::UI::TextServices::{
+     GUID_PROP_ATTRIBUTE, INSERT_TEXT_AT_SELECTION_FLAGS, ITfComposition, ITfCompositionSink,
+@@ -19,7 +19,8 @@ use windows::Win32::UI::TextServices::{
+ };
+ use windows_core::{BOOL, ComObjectInner, HSTRING, Interface, Param, Result, implement};
+ 
+-use super::pending_transition::PendingTransitionQueue;
++use super::pending_transition::SubmissionSnapshot;
++use super::composition_session::CompositionSession;
+ 
+ pub(crate) fn request_edit_session(
+     context: &ITfContext,
+@@ -85,218 +86,162 @@ impl ITfEditSession_Impl for InsertText_Impl {
+ 
+ #[implement(ITfEditSession)]
+ pub(super) struct SetCompositionString {
+-    context: ITfContext,
+-    composition: Rc<RefCell<Option<ITfComposition>>>,
++    state: Rc<CompositionSession>,
+     composition_sink: ITfCompositionSink,
+     da_atom: [VARIANT; 2],
+-    pending_queue: Rc<RefCell<PendingTransitionQueue>>,
+-    _session_token: Rc<()>,
+-    session_epoch: u64,
+-    lifecycle_epoch: Rc<Cell<u64>>,
+     tid: u32,
+ }
+ 
+-impl SetCompositionString {
+-    pub(super) fn new(
+-        context: ITfContext,
+-        composition: Rc<RefCell<Option<ITfComposition>>>,
+-        composition_sink: ITfCompositionSink,
+-        da_atom: [VARIANT; 2],
+-        pending_queue: Rc<RefCell<PendingTransitionQueue>>,
+-        session_token: Rc<()>,
+-        session_epoch: u64,
+-        lifecycle_epoch: Rc<Cell<u64>>,
+-        tid: u32,
+-    ) -> SetCompositionString {
+-        Self {
+-            context,
+-            composition,
+-            composition_sink,
+-            da_atom,
+-            pending_queue,
+-            _session_token: session_token,
+-            session_epoch,
+-            lifecycle_epoch,
+-            tid,
+-        }
+-    }
++/// Schedule at most one callback per state. Rejection preserves its queue and is returned
++/// through both RequestEditSession HRESULT layers; no timer or unbounded retry is started.
++pub(super) fn schedule_composition_session(
++    state: Rc<CompositionSession>, composition_sink: ITfCompositionSink,
++    da_atom: [VARIANT; 2], tid: u32,
++) -> Result<()> {
++    if !state.is_active() || state.is_failed() { return Err(E_ABORT.into()); }
++    if !state.control.borrow_mut().schedule() { return Ok(()); }
++    let session = SetCompositionString { state: state.clone(), composition_sink, da_atom, tid }.into_object();
++    let result = unsafe {
++        state.context.RequestEditSession(tid, session.as_interface(), TF_ES_ASYNC | TF_ES_READWRITE)
++            .and_then(|status| status.ok())
++    };
++    if result.is_err() { state.control.borrow_mut().request_failed(); }
++    result
+ }
+ 
+-impl ITfEditSession_Impl for SetCompositionString_Impl {
+-    fn DoEditSession(&self, ec: u32) -> Result<()> {
+-        unsafe {
+-            // 1. Stale session check: if the composition lifecycle has ended or changed,
+-            // never touch or drain the new composition's payload using an old context.
+-            if self.lifecycle_epoch.get() != self.session_epoch {
+-                debug!(
+-                    session_epoch = self.session_epoch,
+-                    current_epoch = self.lifecycle_epoch.get();
+-                    "stale edit session epoch detected; skipping DoEditSession without draining queue"
+-                );
+-                return Ok(());
+-            }
+-
+-            let sub = match self.pending_queue.borrow_mut().begin_submission() {
+-                Some(sub) => sub,
+-                None => return Ok(()),
+-            };
+-
+-            // 2. Clone COM interface in short borrow scope; avoid holding RefCell across COM calls.
+-            let mut composition = self.composition.borrow().clone();
+-
+-            if composition.is_none() {
+-                if sub.commit.is_empty() && sub.preedit.is_empty() {
+-                    self.pending_queue.borrow_mut().acknowledge_success(sub.generation);
+-                    return Ok(());
+-                }
+-                debug!("starting a new composition");
+-                let context_composition: ITfContextComposition = match self.context.cast() {
+-                    Ok(cc) => cc,
+-                    Err(err) => {
+-                        error!("cast to ITfContextComposition failed: {err}");
+-                        self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+-                        return Err(err);
+-                    }
+-                };
+-                let insert_at_selection: ITfInsertAtSelection = match self.context.cast() {
+-                    Ok(ias) => ias,
+-                    Err(err) => {
+-                        error!("cast to ITfInsertAtSelection failed: {err}");
+-                        self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+-                        return Err(err);
+-                    }
+-                };
+-                let range = match insert_at_selection.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[]) {
+-                    Ok(r) => r,
+-                    Err(err) => {
+-                        error!("InsertTextAtSelection failed: {err}");
+-                        self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+-                        return Err(err);
+-                    }
+-                };
+-                let new_comp = match context_composition.StartComposition(ec, &range, &self.composition_sink) {
+-                    Ok(c) => c,
+-                    Err(err) => {
+-                        error!("StartComposition failed: {err}");
+-                        self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+-                        return Err(err);
+-                    }
+-                };
+-                self.composition.replace(Some(new_comp.clone()));
+-                composition = Some(new_comp);
+-            }
+-
+-            // Verify lifecycle did not change during reentrant composition start
+-            if self.lifecycle_epoch.get() != self.session_epoch {
+-                debug!("lifecycle epoch changed during composition initialization; abandoning snapshot");
+-                self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+-                return Ok(());
+-            }
+-
+-            let Some(comp) = composition else {
+-                self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+-                return Ok(());
+-            };
+-
+-            let range = match comp.GetRange() {
+-                Ok(r) => r,
+-                Err(err) => {
+-                    error!("composition GetRange failed: {err}");
+-                    self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+-                    return Err(err);
+-                }
+-            };
+-
+-            debug!("set composition string");
+-            let text = HSTRING::from(format!("{}{}", sub.commit, sub.preedit));
+-
+-            // Pre-write failure check: if SetText fails, fail-closed without shifting range or acking success
+-            if let Err(error) = range.SetText(ec, 0, &text) {
+-                error!("set composition string failed: {error}");
+-                self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+-                return Err(error);
+-            }
++struct CallbackGuard(Rc<CompositionSession>);
++impl Drop for CallbackGuard {
++    fn drop(&mut self) { self.0.control.borrow_mut().finish_callback(); }
++}
+ 
+-            // Shift start for commit
+-            let shift_count = sub.commit.encode_utf16().count() as i32;
+-            if shift_count > 0 {
+-                let mut moved = 0;
+-                if let Err(err) = range.ShiftStart(ec, shift_count, &mut moved, ptr::null()) {
+-                    error!("range ShiftStart failed: {err}");
+-                    self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+-                    return Err(err);
+-                }
+-                if moved != shift_count {
+-                    debug!(moved, shift_count; "range.ShiftStart moved count differed from expected");
++impl SetCompositionString {
++    fn ensure_active(&self) -> Result<()> {
++        if self.state.is_active() && !self.state.is_failed() { Ok(()) } else { Err(E_ABORT.into()) }
++    }
++    /// Called after COM operations with all RefCell borrows already released.
++    fn checked<T>(&self, result: Result<T>) -> Result<T> {
++        let value = result?;
++        self.ensure_active()?;
++        Ok(value)
++    }
++    fn apply(&self, ec: u32) -> Result<()> {
++        self.ensure_active()?;
++        let snapshot = self.state.control.borrow_mut().begin_submission();
++        if let Some(sub) = snapshot {
++            let mut composition = self.state.composition.borrow().clone();
++            if composition.is_none() && sub.commit.is_empty() && sub.preedit.is_empty() {
++                if !self.state.control.borrow_mut().retire(sub.generation) { return Err(E_FAIL.into()); }
++            } else {
++                if composition.is_none() {
++                    let context_composition: ITfContextComposition = self.checked(self.state.context.cast())?;
++                    let insert: ITfInsertAtSelection = self.checked(self.state.context.cast())?;
++                    let range = self.checked(unsafe { insert.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[]) })?;
++                    let created = unsafe { context_composition.StartComposition(ec, &range, &self.composition_sink) }?;
++                    // A synchronous termination can precede publication of this new interface.
++                    if !self.state.observe_composition(&created) { return Err(E_ABORT.into()); }
++                    self.ensure_active()?;
++                    self.state.composition.replace(Some(created.clone()));
++                    composition = Some(created);
+                 }
+-                if let Err(err) = comp.ShiftStart(ec, &range) {
+-                    error!("composition ShiftStart failed: {err}");
+-                    self.pending_queue.borrow_mut().acknowledge_failure(sub.generation);
+-                    return Err(err);
++                let composition = composition.ok_or_else(|| windows_core::Error::from(E_FAIL))?;
++                let range = self.checked(unsafe { composition.GetRange() })?;
++                let text = HSTRING::from(format!("{}{}", sub.commit, sub.preedit));
++                // Retain exact written range and snapshot if the host reports an ambiguous failure.
++                self.state.written_range.replace(Some(range.clone()));
++                self.state.control.borrow_mut().mark_write_attempted();
++                self.checked(unsafe { range.SetText(ec, 0, &text) })?;
++                self.state.control.borrow_mut().mark_written();
++                let count = i32::try_from(sub.commit.encode_utf16().count())
++                    .map_err(|_| windows_core::Error::from(E_FAIL))?;
++                if count != 0 {
++                    let mut moved = 0;
++                    self.checked(unsafe { range.ShiftStart(ec, count, &mut moved, ptr::null()) })?;
++                    if moved != count { return Err(E_FAIL.into()); }
++                    self.checked(unsafe { composition.ShiftStart(ec, &range) })?;
+                 }
++                // Prefix retirement is the irreversible text boundary, independent of decorations.
++                if !self.state.control.borrow_mut().retire(sub.generation) { return Err(E_FAIL.into()); }
++                self.state.written_range.replace(None);
++                let _ = self.decorate(ec, &range, &sub);
+             }
+-
+-            // Durable commit succeeded! Retire the committed text prefix now.
+-            // Check that lifecycle epoch is still valid before acking
+-            if self.lifecycle_epoch.get() == self.session_epoch {
+-                self.pending_queue.borrow_mut().acknowledge_success(sub.generation);
+-            }
+-
+-            // Best-effort decorations:
+-            if let Ok(disp_attr_prop) = self.context.GetProperty(&GUID_PROP_ATTRIBUTE) {
+-                let mut atoms = self.da_atom.iter().cycle();
+-                for seg in &sub.segments {
+-                    if let Ok(segment_range) = range.Clone() {
+-                        let mut moved = 0;
+-                        let _ = segment_range.Collapse(ec, TF_ANCHOR_START);
+-                        let _ = segment_range.ShiftEnd(ec, seg.1 as i32, &mut moved, ptr::null());
+-                        let _ = segment_range.ShiftStart(ec, seg.0 as i32, &mut moved, ptr::null());
+-                        if let Err(error) = disp_attr_prop.SetValue(ec, &segment_range, atoms.next().unwrap()) {
+-                            debug!("set display attribute failed: {error}");
+-                        }
+-                    }
+-                }
++        }
++        self.ensure_active()?;
++        let should_end = self.state.control.borrow_mut().begin_end();
++        if should_end { self.end_drained_composition(ec)?; }
++        Ok(())
++    }
++    fn decorate(&self, ec: u32, range: &ITfRange, sub: &SubmissionSnapshot) -> Result<()> {
++        let preedit_len = sub.preedit.encode_utf16().count();
++        if let Ok(property) = self.checked(unsafe { self.state.context.GetProperty(&GUID_PROP_ATTRIBUTE) }) {
++            for (index, &(start, end)) in sub.segments.iter().enumerate() {
++                if start > end || end > preedit_len { continue; }
++                // A failed range operation stops this segment; never decorate an unchecked range.
++                let decorate_segment = || -> Result<()> {
++                    let segment = self.checked(unsafe { range.Clone() })?;
++                    self.checked(unsafe { segment.Collapse(ec, TF_ANCHOR_START) })?;
++                    let mut moved = 0;
++                    let end = i32::try_from(end).map_err(|_| windows_core::Error::from(E_FAIL))?;
++                    self.checked(unsafe { segment.ShiftEnd(ec, end, &mut moved, ptr::null()) })?;
++                    if moved != end { return Err(E_FAIL.into()); }
++                    let start = i32::try_from(start).map_err(|_| windows_core::Error::from(E_FAIL))?;
++                    self.checked(unsafe { segment.ShiftStart(ec, start, &mut moved, ptr::null()) })?;
++                    if moved != start { return Err(E_FAIL.into()); }
++                    self.checked(unsafe { property.SetValue(ec, &segment, &self.da_atom[index % self.da_atom.len()]) })
++                };
++                let _ = decorate_segment();
++                self.ensure_active()?;
+             }
+-
+-            if let Ok(cursor_range) = range.Clone() {
+-                let mut moved = 0;
+-                let _ = cursor_range.Collapse(ec, TF_ANCHOR_START);
+-                let _ = cursor_range.ShiftEnd(ec, sub.cursor as i32, &mut moved, ptr::null());
+-                let _ = cursor_range.ShiftStart(ec, sub.cursor as i32, &mut moved, ptr::null());
+-                let _ = set_selection(&self.context, ec, cursor_range, TF_AE_END);
++        }
++        self.ensure_active()?;
++        if sub.cursor > preedit_len { return Err(E_FAIL.into()); }
++        let cursor = i32::try_from(sub.cursor).map_err(|_| windows_core::Error::from(E_FAIL))?;
++        let cursor_range = self.checked(unsafe { range.Clone() })?;
++        self.checked(unsafe { cursor_range.Collapse(ec, TF_ANCHOR_START) })?;
++        let mut moved = 0;
++        self.checked(unsafe { cursor_range.ShiftEnd(ec, cursor, &mut moved, ptr::null()) })?;
++        if moved != cursor { return Err(E_FAIL.into()); }
++        self.checked(unsafe { cursor_range.ShiftStart(ec, cursor, &mut moved, ptr::null()) })?;
++        if moved != cursor { return Err(E_FAIL.into()); }
++        self.checked(set_selection(&self.state.context, ec, cursor_range, TF_AE_END))
++    }
++    fn end_drained_composition(&self, ec: u32) -> Result<()> {
++        let composition = self.state.composition.borrow().clone();
++        if let Some(composition) = composition {
++            let range = self.checked(unsafe { composition.GetRange() })?;
++            if let Ok(property) = self.checked(unsafe { self.state.context.GetProperty(&GUID_PROP_ATTRIBUTE) }) {
++                let _ = self.checked(unsafe { property.Clear(ec, &range) });
+             }
+-
+-            // Check if newer edits were enqueued while this edit session was in-flight.
+-            // If so, dispatch a follow-up edit session immediately without waiting for a new user key.
+-            if self.lifecycle_epoch.get() == self.session_epoch
+-                && self.pending_queue.borrow().has_unsubmitted_changes()
+-            {
+-                debug!("dispatching follow-up edit session for remaining queued changes");
+-                let session_token = Rc::new(());
+-                let next_session = SetCompositionString::new(
+-                    self.context.clone(),
+-                    self.composition.clone(),
+-                    self.composition_sink.clone(),
+-                    self.da_atom.clone(),
+-                    self.pending_queue.clone(),
+-                    session_token,
+-                    self.session_epoch,
+-                    self.lifecycle_epoch.clone(),
+-                    self.tid,
+-                )
+-                .into_object();
+-                request_edit_session(
+-                    &self.context,
+-                    self.tid,
+-                    next_session.as_interface(),
+-                    TF_ES_ASYNC | TF_ES_READWRITE,
+-                );
++            self.ensure_active()?;
++            // Do not take the interface before EndComposition succeeds. A failed end remains
++            // retained by the service, and will not automatically replay text or retry COM writes.
++            self.checked(unsafe { composition.EndComposition(ec) })?;
++            self.state.composition.replace(None);
++            // Cursor movement after a successful end is cosmetic and cannot undo text retirement.
++            if self.checked(unsafe { range.Collapse(ec, TF_ANCHOR_END) }).is_ok() {
++                let _ = self.checked(set_selection(&self.state.context, ec, range, TF_AE_END));
+             }
+         }
++        self.state.control.borrow_mut().complete_end();
+         Ok(())
+     }
+ }
+ 
++impl ITfEditSession_Impl for SetCompositionString_Impl {
++    fn DoEditSession(&self, ec: u32) -> Result<()> {
++        if !self.state.is_active() || !self.state.control.borrow_mut().begin_callback() { return Ok(()); }
++        let guard = CallbackGuard(self.state.clone());
++        let result = self.apply(ec);
++        if result.is_err() { self.state.control.borrow_mut().fail(); }
++        drop(guard);
++        // Only a successful callback may schedule newly queued changes. Failure requires
++        // explicit safe recovery; uncertain writes remain quarantined and retained.
++        if result.is_ok() && self.state.is_active() && !self.state.is_failed() && self.state.has_work() {
++            schedule_composition_session(self.state.clone(), self.composition_sink.clone(), self.da_atom.clone(), self.tid)?;
++        }
++        result
++    }
++}
++
+ #[implement(ITfEditSession)]
+ pub(super) struct EndComposition {
+     context: ITfContext,
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index dedd31a..07256c2 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -4,6 +4,7 @@
+ use std::{
+     cell::{Cell, RefCell},
+     ptr::null_mut,
++    rc::Rc,
+ };
+ 
+ use log::{debug, error};
+@@ -29,6 +30,7 @@ use self::key_event::SystemKeyboardEvent;
+ 
+ // mod ai_client;
+ mod chewing;
++mod composition_session;
+ mod display_attribute;
+ mod edit_session;
+ mod icons;
+@@ -79,7 +81,7 @@ pub(super) struct TextService {
+     thread_cookies: RefCell<Vec<u32>>,
+     keyboard_openclose_cookie: Cell<u32>,
+     key_busy: Cell<bool>,
+-    composition_terminated: Cell<bool>,
++    composition_terminated: Rc<RefCell<Vec<(ITfComposition, Option<IUnknown>)>>>,
+     pimedpi: Cell<*mut ImeDpi>,
+ }
+ 
+@@ -91,24 +93,26 @@ impl TextService {
+             thread_cookies: RefCell::new(vec![]),
+             keyboard_openclose_cookie: Cell::new(TF_INVALID_COOKIE),
+             key_busy: Cell::new(false),
+-            composition_terminated: Cell::new(false),
++            composition_terminated: Rc::new(RefCell::new(Vec::new())),
+             pimedpi: Cell::new(null_mut()),
+         }
+     }
+     fn tail_handler(&self) {
+-        if self.composition_terminated.take() {
+-            let Ok(mut borrowed_ts) = self.inner.try_borrow_mut() else {
+-                error!("text service was borrowed mutably when executing tail handler.");
+-                return;
+-            };
+-            let Some(ts) = borrowed_ts.as_mut() else {
+-                return;
+-            };
+-            if let Err(error) = ts.on_composition_terminated_tail() {
+-                error!("failed to handle on_composition_terminated_tail: {error}");
++        let Ok(mut borrowed_ts) = self.inner.try_borrow_mut() else { return; };
++        let Some(ts) = borrowed_ts.as_mut() else { return; };
++        let notifications = self.composition_terminated.borrow().clone();
++        for (composition, _) in notifications {
++            match ts.on_composition_terminated_tail(&composition) {
++                Ok(true) => self.composition_terminated.borrow_mut()
++                    .retain(|(pending, _)| pending.as_raw() != composition.as_raw()),
++                // StartComposition can notify before its returned interface is published.
++                // Keep unmatched identities for the session's next validity check.
++                Ok(false) => {},
++                Err(error) => error!("failed to handle composition termination: {error}"),
+             }
+         }
+     }
++
+ }
+ 
+ // XXX MS document says "The TSF manager obtains an instance of this
+@@ -492,10 +496,13 @@ impl ITfCompositionSink_Impl for TextService_Impl {
+         // grabbed by others, we're ``forced'' to terminate current composition.
+         // If we end the composition by calling ITfComposition::EndComposition() ourselves,
+         // this event is not triggered.
++        if let Some(composition) = pcomposition.as_ref() {
++            let identity = composition.cast::<IUnknown>().ok();
++            self.composition_terminated.borrow_mut().push((composition.clone(), identity));
++        }
+         let Ok(mut borrowed_ts) = self.inner.try_borrow_mut() else {
+             // Some sync EditSession can trigger reentrant. We will handle them in the handler's tail.
+             debug!("reentrent detected, deferring on_composition_terminated to tail handler");
+-            self.composition_terminated.set(true);
+             return Ok(());
+         };
+         let Some(ts) = borrowed_ts.as_mut() else {
+-- 
+2.54.0 (Apple Git-157)
+

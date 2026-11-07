@@ -1,0 +1,81 @@
+From 54591a640f45863a5a4139acbef3a3df8432a898 Mon Sep 17 00:00:00 2001
+From: AGY <defu@local.dev>
+Date: Sat, 7 Nov 2026 16:47:22 +0800
+Subject: [PATCH 20/20] fix(input): fail closed on generation exhaustion
+ without recycling IDs
+
+---
+ tip/src/text_service/pending_transition.rs | 44 +++++++++++++++++++++-
+ 1 file changed, 42 insertions(+), 2 deletions(-)
+
+diff --git a/tip/src/text_service/pending_transition.rs b/tip/src/text_service/pending_transition.rs
+index 8c8b38c..21ca8ed 100644
+--- a/tip/src/text_service/pending_transition.rs
++++ b/tip/src/text_service/pending_transition.rs
+@@ -198,8 +198,11 @@ impl PendingTransitionQueue {
+             return None;
+         }
+ 
++        // Fail closed on generation exhaustion: do not reuse generation IDs or wrap.
++        // Pending commit text and unsubmitted changes are preserved.
++        let next = self.next_generation.checked_add(1)?;
+         let generation = self.next_generation;
+-        self.next_generation = self.next_generation.checked_add(1).unwrap_or(1);
++        self.next_generation = next;
+ 
+         let committed_text = self.pending_commit.clone();
+         self.in_flight = Some(InFlightSubmission {
+@@ -299,7 +302,11 @@ impl PendingTransitionQueue {
+         self.cursor = 0;
+         self.has_unsubmitted_changes = false;
+         self.in_flight = None;
+-        self.next_generation = self.next_generation.checked_add(1).unwrap_or(1);
++        if let Some(next) = self.next_generation.checked_add(1) {
++            self.next_generation = next;
++        } else {
++            self.next_generation = u64::MAX;
++        }
+     }
+ }
+ 
+@@ -579,4 +586,37 @@ mod tests {
+         assert!(!q_debug.contains("密碼"));
+         assert!(q_debug.contains("pending_commit_len"));
+     }
++
++    #[test]
++    fn test_generation_exhaustion_fails_closed() {
++        let mut queue = PendingTransitionQueue::new();
++        queue.next_generation = u64::MAX;
++
++        // Enqueue changes when counter is exhausted.
++        queue.enqueue("保留字", "注音", vec![(0, 2)], 2);
++        assert!(queue.has_unsubmitted_changes());
++        assert_eq!(queue.pending_commit_str(), "保留字");
++        assert_eq!(queue.preedit_str(), "注音");
++
++        // begin_submission must fail closed (return None) without wrapping or reusing IDs.
++        assert!(
++            queue.begin_submission().is_none(),
++            "must fail closed when generation counter is exhausted"
++        );
++
++        // Crucial safety invariant: pending text and unsubmitted status must be retained intact!
++        assert_eq!(queue.pending_commit_str(), "保留字");
++        assert_eq!(queue.preedit_str(), "注音");
++        assert!(queue.has_unsubmitted_changes());
++        assert!(!queue.is_in_flight());
++
++        // reset() must stay at u64::MAX and not wrap around to 1 or recycle IDs.
++        queue.reset();
++        assert_eq!(queue.next_generation, u64::MAX);
++
++        // After reset, subsequent submissions still fail closed without reusing IDs.
++        queue.enqueue("新字", "", vec![], 0);
++        assert!(queue.begin_submission().is_none());
++        assert_eq!(queue.pending_commit_str(), "新字");
++    }
+ }
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "5f63c8492502be9231a1e3d456ded58b35bb7996",
+  "tree": "43f044ab7a2d303443c915d692894b300a550e2b",
   "preferences_commit": "a9b224315486caa6dcd1b3f002bd2f905686b771",
   "patches": [
     {
@@ -23,6 +23,14 @@
     {
       "file": "0005-chore-release-promote-1.0.2.patch",
       "sha256": "31099d2c64debfd04d0ba9dd5585f5e5d9426d11d152c4fe7ef58ceac4238023"
+    },
+    {
+      "file": "0006-feat-settings-edit-Chinese-aliases-and-back-up-legac.patch",
+      "sha256": "2ab3620b9e88c6449a16e6d44ab518a76d14fee2cb8bcb842df21fd38e71b357"
+    },
+    {
+      "file": "0007-chore-release-prepare-settings-version-1.1.0.patch",
+      "sha256": "b83141148275ae908fb0385995443d7e1c8d37f43745913fe1ca24d35e16e9b8"
     }
   ]
 }
