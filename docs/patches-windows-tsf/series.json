@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "668795be38a4a77bfb9708dea1951842e5f94381",
+  "tree": "532fcc0d8ae0b4a02394e8f0b21943dc1a17a7dc",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -94,6 +94,10 @@
     {
       "file": "0023-fix-tsf-drain-context-bound-composition-sessions-bef.patch",
       "sha256": "899045dfb1cb7fe1ffac3e10e7b9cee3ae5d091dc5c9098f4d8092d72beaadeb"
+    },
+    {
+      "file": "0024-feat-candidates-integrate-shared-engineering-and-nat.patch",
+      "sha256": "61734e753a879b6cc5a2abf90fe139f4c2b50dfee2add3339fbe0e84b04692fc"
     }
   ],
   "native_commit": "f342e38e711442d5768593fd287d38ed98215ec8"

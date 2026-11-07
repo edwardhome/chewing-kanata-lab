@@ -1,0 +1,592 @@
+From 247f827c1c145feebe91027bbdfb02eeece7ed98 Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Sat, 7 Nov 2026 17:27:46 +0800
+Subject: [PATCH] feat(candidates): integrate shared engineering and native
+ selection
+
+---
+ tip/src/text_service/chewing.rs               | 252 ++++++++++++++----
+ .../ui_elements/candidate_list.rs             | 185 +++++++++++--
+ 2 files changed, 363 insertions(+), 74 deletions(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 708d9de..dbfc6dc 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -23,6 +23,7 @@ use chewing::input::{KeyState, KeyboardEvent, keycode, keysym};
+ use chewing::zhuyin::Syllable;
+ use chewing_tip_core::config::{ChewingTsfConfig, Config};
+ use chewing_tip_core::shell::open_url;
++use chewing_policy_core::candidate_snapshot::{CandidateSnapshot, CandidateAction, CandidateSource};
+ use chewing_policy_core::shift_letter::{ASCIIComposition, FCompositionBuffer, ShiftMode};
+ use chewing_policy_core::{
+     CompositionAction, DoubleShiftGesture, PolicyContext, PolicyMode, SessionResult,
+@@ -196,6 +197,12 @@ pub(super) struct ChewingTextService {
+     chewing_editor: Editor,
+     notification: Option<ComObject<Notification>>,
+     candidate_list: Option<ComObject<CandidateList>>,
++    candidate_snapshot: Option<CandidateSnapshot>,
++    candidate_page: usize,
++    candidate_generation: u64,
++    candidate_context: Option<IUnknown>,
++    candidate_cursor: usize,
++    candidate_syllable: String,
+     composition: Rc<RefCell<Option<ITfComposition>>>,
+     pending_state: Option<Rc<CompositionSession>>,
+     retired_states: Vec<Rc<CompositionSession>>,
+@@ -329,6 +336,12 @@ impl ChewingTextService {
+             ime_mode_button,
+             notification: Default::default(),
+             candidate_list: Default::default(),
++            candidate_snapshot: None,
++            candidate_page: 0,
++            candidate_generation: 0,
++            candidate_context: None,
++            candidate_cursor: 0,
++            candidate_syllable: String::new(),
+             composition: Default::default(),
+             pending_state: None,
+             retired_states: Vec::new(),
+@@ -370,6 +383,7 @@ impl ChewingTextService {
+     pub(super) fn on_kill_focus(&mut self, context: Option<ITfContext>) -> Result<()> {
+         debug!("on_kill_focus");
+         self.has_focus = false;
++        self.hide_candidates();
+         self.reset_shift_gesture();
+         if let Some(context) = context {
+             if self.f_buffer.is_some() || self.shift_session.is_some() {
+@@ -854,6 +868,10 @@ impl ChewingTextService {
+             return Ok(true);
+         }
+ 
++        if self.handle_shared_candidate_key(context, evt)? { return Ok(true); }
++        // Never leave a mixed list visible after discarding its typed actions.
++        if self.candidate_snapshot.is_some() { self.hide_candidates(); }
++
+         // Handle keybindings
+         // FIXME: refactor this
+         let mut text_action = None;
+@@ -1414,6 +1432,7 @@ impl ChewingTextService {
+     }
+ 
+     fn show_ascii_candidates(&mut self, context: &ITfContext, composition: &ASCIIComposition) -> Result<()> {
++        self.candidate_snapshot = None;
+         if self.candidate_list.is_none() {
+             let hwnd = unsafe { context.GetActiveView()?.GetWnd().unwrap_or_default() };
+             self.candidate_list = Some(CandidateList::new(hwnd, self.thread_mgr.clone())?);
+@@ -1688,66 +1707,199 @@ impl ChewingTextService {
+ 
+     fn update_candidates(&mut self, context: &ITfContext) -> Result<(), scoped_error::Error> {
+         expect_error("Failed to refresh candidate window", || {
+-            if !self.chewing_editor.is_selecting() {
++            if !self.chewing_editor.is_selecting() { self.hide_candidates(); return Ok(()); }
++            let original = self.chewing_editor.display();
++            let native = self.chewing_editor.all_candidates()?;
++            let engineering = if !self.chewing_editor.entering_syllable()
++                && self.lang_mode.get() == TsfLangMode::Chinese {
++                self.lexicon.chinese_candidate_items(&original)
++            } else { vec![] };
++            let size = self.chewing_editor.editor_options().candidates_per_page.max(1);
++            self.candidate_generation = self.candidate_generation.checked_add(1)
++                .ok_or_else(|| anyhow::anyhow!("candidate generation exhausted"))?;
++            let snapshot = CandidateSnapshot::new(self.candidate_generation, &original, &native, &engineering, size)
++                .map_err(|_| anyhow::anyhow!("invalid candidate page size"))?;
++            if snapshot.page_count() == 0 {
++                self.chewing_editor.cancel_selecting()?;
++                self.hide_candidates(); return Ok(());
++            }
++            self.candidate_page = self.chewing_editor.current_page_no()?.min(snapshot.page_count() - 1);
++            self.candidate_context = Some(context.cast::<IUnknown>()?);
++            self.candidate_cursor = self.chewing_editor.cursor();
++            self.candidate_syllable = self.chewing_editor.syllable_buffer_display();
++            self.candidate_snapshot = Some(snapshot);
++            self.render_shared_candidates(context)?;
++            Ok(())
++        })
++    }
++
++    fn render_shared_candidates(&mut self, context: &ITfContext) -> Result<()> {
++        let Some(snapshot) = &self.candidate_snapshot else { return Ok(()); };
++        let all_items: Vec<String> = snapshot.items().iter().map(|candidate| {
++            if candidate.source() == CandidateSource::Engineering {
++                match candidate.annotation() {
++                    Some(note) => format!("{} 〔工程：{}〕", candidate.commit_text(), note),
++                    None => format!("{} 〔工程〕", candidate.commit_text()),
++                }
++            } else { candidate.commit_text().to_owned() }
++        }).collect();
++        if self.candidate_list.is_none() {
++            let hwnd = unsafe { context.GetActiveView()?.GetWnd().unwrap_or_default() };
++            self.candidate_list = Some(CandidateList::new(hwnd, self.thread_mgr.clone())?);
++        }
++        let cfg = &self.cfg.chewing_tsf;
++        let list = self.candidate_list.as_ref().unwrap();
++        list.set_complete_model(Model {
++            items: vec![], selkeys: SEL_KEYS[cfg.sel_key_type as usize].chars()
++                .take(snapshot.page_size()).map(|key| key as u16).collect(),
++            total_page: snapshot.page_count() as u32, current_page: self.candidate_page as u32 + 1,
++            current_sel: 0, cand_per_row: cfg.cand_per_row as u32, use_cursor: cfg.cursor_cand_list,
++            font_family: HSTRING::from(&cfg.font_family), font_size: cfg.font_size as f32,
++            fg_color: color_s(&cfg.font_fg_color), bg_color: color_s(&cfg.font_bg_color),
++            highlight_fg_color: color_s(&cfg.font_highlight_fg_color),
++            highlight_bg_color: color_s(&cfg.font_highlight_bg_color),
++            border_color: color_s(&cfg.cand_list_border_color), selkey_color: color_s(&cfg.font_number_fg_color),
++        }, all_items, snapshot.page_size())?;
++        list.show();
++        if let Ok(rect) = self.get_selection_rect(context) { list.set_position(rect.left, rect.bottom); }
++        Ok(())
++    }
++
++    fn shared_candidates_current(&self, context: &ITfContext) -> bool {
++        let Some(snapshot) = &self.candidate_snapshot else { return false; };
++        let context_identity = context.cast::<IUnknown>().ok();
++        if !self.has_focus || context_identity.is_none() || context_identity != self.candidate_context
++            || self.chewing_editor.cursor() != self.candidate_cursor
++            || self.chewing_editor.syllable_buffer_display() != self.candidate_syllable
++            || !self.chewing_editor.is_selecting() || self.lang_mode.get() != TsfLangMode::Chinese
++            || !snapshot.is_current(self.candidate_generation, &self.chewing_editor.display()) { return false; }
++        let Ok(current) = self.chewing_editor.all_candidates() else { return false; };
++        snapshot.items().iter().filter(|item| item.source() == CandidateSource::Native)
++            .map(|item| item.commit_text()).eq(current.iter().map(String::as_str))
++    }
++
++    fn sync_native_candidate_page(&mut self, page: usize) -> Result<()> {
++        let total = self.chewing_editor.total_page()?;
++        if page >= total { bail!("native candidate page is no longer available"); }
++        for _ in 0..total {
++            if self.chewing_editor.current_page_no()? == page { return Ok(()); }
++            self.chewing_editor.process_keyevent(KeyboardEvent::builder().ksym(keysym::SYM_PAGEDOWN).build());
++        }
++        bail!("native candidate page did not advance")
++    }
++
++    fn choose_shared_candidate(&mut self, context: &ITfContext, slot: usize) -> Result<()> {
++        if !self.shared_candidates_current(context) { self.hide_candidates(); return Ok(()); }
++        let snapshot = self.candidate_snapshot.as_ref().unwrap();
++        let Some(candidate) = snapshot.resolve(self.candidate_page, slot, self.candidate_generation,
++            &self.chewing_editor.display()).cloned() else { return Ok(()); };
++        match candidate.action() {
++            CandidateAction::Native { original_index } => {
++                let size = self.chewing_editor.editor_options().candidates_per_page.max(1);
++                self.sync_native_candidate_page(original_index / size)?;
++                self.chewing_editor.select(original_index % size)?;
++                let commit = self.chewing_editor.display_commit().to_owned();
++                let policy = PolicyContext::new(PolicyMode::FormalZh);
++                let commit = transform_commit(&commit, &policy).to_owned();
++                // Remove the old menu before updating an empty preedit, so its presence
++                // cannot suppress the required end-of-composition request.
+                 self.hide_candidates();
+-                return Ok(());
++                // Preserve the engine commit until it has entered the text queue.
++                self.update_preedit(context, commit)?;
++                self.chewing_editor.ack();
++                self.update_candidates(context)?;
+             }
+-            if self.candidate_list.is_none() {
+-                let view = unsafe { context.GetActiveView()? };
+-                // UILess console may not have valid HWND
+-                let hwnd = unsafe { view.GetWnd().unwrap_or_default() };
+-                let candidate_list = CandidateList::new(hwnd, self.thread_mgr.clone())?;
+-                self.candidate_list = Some(candidate_list);
++            CandidateAction::Engineering { .. } => {
++                if self.chewing_editor.entering_syllable() { return Ok(()); }
++                self.set_composition_string(context, candidate.commit_text(), "", vec![], 0)?;
++                self.chewing_editor.cancel_selecting()?;
++                self.chewing_editor.clear_syllable_editor();
++                self.chewing_editor.clear_composition_editor();
++                self.hide_candidates();
++                self.end_composition(context)?;
+             }
++        }
++        Ok(())
++    }
+ 
+-            let editor = &self.chewing_editor;
+-            if let Some(candidate_list) = &self.candidate_list {
+-                let cfg = &self.cfg.chewing_tsf;
+-                let sel_keys = SEL_KEYS[cfg.sel_key_type as usize];
+-                let n = editor.editor_options().candidates_per_page;
+-                let total_page = editor.total_page()? as u32;
+-                let current_page = editor.current_page_no()? as u32 + 1;
+-                let mut items = editor.paginated_candidates()?;
+-                if total_page == 0 {
+-                    // TODO: handle this properly in chewing-rs
+-                    self.chewing_editor.cancel_selecting()?;
+-                    self.hide_candidates();
+-                    return Ok(());
++    fn handle_shared_candidate_key(&mut self, context: &ITfContext, evt: KeyboardEvent) -> Result<bool> {
++        if !self.shared_candidates_current(context) {
++            if self.candidate_snapshot.is_some() { self.hide_candidates(); }
++            return Ok(false);
++        }
++        let unlearn = self.keybindings.iter().any(|binding| binding.matches(&evt) && binding.action == "selecting_unlearn_phrase");
++        if unlearn {
++            let slot = self.candidate_list.as_ref().map_or(0, |list| list.current_sel());
++            let snapshot = self.candidate_snapshot.as_ref().unwrap();
++            let Some(candidate) = snapshot.resolve(self.candidate_page, slot, self.candidate_generation,
++                &self.chewing_editor.display()) else { return Ok(true); };
++            if candidate.source() != CandidateSource::Native { return Ok(true); }
++            let phrase = candidate.commit_text().to_owned();
++            let length = phrase.chars().count();
++            if length == 0 { return Ok(true); }
++            let cursor = if self.cfg.chewing_tsf.phrase_choice_rearward {
++                self.chewing_editor.cursor().saturating_sub(length - 1)
++            } else { self.chewing_editor.cursor() };
++            let syllables: Vec<Syllable> = self.chewing_editor.symbols().iter().skip(cursor)
++                .take(length).map_while(|symbol| symbol.to_syllable()).collect();
++            if syllables.len() == length {
++                self.chewing_editor.unlearn_phrase(&syllables, &phrase)?;
++                self.update_candidates(context)?;
++            }
++            return Ok(true);
++        }
++        if evt.is_state_on(KeyState::Control) || evt.is_state_on(KeyState::Alt)
++            || evt.is_state_on(KeyState::Super) || evt.is_state_on(KeyState::Shift) { return Ok(false); }
++        if self.cfg.chewing_tsf.cursor_cand_list && !evt.ksym.is_unicode() {
++            if let Some(list) = &self.candidate_list {
++                match list.filter_key_event(evt.ksym) {
++                    FilterKeyResult::HandledCommit => {
++                        let slot = list.current_sel(); self.choose_shared_candidate(context, slot)?; return Ok(true);
++                    }
++                    FilterKeyResult::Handled => { list.show(); return Ok(true); }
++                    FilterKeyResult::NotHandled => {}
+                 }
+-                items.truncate(n);
+-
+-                candidate_list.set_model(Model {
+-                    items,
+-                    selkeys: sel_keys.chars().take(n).map(|k| k as u16).collect(),
+-                    cand_per_row: cfg.cand_per_row as u32,
+-                    total_page,
+-                    current_page,
+-                    font_family: HSTRING::from(&cfg.font_family),
+-                    font_size: cfg.font_size as f32,
+-                    fg_color: color_s(&cfg.font_fg_color),
+-                    bg_color: color_s(&cfg.font_bg_color),
+-                    highlight_fg_color: color_s(&cfg.font_highlight_fg_color),
+-                    highlight_bg_color: color_s(&cfg.font_highlight_bg_color),
+-                    border_color: color_s(&cfg.cand_list_border_color),
+-                    selkey_color: color_s(&cfg.font_number_fg_color),
+-                    use_cursor: cfg.cursor_cand_list,
+-                    current_sel: 0,
+-                });
+-
+-                candidate_list.show();
+-
+-                if let Ok(rect) = self.get_selection_rect(context) {
+-                    candidate_list.set_position(rect.left, rect.bottom);
+-                    // HACK set position again to use correct DPI setting
+-                    candidate_list.set_position(rect.left, rect.bottom);
++            }
++        }
++        if let Some(slot) = SEL_KEYS[self.cfg.chewing_tsf.sel_key_type as usize].chars()
++            .position(|key| key == evt.ksym.to_unicode()) {
++            self.choose_shared_candidate(context, slot)?; return Ok(true);
++        }
++        // Upstream also accepts numeric aliases even when custom selection keys are configured.
++        if let Some(digit) = evt.ksym.to_digit() {
++            let slot = if digit == 0 { 9 } else { digit as usize - 1 };
++            self.choose_shared_candidate(context, slot)?; return Ok(true);
++        }
++        let count = self.candidate_snapshot.as_ref().unwrap().page_count();
++        match evt.ksym {
++            keysym::SYM_PAGEDOWN | keysym::SYM_RIGHT => {
++                self.candidate_page = (self.candidate_page + 1) % count;
++            }
++            keysym::SYM_PAGEUP | keysym::SYM_LEFT => {
++                self.candidate_page = (self.candidate_page + count - 1) % count;
++            }
++            keysym::SYM_SPACE | keysym::SYM_DOWN => {
++                if self.candidate_page + 1 < count { self.candidate_page += 1; }
++                else {
++                    // Preserve native SPACE's final-page selector advancement after mixed pages.
++                    let last = self.chewing_editor.total_page()?.saturating_sub(1);
++                    self.sync_native_candidate_page(last)?;
++                    self.chewing_editor.process_keyevent(KeyboardEvent::builder().ksym(keysym::SYM_SPACE).build());
++                    self.update_candidates(context)?;
++                    self.update_preedit(context, String::new())?;
++                    return Ok(true);
+                 }
+             }
+-
+-            Ok(())
+-        })
++            _ => return Ok(false),
++        }
++        self.render_shared_candidates(context)?;
++        Ok(true)
+     }
+ 
+     fn hide_candidates(&mut self) {
++        self.candidate_snapshot = None;
++        self.candidate_context = None;
++        self.candidate_syllable.clear();
+         if let Some(candidate_list) = self.candidate_list.take() {
+             candidate_list.end_ui_element();
+         }
+diff --git a/tip/src/text_service/ui_elements/candidate_list.rs b/tip/src/text_service/ui_elements/candidate_list.rs
+index fdaf9b0..890c465 100644
+--- a/tip/src/text_service/ui_elements/candidate_list.rs
++++ b/tip/src/text_service/ui_elements/candidate_list.rs
+@@ -74,8 +74,58 @@ pub(crate) struct CandidateList {
+ struct CandidateListInner {
+     model: RefCell<Model>,
+     view: RefCell<View>,
++    complete: RefCell<Option<CompleteTable>>,
+ }
+ 
++struct CompleteTable {
++    items: Vec<String>,
++    geometry: PageGeometry,
++}
++
++/// Canonical full-table paging, shared by the rendering projection and UI-less API.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++struct PageGeometry { count: usize, page_size: usize, current_page: usize }
++impl PageGeometry {
++    fn new(count: usize, page_size: usize, current_page: usize) -> Option<Self> {
++        if page_size == 0 || count > u32::MAX as usize { return None; }
++        let geometry = Self { count, page_size, current_page };
++        if (count == 0 && current_page != 0) || (count != 0 && current_page >= geometry.page_count()) { return None; }
++        Some(geometry)
++    }
++    fn page_count(self) -> usize {
++        self.count / self.page_size + usize::from(self.count % self.page_size != 0)
++    }
++    fn range(self) -> std::ops::Range<usize> {
++        let start = self.current_page * self.page_size;
++        start..start.saturating_add(self.page_size).min(self.count)
++    }
++    fn global_selection(self, slot: usize) -> Option<usize> {
++        let range = self.range();
++        if slot >= range.len() { return None; }
++        range.start.checked_add(slot)
++    }
++    fn indexes(self) -> Vec<u32> {
++        (0..self.page_count()).map(|page| (page * self.page_size) as u32).collect()
++    }
++    fn accepts_indexes(self, indexes: &[u32]) -> bool { self.indexes() == indexes }
++}
++
++fn copy_page_indexes(geometry: PageGeometry, output: *mut u32, capacity: u32,
++    page_count: *mut u32) -> WindowsResult<()> {
++    if page_count.is_null() || (page_count as usize) % align_of::<u32>() != 0 { return Err(E_INVALIDARG.into()); }
++    let indexes = geometry.indexes();
++    // COM permits NULL pIndex for the initial page-count query.
++    unsafe { page_count.write(indexes.len() as u32); }
++    if output.is_null() { return Ok(()); }
++    if (output as usize) % align_of::<u32>() != 0 || (capacity as usize) < indexes.len() { return Err(E_INVALIDARG.into()); }
++    if !indexes.is_empty() {
++        // Caller guarantees capacity writable UINTs as required by the COM interface.
++        unsafe { std::ptr::copy_nonoverlapping(indexes.as_ptr(), output, indexes.len()); }
++    }
++    Ok(())
++}
++
++
+ #[derive(Default)]
+ pub(crate) struct Model {
+     pub(crate) items: Vec<String>,
+@@ -534,6 +584,7 @@ impl CandidateList {
+         let inner = Rc::new(CandidateListInner {
+             model: RefCell::new(Model::default()),
+             view: RefCell::new(View::Dummy),
++            complete: RefCell::new(None),
+         });
+         let candidate_list = CandidateList {
+             thread_mgr,
+@@ -572,16 +623,50 @@ impl CandidateList {
+         }
+         Ok(())
+     }
+-    pub(crate) fn set_model(&self, model: Model) {
++    pub(crate) fn set_model(&self, mut model: Model) {
++        // Legacy callers only provide the current page; do not invent unavailable strings.
++        model.current_sel = model.current_sel.min(model.items.len().saturating_sub(1));
++        model.cand_per_row = model.cand_per_row.max(1);
++        self.inner.complete.replace(None);
+         *self.inner.model.borrow_mut() = model;
+         if let Err(error) = self.update_ui_element() {
+             error!("Failed to update UI element: {error}");
+         }
+     }
++    /// `current_page` is 1-based and `current_sel` is page-local, as in legacy Model.
++    /// The complete table is authoritative; rendering receives only its current-page slice.
++    pub(crate) fn set_complete_model(&self, mut model: Model, all_items: Vec<String>,
++        page_size: usize) -> WindowsResult<()> {
++        let page = if all_items.is_empty() { 0 } else {
++            model.current_page.checked_sub(1).ok_or_else(|| windows_core::Error::from(E_INVALIDARG))? as usize
++        };
++        let geometry = PageGeometry::new(all_items.len(), page_size, page)
++            .ok_or_else(|| windows_core::Error::from(E_INVALIDARG))?;
++        let range = geometry.range();
++        if !range.is_empty() && model.current_sel >= range.len() { return Err(E_INVALIDARG.into()); }
++        model.items = all_items[range].to_vec();
++        model.current_sel = model.current_sel.min(model.items.len().saturating_sub(1));
++        model.total_page = geometry.page_count() as u32;
++        model.current_page = if all_items.is_empty() { 0 } else { page as u32 + 1 };
++        model.cand_per_row = model.cand_per_row.max(1);
++        self.inner.complete.replace(Some(CompleteTable { items: all_items, geometry }));
++        self.inner.model.replace(model);
++        if let Err(error) = self.update_ui_element() {
++            error!("Failed to update complete candidate UI element: {error}");
++        }
++        Ok(())
++    }
++    fn accessible_geometry(&self) -> PageGeometry {
++        if let Some(complete) = self.inner.complete.borrow().as_ref() { return complete.geometry; }
++        let count = self.inner.model.borrow().items.len();
++        PageGeometry { count, page_size: count.max(1), current_page: 0 }
++    }
+     pub(crate) fn filter_key_event(&self, ksym: Keysym) -> FilterKeyResult {
+         let mut res = FilterKeyResult::NotHandled;
+         {
+             let mut model = self.inner.model.borrow_mut();
++            if model.items.is_empty() { return FilterKeyResult::NotHandled; }
++            model.current_sel = model.current_sel.min(model.items.len() - 1);
+             let old_sel = model.current_sel;
+             let uiless_mode = self.inner.view.borrow().window().is_none();
+             if uiless_mode {
+@@ -601,7 +686,7 @@ impl CandidateList {
+                     _ => res = FilterKeyResult::NotHandled,
+                 }
+             } else {
+-                let cand_per_row = model.cand_per_row as usize;
++                let cand_per_row = (model.cand_per_row as usize).max(1);
+                 match ksym {
+                     SYM_UP => {
+                         if model.current_sel >= cand_per_row {
+@@ -609,7 +694,7 @@ impl CandidateList {
+                         }
+                     }
+                     SYM_DOWN => {
+-                        if model.current_sel + cand_per_row < model.items.len() {
++                        if model.current_sel.saturating_add(cand_per_row) < model.items.len() {
+                             model.current_sel += cand_per_row;
+                         }
+                     }
+@@ -647,7 +732,7 @@ impl CandidateList {
+     }
+     pub(crate) fn current_phrase(&self) -> String {
+         let sel = self.current_sel();
+-        self.inner.model.borrow().items[sel].clone()
++        self.inner.model.borrow().items.get(sel).cloned().unwrap_or_default()
+     }
+     pub(crate) fn set_position(&self, x: i32, y: i32) {
+         let view = self.inner.view.borrow();
+@@ -704,40 +789,92 @@ impl ITfCandidateListUIElement_Impl for CandidateList_Impl {
+     }
+ 
+     fn GetCount(&self) -> WindowsResult<u32> {
+-        let model = self.inner.model.borrow();
+-        Ok(model.items.len() as u32)
++        u32::try_from(self.accessible_geometry().count).map_err(|_| E_FAIL.into())
+     }
+ 
+     fn GetSelection(&self) -> WindowsResult<u32> {
+-        let model = self.inner.model.borrow();
+-        Ok(model.current_sel as u32)
++        let slot = self.inner.model.borrow().current_sel;
++        self.accessible_geometry().global_selection(slot)
++            .and_then(|index| u32::try_from(index).ok()).ok_or_else(|| E_FAIL.into())
+     }
+ 
+     fn GetString(&self, uindex: u32) -> WindowsResult<BSTR> {
+-        let model = self.inner.model.borrow();
+-        if uindex as usize >= model.items.len() {
+-            return Err(E_INVALIDARG.into());
++        if let Some(complete) = self.inner.complete.borrow().as_ref() {
++            return complete.items.get(uindex as usize).map(|text| BSTR::from(text.as_str()))
++                .ok_or_else(|| E_INVALIDARG.into());
+         }
+-        Ok(BSTR::from(model.items[uindex as usize].clone()))
++        self.inner.model.borrow().items.get(uindex as usize).map(|text| BSTR::from(text.as_str()))
++            .ok_or_else(|| E_INVALIDARG.into())
+     }
+ 
+-    fn GetPageIndex(
+-        &self,
+-        _pindex: *mut u32,
+-        _usize: u32,
+-        pupagecnt: *mut u32,
+-    ) -> WindowsResult<()> {
+-        unsafe {
+-            *pupagecnt = 1; // Assuming single page for simplicity
+-        }
+-        Ok(())
++    fn GetPageIndex(&self, pindex: *mut u32, usize: u32, pupagecnt: *mut u32) -> WindowsResult<()> {
++        copy_page_indexes(self.accessible_geometry(), pindex, usize, pupagecnt)
+     }
+ 
+-    fn SetPageIndex(&self, _pindex: *const u32, _upagecnt: u32) -> WindowsResult<()> {
++    fn SetPageIndex(&self, pindex: *const u32, upagecnt: u32) -> WindowsResult<()> {
++        let geometry = self.accessible_geometry();
++        // The controller owns candidate actions and page-local selection keys. Accepting an
++        // arbitrary external partition would break that mapping, so only confirm our geometry.
++        if upagecnt as usize != geometry.page_count() { return Err(E_INVALIDARG.into()); }
++        if upagecnt == 0 { return Ok(()); }
++        if pindex.is_null() || (pindex as usize) % align_of::<u32>() != 0 { return Err(E_INVALIDARG.into()); }
++        let indexes = unsafe { std::slice::from_raw_parts(pindex, upagecnt as usize) };
++        if !geometry.accepts_indexes(indexes) { return Err(E_INVALIDARG.into()); }
+         Ok(())
+     }
+ 
+     fn GetCurrentPage(&self) -> WindowsResult<u32> {
+-        Ok(0) // Assuming single page for simplicity
++        Ok(self.accessible_geometry().current_page as u32)
++    }
++}
++
++#[cfg(test)]
++mod paging_tests {
++    use super::*;
++    #[test]
++    fn complete_last_page_maps_local_slots_to_global_indexes() {
++        let geometry = PageGeometry::new(23, 10, 2).unwrap();
++        assert_eq!(geometry.page_count(), 3);
++        assert_eq!(geometry.indexes(), [0, 10, 20]);
++        assert_eq!(geometry.range(), 20..23);
++        assert_eq!(geometry.global_selection(2), Some(22));
++        assert_eq!(geometry.global_selection(3), None);
++        assert_eq!(geometry.global_selection(usize::MAX), None);
++        assert!(geometry.accepts_indexes(&[0, 10, 20]));
++        assert!(!geometry.accepts_indexes(&[0, 8, 16]));
++        assert!(!geometry.accepts_indexes(&[0, 10]));
++    }
++    #[test]
++    fn empty_and_invalid_geometry_are_safe() {
++        let empty = PageGeometry::new(0, 10, 0).unwrap();
++        assert_eq!(empty.page_count(), 0); assert!(empty.indexes().is_empty());
++        assert_eq!(empty.range(), 0..0); assert_eq!(empty.global_selection(0), None);
++        assert!(PageGeometry::new(1, 0, 0).is_none());
++        assert!(PageGeometry::new(0, 10, 1).is_none());
++        assert!(PageGeometry::new(20, 10, 2).is_none());
++        assert!(PageGeometry::new(20, 10, usize::MAX).is_none());
++        if usize::BITS > 32 { assert!(PageGeometry::new(usize::MAX, 10, 0).is_none()); }
++    }
++    #[test]
++    fn page_index_query_and_short_buffer_do_not_overwrite_memory() {
++        let geometry = PageGeometry::new(21, 10, 0).unwrap();
++        let mut count = 99;
++        assert!(copy_page_indexes(geometry, std::ptr::null_mut(), 0, &mut count).is_ok());
++        assert_eq!(count, 3);
++        assert!(copy_page_indexes(geometry, std::ptr::null_mut(), 0, std::ptr::null_mut()).is_err());
++        let mut short = [77, 88];
++        assert!(copy_page_indexes(geometry, short.as_mut_ptr(), 2, &mut count).is_err());
++        assert_eq!(short, [77, 88]);
++        let mut enough = [99; 4];
++        assert!(copy_page_indexes(geometry, enough.as_mut_ptr(), 4, &mut count).is_ok());
++        assert_eq!(enough, [0, 10, 20, 99]);
++    }
++    #[test]
++    fn legacy_known_page_is_one_accessible_page_and_geometry_cannot_diverge() {
++        let geometry = PageGeometry::new(7, 7, 0).unwrap();
++        assert_eq!(geometry.page_count(), 1); assert_eq!(geometry.indexes(), [0]);
++        assert_eq!(geometry.global_selection(6), Some(6));
++        assert!(geometry.accepts_indexes(&[0]));
++        assert!(!geometry.accepts_indexes(&[1]));
+     }
+ }
+-- 
+2.54.0 (Apple Git-157)
+
