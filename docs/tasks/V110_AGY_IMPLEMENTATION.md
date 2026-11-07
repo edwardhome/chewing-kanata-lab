@@ -101,3 +101,14 @@ A1 已由 AGY 提交 `23cb1f7`、`54591a6`，Codex 已獨立驗收 11 項 helper
 ## 1.1.0 驗收界線
 
 本文件是開發契約，不是完成或發布宣告。Codex 審查 Git diff、重播 patch、Windows 建置與測試後提供測試包；Zbook 的安裝、移除與真實按鍵由使用者操作。未有實測證據的 GUI 行為一律 NOT_RUN。Ollama 雲端／背景記錄或已提交文字擷取不在本輪範圍。
+
+
+## 鎖定依賴候選 API 補充（Codex 已查來源）
+
+libchewing `ec7f595` 的 `Editor::all_candidates()` 公開且唯讀，回傳全表；`select(n)` 是當頁索引，內部加上 current_page_no * candidates_per_page。混合列表不可直接把 global index 傳 select。先用 PAGEUP／PAGEDOWN 同步原生頁，再傳 page-local index，且驗證 selector 與 snapshot 未變。
+
+SPACE／DOWN 在原生尾頁會切換 selector 詞範圍，不可當純翻頁使用；混合尾頁仍需保留此上游行為。Enter 與自訂選字鍵都需經 typed action dispatch。
+
+CandidateList 的 UI-less API 目前僅暴露當頁、GetCurrentPage 硬編碼 0；整合時完整表、page index、selection、GetString 與可見 UI 必須一致。空列表及無效索引也要安全處理。工程動作不可走 native unlearn，註解不可作提交內容。
+
+Codex 已在本機與隔離 Windows 來源完成 catalog v2／preferences 前置實作；共享 Windows policy-core 尚未變更，待 A2 接線穩定才協調同步，避免編譯途中變更依賴。

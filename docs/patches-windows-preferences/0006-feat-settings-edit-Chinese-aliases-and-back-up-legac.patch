@@ -1,0 +1,295 @@
+From 1ff9aa24052617f5a59c3a163947bdb40387877c Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Sat, 7 Nov 2026 16:59:18 +0800
+Subject: [PATCH] feat(settings): edit Chinese aliases and back up legacy
+ catalogs
+
+---
+ src-tauri/src/engineering.rs | 77 ++++++++++++++++++++++++++++++------
+ src-tauri/src/lib.rs         |  1 +
+ src/EngineeringTerms.tsx     | 47 +++++++++++++++-------
+ 3 files changed, 98 insertions(+), 27 deletions(-)
+
+diff --git a/src-tauri/src/engineering.rs b/src-tauri/src/engineering.rs
+index 1990215..a8b2608 100644
+--- a/src-tauri/src/engineering.rs
++++ b/src-tauri/src/engineering.rs
+@@ -2,18 +2,18 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ use chewing_policy_core::user_engineering::{UserEngineeringTerm, UserTermsError,
+-    parse_user_terms, encode_user_terms, parse_user_terms_text,
++    parse_user_terms, encode_user_terms, parse_user_terms_text, encode_user_terms_text,
+     MAX_USER_TERMS_BYTES, USER_TERMS_FILENAME, ENGINEERING_TEXT_TEMPLATE};
+ use serde::Serialize;
+ use std::{fs, io::{Read, Write}, path::{Path, PathBuf}};
+ 
+ #[derive(Serialize)]
+-pub struct EngineeringSnapshot { terms: Vec<UserEngineeringTerm>, revision: Option<String> }
++pub struct EngineeringSnapshot { terms: Vec<UserEngineeringTerm>, revision: Option<String>, format_version: u32, backup_file: Option<String> }
+ 
+ fn terms_error(error: UserTermsError) -> String {
+     match error {
+         UserTermsError::TooLarge => "詞條數量或檔案太大，最多 500 筆、256 KiB。",
+-        UserTermsError::InvalidFormat => "詞庫格式不正確；文本請使用 Tab 分隔三欄，不要加入 Markdown 圍欄。",
++        UserTermsError::InvalidFormat => "詞庫格式不正確；文本請使用 Tab 分隔三欄或四欄，不要加入 Markdown 圍欄。",
+         UserTermsError::InvalidTerm => "詞條格式不正確，請檢查輸入碼、長度與不可見字元。",
+         UserTermsError::Duplicate => "有重複的輸入碼與候選文字，請刪除重複列後再儲存。",
+     }.into()
+@@ -36,11 +36,13 @@ fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
+ }
+ fn load_at(path: &Path) -> Result<EngineeringSnapshot, String> {
+     match read_bounded(path)? {
+-        None => Ok(EngineeringSnapshot { terms: vec![], revision: None }),
++        None => Ok(EngineeringSnapshot { terms: vec![], revision: None, format_version: 2, backup_file: None }),
+         Some(bytes) => {
+             let terms = parse_user_terms(&bytes).map_err(terms_error)?;
+-            let revision = Some(String::from_utf8(bytes).map_err(|_| "詞庫不是 UTF-8。")?);
+-            Ok(EngineeringSnapshot { terms, revision })
++            let revision = Some(String::from_utf8(bytes.clone()).map_err(|_| "詞庫不是 UTF-8。")?);
++            let format_version = serde_json::from_slice::<serde_json::Value>(&bytes).ok()
++                .and_then(|v| v.get("version").and_then(|x| x.as_u64())).unwrap_or(1) as u32;
++            Ok(EngineeringSnapshot { terms, revision, format_version, backup_file: None })
+         }
+     }
+ }
+@@ -51,14 +53,26 @@ fn save_at(directory: &Path, terms: Vec<UserEngineeringTerm>, expected: Option<S
+         .open(directory.join("engineering-terms.lock")).map_err(|_| "無法開啟詞庫鎖定檔。")?;
+     fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| "另一個設定視窗正在儲存，請稍後重試。")?;
+     let path = directory.join(USER_TERMS_FILENAME);
+-    if load_at(&path)?.revision != expected {
++    let previous = load_at(&path)?;
++    if previous.revision != expected {
+         return Err("詞庫已被另一個視窗修改，請重新載入後再編輯；您的編輯內容仍保留在本視窗。".into());
+     }
++    let backup_file = if previous.format_version == 1 {
++        let original = previous.revision.as_ref().ok_or("無法取得舊詞庫備份內容。")?;
++        let mut backup = tempfile::Builder::new().prefix("engineering-terms-v1-backup-").suffix(".json")
++            .tempfile_in(directory).map_err(|_| "無法建立舊詞庫備份；原檔未變更。")?;
++        backup.write_all(original.as_bytes()).and_then(|_| backup.as_file().sync_all())
++            .map_err(|_| "無法寫入舊詞庫備份；原檔未變更。")?;
++        let (_, backup_path) = backup.keep().map_err(|_| "無法保留舊詞庫備份；原檔未變更。")?;
++        Some(backup_path.file_name().ok_or("備份檔名無效。")?.to_string_lossy().into_owned())
++    } else { None };
+     let mut temp = tempfile::NamedTempFile::new_in(directory).map_err(|_| "無法建立暫存詞庫。")?;
+     temp.write_all(&bytes).and_then(|_| temp.as_file().sync_all()).map_err(|_| "儲存失敗，原有詞庫未變更。")?;
+     temp.persist(&path).map_err(|_| "無法替換詞庫，原有詞庫未變更。")?;
+     // Return the bytes just persisted while the lock is still held.
+-    load_at(&path)
++    let mut saved = load_at(&path)?;
++    saved.backup_file = backup_file;
++    Ok(saved)
+ }
+ 
+ #[tauri::command]
+@@ -94,7 +108,9 @@ pub async fn read_engineering_text() -> Result<Vec<UserEngineeringTerm>, String>
+     tauri::async_runtime::spawn_blocking(|| {
+         let bytes = read_bounded(&directory()?.join("engineering-terms.draft.txt"))?
+             .ok_or("請先開啟工程詞彙文本，編輯並儲存後再匯入。")?;
+-        parse_user_terms_text(&bytes).map_err(terms_error)
++        if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'{') {
++            parse_user_terms(&bytes).map_err(terms_error)
++        } else { parse_user_terms_text(&bytes).map_err(terms_error) }
+     }).await.map_err(|_| "匯入文本未完成。")?
+ }
+ 
+@@ -104,11 +120,10 @@ pub async fn export_engineering_text() -> Result<(), String> {
+         let dir = directory()?;
+         let snapshot = load_at(&dir.join(USER_TERMS_FILENAME))?;
+         fs::create_dir_all(&dir).map_err(|_| "無法建立詞庫目錄。")?;
+-        let mut text = ENGINEERING_TEXT_TEMPLATE.to_owned();
+-        for term in snapshot.terms { text.push_str(&format!("{}\t{}\t{}\n", term.input, term.output, term.annotation)); }
++        let text = encode_user_terms_text(&snapshot.terms).map_err(terms_error)?;
+         let mut file = tempfile::Builder::new().prefix("engineering-export-").suffix(".txt")
+             .tempfile_in(&dir).map_err(|_| "無法建立匯出文本。")?;
+-        file.write_all(text.as_bytes()).map_err(|_| "無法寫入匯出文本。")?;
++        file.write_all(&text).map_err(|_| "無法寫入匯出文本。")?;
+         let (_, path) = file.keep().map_err(|_| "無法保留匯出文本。")?;
+         let windows = std::env::var_os("SystemRoot").ok_or("無法取得記事本位置。")?;
+         std::process::Command::new(PathBuf::from(windows).join("System32").join("notepad.exe"))
+@@ -121,7 +136,7 @@ pub async fn export_engineering_text() -> Result<(), String> {
+ mod tests {
+     use super::*;
+     fn terms() -> Vec<UserEngineeringTerm> {
+-        vec![UserEngineeringTerm { input: "CH4".into(), output: "CH₄".into(), annotation: "甲烷".into() }]
++        vec![UserEngineeringTerm { input: "CH4".into(), output: "CH₄".into(), annotation: "甲烷".into(), zh_aliases: vec!["甲烷".into()] }]
+     }
+     #[test]
+     fn create_edit_delete_and_restart_preserve_user_terms() {
+@@ -143,6 +158,26 @@ mod tests {
+         assert!(save_at(dir.path(), invalid, saved.revision).is_err());
+         assert_eq!(fs::read(&path).unwrap(), before);
+     }
++    #[test]
++    fn v1_migration_backs_up_exact_bytes_and_keeps_revision_guard() {
++        let dir = tempfile::tempdir().unwrap(); let path = dir.path().join(USER_TERMS_FILENAME);
++        let original = "{\n \"version\": 1, \"terms\": []\n}";
++        fs::write(&path, original.as_bytes()).unwrap();
++        let old = load_at(&path).unwrap();
++        assert_eq!(old.format_version, 1);
++        assert!(save_at(dir.path(), terms(), None).is_err());
++        assert_eq!(fs::read_dir(dir.path()).unwrap().filter_map(Result::ok)
++            .filter(|entry| entry.file_name().to_string_lossy().starts_with("engineering-terms-v1-backup-")).count(), 0);
++        let saved = save_at(dir.path(), terms(), old.revision).unwrap();
++        assert_eq!(saved.format_version, 2);
++        let backup = dir.path().join(saved.backup_file.unwrap());
++        assert_eq!(fs::read(&backup).unwrap(), original.as_bytes());
++        assert_eq!(saved.terms[0].zh_aliases, vec!["甲烷"]);
++        let saved_again = save_at(dir.path(), vec![], saved.revision).unwrap();
++        assert!(saved_again.backup_file.is_none());
++        assert_eq!(fs::read(&backup).unwrap(), original.as_bytes());
++    }
++
+     #[test]
+     fn malformed_file_is_not_silently_replaced() {
+         let dir = tempfile::tempdir().unwrap(); let path = dir.path().join(USER_TERMS_FILENAME);
+@@ -152,3 +187,19 @@ mod tests {
+         assert_eq!(fs::read(&path).unwrap(), b"malformed");
+     }
+ }
++
++#[tauri::command]
++pub async fn open_engineering_template() -> Result<(), String> {
++    tauri::async_runtime::spawn_blocking(|| {
++        let dir = directory()?;
++        fs::create_dir_all(&dir).map_err(|_| "無法建立詞庫目錄。")?;
++        let mut file = tempfile::Builder::new().prefix("engineering-template-v2-").suffix(".txt")
++            .tempfile_in(&dir).map_err(|_| "無法建立新版範本。")?;
++        file.write_all(ENGINEERING_TEXT_TEMPLATE.as_bytes()).map_err(|_| "無法寫入新版範本。")?;
++        let (_, path) = file.keep().map_err(|_| "無法保留新版範本。")?;
++        let windows = std::env::var_os("SystemRoot").ok_or("無法取得記事本位置。")?;
++        std::process::Command::new(PathBuf::from(windows).join("System32").join("notepad.exe"))
++            .arg(path).spawn().map_err(|_| "無法開啟記事本。")?;
++        Ok(())
++    }).await.map_err(|_| "開啟新版範本未完成。")?
++}
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index bc8f2bd..d677b0d 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -83,6 +83,7 @@ pub fn run() {
+             engineering::load_engineering_terms,
+             engineering::save_engineering_terms,
+             engineering::open_engineering_text,
++            engineering::open_engineering_template,
+             engineering::read_engineering_text,
+             engineering::export_engineering_text,
+         ])
+diff --git a/src/EngineeringTerms.tsx b/src/EngineeringTerms.tsx
+index 49c78cf..bb670c3 100644
+--- a/src/EngineeringTerms.tsx
++++ b/src/EngineeringTerms.tsx
+@@ -6,12 +6,14 @@ import { Button, Input, Text } from "@fluentui/react-components";
+ import { invoke } from "@tauri-apps/api/core";
+ import { ask } from "@tauri-apps/plugin-dialog";
+ 
+-type Term = { input: string; output: string; annotation: string };
+-type Snapshot = { terms: Term[]; revision: string | null };
++type Term = { input: string; output: string; annotation: string; zh_aliases: string[] };
++type Snapshot = { terms: Term[]; revision: string | null; format_version: number; backup_file: string | null };
+ 
+ export default function EngineeringTerms({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
+   const [terms, setTerms] = useState<Term[]>([]);
+   const [revision, setRevision] = useState<string | null>(null);
++  const [formatVersion, setFormatVersion] = useState(2);
++  const [query, setQuery] = useState("");
+   const [loaded, setLoaded] = useState(false);
+   const [busy, setBusy] = useState(false);
+   const [dirty, setDirty] = useState(false);
+@@ -22,18 +24,19 @@ export default function EngineeringTerms({ onDirtyChange }: { onDirtyChange: (di
+     setBusy(true); setError("");
+     try {
+       const data = await invoke<Snapshot>("load_engineering_terms");
+-      setTerms(data.terms); setRevision(data.revision); setLoaded(true); setDirty(false); setStatus("");
++      setTerms(data.terms); setRevision(data.revision); setFormatVersion(data.format_version); setLoaded(true); setDirty(false); setStatus("");
+     } catch (e) { setError(String(e)); }
+     finally { setBusy(false); }
+   }
+   useEffect(() => { void load(); }, []);
+   function edit(next: Term[]) { setTerms(next); setDirty(true); setStatus("尚未儲存"); setError(""); }
+   async function save() {
++    if (formatVersion === 1 && !await ask("儲存將把詞庫從 v1 升級為 v2，並先備份原檔。舊版輸入法不能讀取 v2；請搭配 1.1.0 使用。是否儲存？", { title: "詞庫格式升級", kind: "warning" })) return;
+     setBusy(true); setError("");
+     try {
+       const data = await invoke<Snapshot>("save_engineering_terms", { terms, expected: revision });
+-      setTerms(data.terms); setRevision(data.revision); setDirty(false);
+-      setStatus("詞彙已儲存。請重新開啟使用輸入法的應用程式後測試。");
++      setTerms(data.terms); setRevision(data.revision); setFormatVersion(data.format_version); setDirty(false);
++      setStatus(`詞彙已儲存。請重新開啟使用輸入法的應用程式後測試。${data.backup_file ? ` 原檔備份：${data.backup_file}` : ""}`);
+     } catch (e) { setError(String(e)); }
+     finally { setBusy(false); }
+   }
+@@ -43,13 +46,18 @@ export default function EngineeringTerms({ onDirtyChange }: { onDirtyChange: (di
+       if (command === "read_engineering_text") {
+         const imported = await invoke<Term[]>(command);
+         const merged = [...terms];
++        let added = 0, updated = 0;
+         for (const row of imported) {
+-          if (!merged.some(old => old.input.toLowerCase() === row.input.toLowerCase() && old.output === row.output)) merged.push(row);
++          const index = merged.findIndex(old => old.input.toLowerCase() === row.input.toLowerCase() && old.output === row.output);
++          if (index < 0) { merged.push(row); added++; }
++          else if (JSON.stringify(merged[index]) !== JSON.stringify(row)) { merged[index] = row; updated++; }
+         }
+-        const added = merged.length - terms.length;
+-        if (added) edit(merged);
+-        setStatus(`新增 ${added} 筆至預覽；相同輸入碼與候選已略過。請檢查後按「儲存詞彙」。`);
+-      } else { await invoke(command); setStatus("已開啟文本。批次編輯文本儲存後，請按「從文本匯入」。"); }
++        if (added || updated) {
++          if (!await ask(`將新增 ${added} 筆、更新 ${updated} 筆相同輸入碼與候選的註解／中文別名。匯入內容會先放入表單供檢查，不會直接寫入詞庫。是否載入預覽？`, { title: "匯入變更預覽", kind: "warning" })) return;
++          edit(merged);
++        }
++        setStatus(`預覽：新增 ${added} 筆、更新 ${updated} 筆。請檢查表單後按「儲存詞彙」。`);
++      } else { await invoke(command); setStatus(command === "open_engineering_template" ? "已開啟新版範本副本，原有草稿保留。請將編輯好的詞條貼入「工程詞彙文本」，儲存後匯入。" : "已開啟文本。批次編輯文本儲存後，請按「從文本匯入」。"); }
+     } catch (e) { setError(String(e)); }
+     finally { setBusy(false); }
+   }
+@@ -57,31 +65,42 @@ export default function EngineeringTerms({ onDirtyChange }: { onDirtyChange: (di
+     if (dirty && !await ask("重新載入會捨棄本視窗尚未儲存的詞彙編輯，是否繼續？", { title: "重新載入詞彙", kind: "warning" })) return;
+     await load();
+   }
++  const duplicate = terms.some((row, index) => terms.some((other, n) => n < index && other.input.toLowerCase() === row.input.toLowerCase() && other.output === row.output));
++  const visibleTerms = terms.map((term, index) => ({ term, index })).filter(({ term }) =>
++    [term.input, term.output, term.annotation, ...term.zh_aliases].some(value => value.toLowerCase().includes(query.toLowerCase())));
+   return <section aria-label="自訂工程詞彙" style={{ margin: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+     <Text>輸入碼例如 H2O，候選文字填 H₂O，註解填「水」。原文仍保留，選取候選才會送出。</Text>
+     <Text>只編輯您的自訂詞條，內建詞庫會繼續提供候選。此頁請按「儲存詞彙」；儲存後重新開啟使用輸入法的應用程式生效。</Text>
++    <Text>中文別名例如「甲烷」，只比對完整尚未送出的組字；「甲烷濃度」不會整句替換。多個別名以「、」分隔，註解不會自動成為別名。</Text>
++    {formatVersion === 1 && <Text>目前是 v1 詞庫；儲存時將確認升級並備份。若要回退舊版，請先關閉設定，把 ChewingDev 資料夾的 v1 備份複製回 engineering-terms.user.json，再重開應用程式。</Text>}
++    <Input aria-label="搜尋工程詞彙" placeholder="搜尋輸入碼、候選、註解或中文別名" value={query} onChange={(_, data) => setQuery(data.value)} />
++    {duplicate && <Text role="alert">有重複的輸入碼與候選文字，請合併或刪除重複列。</Text>}
+     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+-      <Button type="button" disabled={busy || !loaded || terms.length >= 500} onClick={() => edit([...terms, { input: "", output: "", annotation: "" }])}>新增詞條</Button>
+-      <Button type="button" appearance="primary" disabled={busy || !loaded || !dirty} onClick={() => void save()}>儲存詞彙</Button>
++      <Button type="button" disabled={busy || !loaded || terms.length >= 500} onClick={() => edit([...terms, { input: "", output: "", annotation: "", zh_aliases: [] }])}>新增詞條</Button>
++      <Button type="button" appearance="primary" disabled={busy || !loaded || !dirty || duplicate} onClick={() => void save()}>儲存詞彙</Button>
+       <Button type="button" disabled={busy} onClick={() => void reload()}>重新載入</Button>
+     </div>
+     <div style={{ maxHeight: 310, overflowY: "auto" }}>
+-      <table style={{ width: "100%" }}><thead><tr><th>輸入碼</th><th>候選文字</th><th>註解</th><th>操作</th></tr></thead>
+-        <tbody>{terms.map((term, index) => <tr key={index}>
++      <table style={{ width: "100%" }}><thead><tr><th>輸入碼</th><th>候選文字</th><th>註解</th><th>中文別名</th><th>操作</th></tr></thead>
++        <tbody>{visibleTerms.map(({ term, index }) => <tr key={index}>
+           {(["input", "output", "annotation"] as const).map((field, col) => <td key={field}>
+             <Input aria-label={`第 ${index + 1} 筆${["輸入碼", "候選文字", "註解"][col]}`}
+               style={{ width: "100%", minWidth: 50 }} value={term[field]} disabled={busy}
+               onChange={(_, data) => edit(terms.map((row, n) => n === index ? { ...row, [field]: data.value } : row))} />
+           </td>)}
++          <td><Input aria-label={`第 ${index + 1} 筆中文別名`} value={term.zh_aliases.join("、")} disabled={busy}
++            onChange={(_, data) => edit(terms.map((row, n) => n === index ? { ...row, zh_aliases: data.value === "" ? [] : data.value.split(/[、,，]/).map(value => value.trim()) } : row))} /></td>
+           <td><Button type="button" disabled={busy} onClick={() => edit(terms.filter((_, n) => n !== index))}>刪除</Button></td>
+         </tr>)}</tbody>
+       </table>
+       {loaded && terms.length === 0 && <Text>尚無自訂詞條，按「新增詞條」開始。</Text>}
+     </div>
++    <Text>顯示 {visibleTerms.length}／{terms.length} 筆。選取候選只送出「候選文字」，不包含註解或別名。</Text>
+     <Text weight="semibold">批次編輯與大模型協作</Text>
+     <Text>文本附格式說明、範例與可貼給 GPT／其他模型的提示詞。既有批次文本會保留；模型產出的內容須先匯入預覽，再自行儲存。</Text>
+     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+       <Button type="button" disabled={busy} onClick={() => void textAction("open_engineering_text")}>開啟工程詞彙文本</Button>
++      <Button type="button" disabled={busy} onClick={() => void textAction("open_engineering_template")}>開啟新版格式範本</Button>
+       <Button type="button" disabled={busy || !loaded} onClick={() => void textAction("read_engineering_text")}>從文本匯入</Button>
+       <Button type="button" disabled={busy || !loaded || dirty} onClick={() => void textAction("export_engineering_text")}>匯出已儲存詞彙與提示詞</Button>
+     </div>
+-- 
+2.54.0 (Apple Git-157)
+

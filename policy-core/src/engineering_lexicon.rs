@@ -144,7 +144,9 @@ mod tests {
     }
     #[test]
     fn bundled_annotations_are_not_implicit_chinese_aliases() {
-        assert!(EngineeringLexicon::bundled().chinese_matches("水").is_empty());
+        assert!(EngineeringLexicon::bundled().chinese_matches("智慧型手機品牌").is_empty());
+        assert_eq!(EngineeringLexicon::bundled().chinese_matches("水")[0].text, "H₂O");
+        assert!(EngineeringLexicon::bundled().chinese_matches("水溶液").is_empty());
         let mut catalog: serde_json::Value = serde_json::from_str(include_str!("../resources/engineering-terms.json")).unwrap();
         catalog["terms"][0]["zh_aliases"] = serde_json::json!(["測試別名"]);
         let lexicon = EngineeringLexicon::from_json(&catalog.to_string());

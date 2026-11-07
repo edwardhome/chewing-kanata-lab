@@ -300,7 +300,7 @@ Invalid line with multiple items
         let chinese = lexicon.chinese_candidate_items("甲烷");
         assert_eq!(chinese.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["CH₄"]);
         assert_eq!(chinese[0].annotation.as_deref(), Some("燃料"));
-        for query in ["甲", "甲烷濃度", " 甲烷", "燃料", "水", ""] {
+        for query in ["甲", "甲烷濃度", " 甲烷", "燃料", "水溶液", ""] {
             assert!(lexicon.chinese_candidate_items(query).is_empty());
         }
         assert_eq!(lexicon.candidate_items("CH4")[0].text, "CH₄");
