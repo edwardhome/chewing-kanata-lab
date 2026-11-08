@@ -181,3 +181,7 @@ pub mod prediction;
 pub mod prediction_session;
 pub mod ollama_protocol;
 pub use prediction::{validate_and_extract_continuation, PredictionLanguage};
+
+pub mod shared_lexicon;
+pub mod shared_lexicon_store;
+pub mod shared_engineering_exchange;

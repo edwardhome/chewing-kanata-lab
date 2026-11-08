@@ -1,0 +1,96 @@
+From 0edbe1577be9f7d4ff23086672b36e3f92bff8db Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Sun, 8 Nov 2026 20:14:11 +0800
+Subject: [PATCH] chore(release): identify shared lexicon development settings
+
+---
+ package-lock.json         | 4 ++--
+ package.json              | 2 +-
+ src-tauri/Cargo.lock      | 4 ++--
+ src-tauri/Cargo.toml      | 2 +-
+ src-tauri/tauri.conf.json | 2 +-
+ 5 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/package-lock.json b/package-lock.json
+index b7be1f7..9fe1f01 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "chewing-preferences",
+-  "version": "1.1.0",
++  "version": "1.1.1-dev.shared.20261108",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "chewing-preferences",
+-      "version": "1.1.0",
++      "version": "1.1.1-dev.shared.20261108",
+       "dependencies": {
+         "@fluentui/react-components": "^9.70.0",
+         "@fluentui/react-icons": "^2.0.323",
+diff --git a/package.json b/package.json
+index 8adc117..c9bf19a 100644
+--- a/package.json
++++ b/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "chewing-preferences",
+   "private": true,
+-  "version": "1.1.0",
++  "version": "1.1.1-dev.shared.20261108",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index 503ed1d..c0a93d0 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -501,7 +501,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing-preferences"
+-version = "1.1.0"
++version = "1.1.1-dev.shared.20261108"
+ dependencies = [
+  "chewing-policy-core",
+  "chewing_tip_core",
+@@ -525,7 +525,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.1.0"
++version = "1.1.1-dev.shared.20261108"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+index e2b210b..182d87f 100644
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -4,7 +4,7 @@
+ 
+ [package]
+ name = "chewing-preferences"
+-version = "1.1.0"
++version = "1.1.1-dev.shared.20261108"
+ edition = "2024"
+ license = "GPL-3.0-or-later"
+ 
+diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+index fd13977..d38ecff 100644
+--- a/src-tauri/tauri.conf.json
++++ b/src-tauri/tauri.conf.json
+@@ -1,7 +1,7 @@
+ {
+   "$schema": "https://schema.tauri.app/config/2",
+   "productName": "AI新酷音設定",
+-  "version": "1.1.0",
++  "version": "1.1.1-dev.shared.20261108",
+   "identifier": "org.aichewing.preferences",
+   "build": {
+     "beforeDevCommand": "npm run dev",
+-- 
+2.54.0 (Apple Git-157)
+

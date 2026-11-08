@@ -1,0 +1,665 @@
+From 7c6e173ccb3b5d0950b2c96c4e837be39b1dda41 Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Sun, 8 Nov 2026 19:27:43 +0800
+Subject: [PATCH] feat(settings): preview and exchange shared personal lexicons
+
+---
+ src-tauri/Cargo.lock            |  10 +
+ src-tauri/src/lib.rs            |  13 ++
+ src-tauri/src/shared_lexicon.rs | 361 ++++++++++++++++++++++++++++++++
+ src/App.tsx                     |   3 +
+ src/SharedLexicon.tsx           | 181 ++++++++++++++++
+ 5 files changed, 568 insertions(+)
+ create mode 100644 src-tauri/src/shared_lexicon.rs
+ create mode 100644 src/SharedLexicon.tsx
+
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index ae42ca7..503ed1d 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -491,8 +491,12 @@ dependencies = [
+ name = "chewing-policy-core"
+ version = "0.1.0"
+ dependencies = [
++ "fs2",
+  "serde",
+  "serde_json",
++ "sha2",
++ "tempfile",
++ "unicode-general-category",
+ ]
+ 
+ [[package]]
+@@ -4391,6 +4395,12 @@ dependencies = [
+  "unic-common",
+ ]
+ 
++[[package]]
++name = "unicode-general-category"
++version = "0.6.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2281c8c1d221438e373249e065ca4989c4c36952c211ff21a0ee91c44a3869e7"
++
+ [[package]]
+ name = "unicode-ident"
+ version = "1.0.24"
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index d677b0d..967f82b 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -18,10 +18,12 @@ mod version;
+ mod updates;
+ mod recovery;
+ mod engineering;
++mod shared_lexicon;
+ 
+ #[cfg_attr(mobile, tauri::mobile_entry_point)]
+ pub fn run() {
+     tauri::Builder::default()
++        .manage(shared_lexicon::SharedState::default())
+         .plugin(tauri_plugin_dialog::init())
+         .plugin(tauri_plugin_process::init())
+         .plugin(tauri_plugin_opener::init())
+@@ -79,6 +81,17 @@ pub fn run() {
+             get_system_fonts,
+             chewing_version,
+             updates::check_for_updates,
++            shared_lexicon::shared_lexicon_status,
++            shared_lexicon::preview_shared_lexicon,
++            shared_lexicon::cancel_shared_lexicon,
++            shared_lexicon::approve_shared_lexicon,
++            shared_lexicon::export_shared_lexicon,
++            shared_lexicon::set_shared_lexicon_enabled,
++            shared_lexicon::rollback_shared_lexicon,
++            shared_lexicon::load_engineering_export_source,
++            shared_lexicon::preview_engineering_shared_export,
++            shared_lexicon::cancel_engineering_shared_export,
++            shared_lexicon::export_engineering_shared_lexicon,
+             recovery::request_input_recovery,
+             engineering::load_engineering_terms,
+             engineering::save_engineering_terms,
+diff --git a/src-tauri/src/shared_lexicon.rs b/src-tauri/src/shared_lexicon.rs
+new file mode 100644
+index 0000000..392547e
+--- /dev/null
++++ b/src-tauri/src/shared_lexicon.rs
+@@ -0,0 +1,361 @@
++// SPDX-FileCopyrightText: 2026 AI Chewing contributors
++// SPDX-License-Identifier: GPL-3.0-or-later
++use chewing_policy_core::shared_lexicon::{self as exchange, LexiconDocument, MergePreview, MAX_BYTES};
++use chewing_policy_core::shared_lexicon_store::SharedStore;
++use chewing_policy_core::shared_engineering_exchange::{preview_engineering_export, EngineeringExportPreview};
++use chewing_policy_core::user_engineering::{parse_user_terms, UserEngineeringTerm, MAX_USER_TERMS_BYTES, USER_TERMS_FILENAME};
++use serde::Serialize;
++use std::{fs, io::{Read, Write}, path::{Path, PathBuf}, sync::{Mutex, atomic::{AtomicU64, Ordering}}};
++
++#[derive(Default)]
++pub struct SharedState {
++    pending: Mutex<Option<Pending>>,
++    engineering_export: Mutex<Option<PendingEngineeringExport>>,
++}
++struct Pending { token: String, owner: String, expected: Option<String>, document: LexiconDocument, preview: MergePreview }
++static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
++#[derive(Serialize)]
++pub struct Status { revision: Option<String>, version: Option<String>, entries: usize, enabled: bool }
++#[derive(Serialize)]
++pub struct Preview { token: String, suggested_version: String, diff: MergePreview }
++fn store() -> Result<SharedStore,String> {
++    let root=chewing_tip_core::shell::user_dir().map_err(|_|"無法取得 AI新酷音資料目錄。")?;
++    Ok(SharedStore::new(root.join("SharedLexicon")))
++}
++fn error(e:impl std::fmt::Display)->String { format!("共用詞庫操作未完成：{e}。原有個人詞庫不受影響。") }
++fn load_status()->Result<Status,String> {
++    match store()?.load().map_err(error)? {
++        None=>Ok(Status{revision:None,version:None,entries:0,enabled:false}),
++        Some(s)=>Ok(Status{revision:Some(s.revision),version:Some(s.document.dictionary_version),entries:s.document.entries.len(),enabled:s.enabled}),
++    }
++}
++fn read_selected(path:String)->Result<Vec<u8>,String> {
++    let p=PathBuf::from(path);let metadata=fs::symlink_metadata(&p).map_err(error)?;
++    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len()>MAX_BYTES as u64 {return Err("請選擇不超過 8 MiB 的一般 JSON 檔案。".into());}
++    let mut bytes=Vec::new();fs::File::open(p).map_err(error)?.take(MAX_BYTES as u64+1).read_to_end(&mut bytes).map_err(error)?;
++    if bytes.len()>MAX_BYTES {return Err("詞庫檔案超過 8 MiB。".into());}Ok(bytes)
++}
++#[tauri::command]
++pub async fn shared_lexicon_status()->Result<Status,String> {
++    tauri::async_runtime::spawn_blocking(load_status).await.map_err(error)?
++}
++#[tauri::command]
++pub async fn preview_shared_lexicon(path:String, window:tauri::Window, state:tauri::State<'_,SharedState>)->Result<Preview,String> {
++    let (document,expected,preview)=tauri::async_runtime::spawn_blocking(move|| {
++        let incoming=exchange::parse(&read_selected(path)?).map_err(error)?;
++        let current=store()?.load().map_err(error)?;
++        let expected=current.as_ref().map(|s|s.revision.clone());
++        let base=current.map(|s|s.document).unwrap_or(LexiconDocument{format:"ai-bopomofo.lexicon".into(),schema_version:"1.0.0".into(),document_type:"review".into(),dictionary_version:"empty-local".into(),entries:vec![]});
++        let preview=exchange::merge_preview(&base,&incoming).map_err(error)?;
++        Ok::<_,String>((incoming,expected,preview))
++    }).await.map_err(error)??;
++    let token=NEXT_TOKEN.fetch_add(1,Ordering::Relaxed).to_string();
++    let result=Preview{token:token.clone(),suggested_version:document.dictionary_version.clone(),diff:preview.clone()};
++    *state.pending.lock().map_err(|_|"預覽狀態鎖定失敗。")?=Some(Pending{token,owner:window.label().to_owned(),expected,document,preview});
++    Ok(result)
++}
++#[tauri::command]
++pub fn cancel_shared_lexicon(token:String, window:tauri::Window, state:tauri::State<'_,SharedState>)->Result<(),String> {
++    cancel_import_for(&state, &token, window.label())
++}
++#[tauri::command]
++pub async fn approve_shared_lexicon(token:String, version:String, incoming_conflicts:Vec<String>, confirmed:bool, window:tauri::Window, state:tauri::State<'_,SharedState>)->Result<Status,String> {
++    if !confirmed {return Err("請先明確確認部署預覽內容。".into());}
++    let pending={let mut guard=state.pending.lock().map_err(|_|"預覽狀態鎖定失敗。")?;
++        if !guard.as_ref().is_some_and(|p|p.token==token && p.owner==window.label()){return Err("預覽已失效，請重新選檔。".into());}guard.take().unwrap()};
++    tauri::async_runtime::spawn_blocking(move|| {
++        let (document, expected) = resolve_import(pending, &version, &incoming_conflicts)?;
++        let bytes=exchange::encode(&document).map_err(error)?;
++        let store=store()?;let prepared=store.prepare(&bytes,expected.as_deref()).map_err(error)?;
++        store.approve(prepared).map_err(error)?;load_status()
++    }).await.map_err(error)?
++}
++#[tauri::command]
++pub async fn export_shared_lexicon(path:String)->Result<(),String> {
++    tauri::async_runtime::spawn_blocking(move|| {
++        let snapshot=store()?.load().map_err(error)?.ok_or("尚未有本機共用詞庫可匯出。")?;
++        let bytes=exchange::encode(&snapshot.document).map_err(error)?;
++        write_export_snapshot(&PathBuf::from(path), &bytes)?;
++        Ok(())
++    }).await.map_err(error)?
++}
++#[tauri::command]
++pub async fn set_shared_lexicon_enabled(enabled:bool,expected:Option<String>)->Result<Status,String> {
++    tauri::async_runtime::spawn_blocking(move|| {store()?.set_enabled(enabled,expected.as_deref()).map_err(error)?;load_status()}).await.map_err(error)?
++}
++#[tauri::command]
++pub async fn rollback_shared_lexicon(expected:Option<String>,confirmed:bool)->Result<Status,String> {
++    if !confirmed {return Err("請先確認回復上一版。".into());}
++    tauri::async_runtime::spawn_blocking(move|| {store()?.rollback(expected.as_deref()).map_err(error)?;load_status()}).await.map_err(error)?
++}
++
++
++fn cancel_import_for(state: &SharedState, token: &str, owner: &str) -> Result<(), String> {
++    let mut pending=state.pending.lock().map_err(|_|"預覽狀態鎖定失敗。")?;
++    if pending.as_ref().is_some_and(|p|p.token==token && p.owner==owner){*pending=None;}
++    Ok(())
++}
++fn resolve_import(pending: Pending, version: &str, incoming_conflicts: &[String]) -> Result<(LexiconDocument, Option<String>), String> {
++    let mut entries = pending.preview.entries;
++    let allowed: std::collections::HashSet<_> = pending.preview.conflicts.iter().map(|c| c.incoming.entry_id.as_str()).collect();
++    if incoming_conflicts.iter().any(|id| !allowed.contains(id.as_str())) { return Err("衝突選擇不符合預覽。".into()); }
++    for conflict in pending.preview.conflicts {
++        if incoming_conflicts.contains(&conflict.incoming.entry_id) {
++            if let Some(entry) = entries.iter_mut().find(|e| e.entry_id == conflict.incoming.entry_id) { *entry = conflict.incoming; }
++        }
++    }
++    let mut document = pending.document;
++    document.entries = entries;
++    document.dictionary_version = version.to_owned();
++    document.validate().map_err(error)?;
++    Ok((document, pending.expected))
++}
++
++#[derive(Serialize)]
++pub struct EngineeringExportSource {
++    terms: Vec<UserEngineeringTerm>,
++    revision: Option<String>,
++}
++#[derive(Serialize)]
++pub struct EngineeringExportResult {
++    token: String,
++    selected_count: usize,
++    preview: EngineeringExportPreview,
++}
++struct PendingEngineeringExport {
++    token: String,
++    owner: String,
++    source_revision: Option<String>,
++    preview: EngineeringExportPreview,
++}
++
++fn engineering_directory() -> Result<PathBuf, String> {
++    chewing_tip_core::shell::user_dir().map_err(|_| "無法取得 AI新酷音資料目錄。".into())
++}
++fn read_engineering_export_source(directory: &Path) -> Result<EngineeringExportSource, String> {
++    let path = directory.join(USER_TERMS_FILENAME);
++    let metadata = match fs::symlink_metadata(&path) {
++        Ok(metadata) => metadata,
++        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(EngineeringExportSource { terms: vec![], revision: None }),
++        Err(_) => return Err("無法讀取已儲存的私人工程詞。".into()),
++    };
++    #[cfg(windows)]
++    let linked = { use std::os::windows::fs::MetadataExt; metadata.file_attributes() & 0x400 != 0 };
++    #[cfg(not(windows))]
++    let linked = metadata.file_type().is_symlink();
++    if !metadata.is_file() || metadata.file_type().is_symlink() || linked || metadata.len() > MAX_USER_TERMS_BYTES as u64 {
++        return Err("工程詞來源必須是有效的一般檔案，且不可超過 256 KiB。".into());
++    }
++    let mut bytes = Vec::new();
++    fs::File::open(&path).map_err(|_| "無法讀取私人工程詞。")?
++        .take(MAX_USER_TERMS_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|_| "讀取私人工程詞未完成。")?;
++    if bytes.len() > MAX_USER_TERMS_BYTES { return Err("私人工程詞超過 256 KiB。".into()); }
++    let terms = parse_user_terms(&bytes).map_err(|_| "私人工程詞格式無效，請先在工程詞設定檢查。")?;
++    let revision = String::from_utf8(bytes).map_err(|_| "私人工程詞必須使用 UTF-8。")?;
++    Ok(EngineeringExportSource { terms, revision: Some(revision) })
++}
++fn prepare_engineering_export_at(directory: &Path, selected: Vec<usize>, expected: Option<String>, version: &str, allow_alias_omission: bool)
++    -> Result<PendingEngineeringExport, String> {
++    let source = read_engineering_export_source(directory)?;
++    if source.revision != expected { return Err("工程詞已變更，請重新載入並選取後再預覽。".into()); }
++    let indices: std::collections::BTreeSet<_> = selected.iter().copied().collect();
++    if indices.is_empty() || indices.len() != selected.len() || indices.iter().any(|&i| i >= source.terms.len()) {
++        return Err("請至少選取一筆有效工程詞；選取清單不可重複。".into());
++    }
++    let indices: Vec<_> = indices.into_iter().collect();
++    let terms: Vec<_> = indices.iter().map(|&i| source.terms[i].clone()).collect();
++    let mut preview = preview_engineering_export(&terms, version, allow_alias_omission)
++        .map_err(|_| "無法產生共用格式；請檢查版本名稱、詞條格式與容量。")?;
++    // Display indices refer to the source list, never an unrelated partial subset.
++    for row in &mut preview.omitted_aliases { row.index = indices[row.index]; }
++    for row in &mut preview.unsupported { row.index = indices[row.index]; }
++    Ok(PendingEngineeringExport { token: String::new(), owner: String::new(), source_revision: source.revision, preview })
++}
++fn take_engineering_export(state: &SharedState, token: &str, owner: &str) -> Result<PendingEngineeringExport, String> {
++    let mut guard = state.engineering_export.lock().map_err(|_| "匯出預覽狀態鎖定失敗。")?;
++    if !guard.as_ref().is_some_and(|pending| pending.token == token && pending.owner == owner) {
++        return Err("匯出預覽已失效，請重新預覽。".into());
++    }
++    guard.take().ok_or_else(|| "匯出預覽已失效。".into())
++}
++fn cancel_engineering_export_for(state: &SharedState, token: &str, owner: &str) -> Result<(), String> {
++    let mut guard = state.engineering_export.lock().map_err(|_| "匯出預覽狀態鎖定失敗。")?;
++    if guard.as_ref().is_some_and(|pending| pending.token == token && pending.owner == owner) { *guard = None; }
++    Ok(())
++}
++fn write_export_snapshot(path: &Path, bytes: &[u8]) -> Result<(), String> {
++    let parent = path.parent().ok_or("匯出位置無效。")?;
++    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|_| "無法在選取位置建立匯出暫存檔。")?;
++    file.write_all(bytes).and_then(|_| file.as_file().sync_all()).map_err(|_| "匯出寫入失敗，未建立完成的快照。")?;
++    file.persist_noclobber(path).map_err(|_| "無法建立匯出檔；請選擇尚未存在的新檔名。")?;
++    Ok(())
++}
++fn finish_engineering_export_at(directory: &Path, pending: PendingEngineeringExport, destination: &Path, confirmed: bool) -> Result<(), String> {
++    if !confirmed { return Err("請先確認匯出及預覽中列出的省略內容。".into()); }
++    let document = pending.preview.document.as_ref().ok_or("選取詞條包含不支援項目；不會匯出不完整的子集。")?;
++    // Use the same lock as the existing engineering editor, so the revision cannot
++    // change between validation and publishing the independent snapshot.
++    let lock = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
++        .open(directory.join("engineering-terms.lock")).map_err(|_| "無法鎖定工程詞來源以完成匯出。")?;
++    fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| "工程詞正在由其他視窗儲存，請稍後重新預覽。")?;
++    let source = read_engineering_export_source(directory)?;
++    if source.revision != pending.source_revision { return Err("工程詞在預覽後已變更；未匯出，請重新預覽。".into()); }
++    write_export_snapshot(destination, &exchange::encode(document).map_err(error)?)
++}
++
++/// Explicit source selection only; not called on settings startup or background refresh.
++#[tauri::command]
++pub async fn load_engineering_export_source() -> Result<EngineeringExportSource, String> {
++    tauri::async_runtime::spawn_blocking(|| read_engineering_export_source(&engineering_directory()?))
++        .await.map_err(|_| "讀取工程詞來源未完成。")?
++}
++#[tauri::command]
++pub async fn preview_engineering_shared_export(selected: Vec<usize>, expected: Option<String>, version: String, allow_alias_omission: bool,
++    window: tauri::Window, state: tauri::State<'_, SharedState>) -> Result<EngineeringExportResult, String> {
++    let selected_count = selected.len();
++    let mut pending = tauri::async_runtime::spawn_blocking(move ||
++        prepare_engineering_export_at(&engineering_directory()?, selected, expected, &version, allow_alias_omission))
++        .await.map_err(|_| "產生匯出預覽未完成。")??;
++    let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed).to_string();
++    pending.token = token.clone(); pending.owner = window.label().to_owned();
++    let result = EngineeringExportResult { token, selected_count, preview: pending.preview.clone() };
++    *state.engineering_export.lock().map_err(|_| "匯出預覽狀態鎖定失敗。")? = Some(pending);
++    Ok(result)
++}
++#[tauri::command]
++pub fn cancel_engineering_shared_export(token: String, window: tauri::Window, state: tauri::State<'_, SharedState>) -> Result<(), String> {
++    cancel_engineering_export_for(&state, &token, window.label())
++}
++#[tauri::command]
++pub async fn export_engineering_shared_lexicon(token: String, path: String, confirmed: bool, window: tauri::Window,
++    state: tauri::State<'_, SharedState>) -> Result<(), String> {
++    if !confirmed { return Err("請先確認匯出及預覽中列出的省略內容。".into()); }
++    let pending = take_engineering_export(&state, &token, window.label())?;
++    tauri::async_runtime::spawn_blocking(move || finish_engineering_export_at(&engineering_directory()?, pending, &PathBuf::from(path), confirmed))
++        .await.map_err(|_| "工程詞匯出未完成。")?
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use chewing_policy_core::user_engineering::encode_user_terms;
++    fn terms() -> Vec<UserEngineeringTerm> {
++        vec![UserEngineeringTerm { input: "CH4".into(), output: "CH₄".into(), annotation: "甲烷".into(), zh_aliases: vec!["甲烷".into(), "沼氣".into()] },
++            UserEngineeringTerm { input: "H2O".into(), output: "H₂O".into(), annotation: "水".into(), zh_aliases: vec![] }]
++    }
++    fn source() -> (tempfile::TempDir, Vec<u8>, Option<String>) {
++        let temp = tempfile::tempdir().unwrap(); let bytes = encode_user_terms(&terms()).unwrap();
++        fs::write(temp.path().join(USER_TERMS_FILENAME), &bytes).unwrap();
++        let revision = Some(String::from_utf8(bytes.clone()).unwrap()); (temp, bytes, revision)
++    }
++    #[test]
++    fn export_preview_and_cancel_leave_source_and_destination_untouched() {
++        let (temp, original, revision) = source();
++        let mut pending = prepare_engineering_export_at(temp.path(), vec![1], revision, "v1", false).unwrap();
++        pending.token = "export-1".into(); pending.owner = "main".into();
++        let state = SharedState::default(); *state.engineering_export.lock().unwrap() = Some(pending);
++        cancel_engineering_export_for(&state, "export-1", "other-window").unwrap();
++        assert!(state.engineering_export.lock().unwrap().is_some());
++        cancel_engineering_export_for(&state, "export-1", "main").unwrap();
++        assert!(take_engineering_export(&state, "export-1", "main").is_err());
++        assert_eq!(fs::read(temp.path().join(USER_TERMS_FILENAME)).unwrap(), original);
++        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
++    }
++    #[test]
++    fn unsupported_aliases_block_entire_export_by_default() {
++        let (temp, original, revision) = source();
++        let pending = prepare_engineering_export_at(temp.path(), vec![0, 1], revision, "v1", false).unwrap();
++        assert!(pending.preview.document.is_none()); assert_eq!(pending.preview.unsupported.len(), 1);
++        let output = temp.path().join("exchange.json");
++        assert!(finish_engineering_export_at(temp.path(), pending, &output, true).is_err());
++        assert!(!output.exists()); assert_eq!(fs::read(temp.path().join(USER_TERMS_FILENAME)).unwrap(), original);
++    }
++    #[test]
++    fn alias_omission_is_exact_and_requires_final_confirmation() {
++        let (temp, original, revision) = source();
++        let pending = prepare_engineering_export_at(temp.path(), vec![0], revision.clone(), "v1", true).unwrap();
++        assert_eq!(pending.preview.omitted_aliases[0].aliases, terms()[0].zh_aliases);
++        let output = temp.path().join("exchange.json");
++        assert!(finish_engineering_export_at(temp.path(), pending, &output, false).is_err());
++        assert!(!output.exists());
++        let pending = prepare_engineering_export_at(temp.path(), vec![0], revision, "v1", true).unwrap();
++        finish_engineering_export_at(temp.path(), pending, &output, true).unwrap();
++        let doc = exchange::parse(&fs::read(&output).unwrap()).unwrap();
++        assert_eq!(doc.entries.len(), 1); assert_eq!(doc.entries[0].text, "CH₄"); assert_eq!(doc.document_type, "review");
++        assert!(!doc.entries[0].review.user_confirmed);
++        assert_eq!(fs::read(temp.path().join(USER_TERMS_FILENAME)).unwrap(), original);
++    }
++    #[test]
++    fn changed_source_after_preview_rejects_export() {
++        let (temp, _, revision) = source();
++        let pending = prepare_engineering_export_at(temp.path(), vec![1], revision, "v1", false).unwrap();
++        let changed = encode_user_terms(&[]).unwrap(); fs::write(temp.path().join(USER_TERMS_FILENAME), &changed).unwrap();
++        let output = temp.path().join("exchange.json");
++        assert!(finish_engineering_export_at(temp.path(), pending, &output, true).is_err());
++        assert!(!output.exists()); assert_eq!(fs::read(temp.path().join(USER_TERMS_FILENAME)).unwrap(), changed);
++    }
++    #[test]
++    fn existing_export_and_source_paths_are_never_overwritten() {
++        let (temp, original, revision) = source();
++        let output = temp.path().join("existing.json"); fs::write(&output, b"existing contents").unwrap();
++        let pending = prepare_engineering_export_at(temp.path(), vec![1], revision.clone(), "v1", false).unwrap();
++        assert!(finish_engineering_export_at(temp.path(), pending, &output, true).is_err());
++        assert_eq!(fs::read(output).unwrap(), b"existing contents");
++        let pending = prepare_engineering_export_at(temp.path(), vec![1], revision, "v1", false).unwrap();
++        assert!(finish_engineering_export_at(temp.path(), pending, &temp.path().join(USER_TERMS_FILENAME), true).is_err());
++        assert_eq!(fs::read(temp.path().join(USER_TERMS_FILENAME)).unwrap(), original);
++    }
++    #[test]
++    fn source_selection_and_revision_are_checked_before_preview() {
++        let (temp, _, revision) = source();
++        for selection in [vec![], vec![2], vec![1, 1]] {
++            assert!(prepare_engineering_export_at(temp.path(), selection, revision.clone(), "v1", false).is_err());
++        }
++        assert!(prepare_engineering_export_at(temp.path(), vec![1], None, "v1", false).is_err());
++    }
++    #[test]
++    fn export_token_is_window_bound_and_single_use() {
++        let (temp, _, revision) = source();
++        let mut pending = prepare_engineering_export_at(temp.path(), vec![1], revision, "v1", false).unwrap();
++        pending.token = "export-2".into(); pending.owner = "main".into();
++        let state = SharedState::default(); *state.engineering_export.lock().unwrap() = Some(pending);
++        assert!(take_engineering_export(&state, "export-2", "other").is_err());
++        assert!(take_engineering_export(&state, "wrong", "main").is_err());
++        assert!(take_engineering_export(&state, "export-2", "main").is_ok());
++        assert!(take_engineering_export(&state, "export-2", "main").is_err());
++    }
++    #[test]
++    fn source_writer_lock_prevents_export_during_save() {
++        let (temp, _, revision) = source();
++        let pending = prepare_engineering_export_at(temp.path(), vec![1], revision, "v1", false).unwrap();
++        let lock = fs::OpenOptions::new().read(true).write(true).create_new(true).open(temp.path().join("engineering-terms.lock")).unwrap();
++        fs2::FileExt::try_lock_exclusive(&lock).unwrap();
++        let output = temp.path().join("exchange.json");
++        assert!(finish_engineering_export_at(temp.path(), pending, &output, true).is_err()); assert!(!output.exists());
++    }
++    fn pending_import() -> Pending {
++        let base = preview_engineering_export(&terms()[1..], "base", false).unwrap().document.unwrap();
++        let mut incoming = base.clone(); incoming.dictionary_version = "incoming".into();
++        incoming.entries[0].annotation = Some("匯入註解".into());
++        incoming.entries[0].usage = Some(exchange::Usage { commit_count: 10, manual_selection_count: 2 });
++        let preview = exchange::merge_preview(&base, &incoming).unwrap();
++        Pending { token: "import-1".into(), owner: "main".into(), expected: Some("base-revision".into()), document: incoming, preview }
++    }
++    #[test]
++    fn import_conflicts_default_to_base_and_explicit_choice_preserves_fields() {
++        let pending = pending_import(); let old = pending.preview.conflicts[0].existing.clone();
++        let (default, revision) = resolve_import(pending, "merged-default", &[]).unwrap();
++        assert_eq!(default.entries[0], old); assert_eq!(revision.as_deref(), Some("base-revision"));
++        let pending = pending_import(); let incoming = pending.preview.conflicts[0].incoming.clone();
++        let (selected, _) = resolve_import(pending, "merged-selected", &[incoming.entry_id.clone()]).unwrap();
++        assert_eq!(selected.entries[0], incoming); assert_eq!(selected.entries[0].usage.as_ref().unwrap().commit_count, 10);
++        assert!(resolve_import(pending_import(), "merged", &["unknown-entry".into()]).is_err());
++    }
++    #[test]
++    fn import_cancellation_is_window_and_token_bound() {
++        let state = SharedState::default(); *state.pending.lock().unwrap() = Some(pending_import());
++        cancel_import_for(&state, "import-1", "other").unwrap(); assert!(state.pending.lock().unwrap().is_some());
++        cancel_import_for(&state, "wrong", "main").unwrap(); assert!(state.pending.lock().unwrap().is_some());
++        cancel_import_for(&state, "import-1", "main").unwrap(); assert!(state.pending.lock().unwrap().is_none());
++    }
++}
+diff --git a/src/App.tsx b/src/App.tsx
+index 7fee16d..73b4fc1 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -39,6 +39,7 @@ import KeybindingTab from "./KeybindingTab";
+ import Updates from "./Updates";
+ import Recovery from "./Recovery";
+ import EngineeringTerms from "./EngineeringTerms";
++import SharedLexicon from "./SharedLexicon";
+ 
+ type FontFamilyName = {
+   name: string;
+@@ -332,6 +333,7 @@ function App() {
+         <Tab value="4">特殊符號</Tab>
+         <Tab value="5">快捷符號</Tab>
+         <Tab value="engineering">自訂工程詞彙</Tab>
++        <Tab value="shared">共用詞庫</Tab>
+         <Tab value="6">其他設定</Tab>
+       </TabList>
+       {selectedTab === "1" && config && (
+@@ -381,6 +383,7 @@ function App() {
+       {selectedTab === "keybind" && config && (
+         <KeybindingTab keybind={config.keybind} setKeybind={setKeybind} />
+       )}
++      <div hidden={selectedTab !== "shared"}><SharedLexicon /></div>
+       <div hidden={selectedTab !== "engineering"}><EngineeringTerms onDirtyChange={setEngineeringDirty} /></div>
+       <div className={styles.action}>
+         <Button
+diff --git a/src/SharedLexicon.tsx b/src/SharedLexicon.tsx
+new file mode 100644
+index 0000000..9ab86b6
+--- /dev/null
++++ b/src/SharedLexicon.tsx
+@@ -0,0 +1,181 @@
++// SPDX-FileCopyrightText: 2026 AI Chewing contributors
++// SPDX-License-Identifier: GPL-3.0-or-later
++import { useEffect, useState } from "react";
++import { Button, Checkbox, Field, Input, Text } from "@fluentui/react-components";
++import { invoke } from "@tauri-apps/api/core";
++import { ask, open, save } from "@tauri-apps/plugin-dialog";
++
++type Entry = { entry_id: string; term_type: string; reading: string; text: string; annotation?: string; category?: string; source: string; review: {status:string;user_confirmed:boolean}; usage?:unknown; model_suggestion?:unknown; sources?:string[]; policy?:string };
++type Status = { revision: string | null; version: string | null; entries: number; enabled: boolean };
++type Preview = { token:string; suggested_version:string; diff:{ entries:Entry[]; added:number; identical:number; conflicts:{existing:Entry;incoming:Entry}[]; case_collisions:[string,string][] } };
++export default function SharedLexicon() {
++  const [status,setStatus]=useState<Status|null>(null);
++  const [preview,setPreview]=useState<Preview|null>(null);
++  const [version,setVersion]=useState("");
++  const [replace,setReplace]=useState<string[]>([]);
++  const [busy,setBusy]=useState(false);
++  const [message,setMessage]=useState("");
++  const [error,setError]=useState("");
++  const [folder,setFolder]=useState<string|undefined>();
++  const [page,setPage]=useState(0);
++  const [query,setQuery]=useState("");
++  async function act(work:()=>Promise<void>) {setBusy(true);setError("");try {await work();}catch(e){setError(String(e));}finally{setBusy(false);}}
++  async function refresh(){setStatus(await invoke<Status>("shared_lexicon_status"));}
++  useEffect(()=>{void act(refresh);},[]);
++  async function importFile(){await act(async()=>{
++    const path=await open({multiple:false,directory:false,defaultPath:folder,filters:[{name:"共用詞庫 JSON",extensions:["json"]}]});
++    if(!path)return;
++    const value=await invoke<Preview>("preview_shared_lexicon",{path});
++    setPreview(value);setVersion(value.suggested_version);setReplace([]);setPage(0);setQuery("");setMessage("尚未部署。請檢查新增詞與衝突，確認後才會寫入獨立共用詞庫。");
++  });}
++  async function cancel(){await act(async()=>{if(preview)await invoke("cancel_shared_lexicon",{token:preview.token});setPreview(null);setMessage("已取消，詞庫未變更。");});}
++  async function approve(){if(!preview)return;
++    if(!await ask(`部署預覽中的 ${preview.diff.entries.length} 筆詞條，並採用 ${replace.length} 筆匯入衝突內容？既有私人詞庫不會被覆寫。`,{title:"本機核准共用詞庫",kind:"warning"}))return;
++    const token=preview.token;await act(async()=>{
++      try {setStatus(await invoke<Status>("approve_shared_lexicon",{token,version,incomingConflicts:replace,confirmed:true}));setMessage("已部署。正在組字的連線先保留舊版本，待安全邊界再載入。");}
++      finally {setPreview(null);}
++    });
++  }
++  async function exportFile(){await act(async()=>{
++    const name=`shared-lexicon-${new Date().toISOString().replace(/[:.]/g,"-")}.json`;
++    const path=await save({defaultPath:folder?`${folder}\\${name}`:name,filters:[{name:"共用詞庫 JSON",extensions:["json"]}]});
++    if(!path)return;await invoke("export_shared_lexicon",{path});setMessage("已匯出完整 JSON 快照，沒有包含本機核准憑證。另一台仍須預覽確認。");
++  });}
++  async function selectFolder(){await act(async()=>{const selected=await open({directory:true,multiple:false,defaultPath:folder});if(typeof selected==="string")setFolder(selected);});}
++  async function rollback(){if(!status||!await ask("回復上一個共用詞庫版本？私人中文詞與工程詞不變。",{title:"回復共用詞庫",kind:"warning"}))return;
++    await act(async()=>{setStatus(await invoke<Status>("rollback_shared_lexicon",{expected:status.revision,confirmed:true}));setPreview(null);setMessage("已回復上一版，輸入連線將於安全邊界載入。");});}
++  const rows=(preview?.diff.entries??[]).filter(e=>!query||`${e.reading} ${e.text} ${e.annotation??""}`.includes(query));
++  const pages=Math.max(1,Math.ceil(rows.length/50));
++  return <section aria-label="共用個人詞庫" style={{padding:20,display:"flex",flexDirection:"column",gap:12,overflowY:"auto"}}>
++    <Text weight="semibold">Mac／Windows 共用個人詞庫</Text>
++    <Text>交換格式 1.0.0；只交換你選定的 JSON。兩台各自保留私人詞庫與選字頻率，不會背景同步或連線至模型。</Text>
++    <Text>目前版本：{status?.version??"尚未部署"}；{status?.entries??0} 筆；{status?.enabled?"已啟用":"停用"}</Text>
++    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
++      <Button disabled={busy} onClick={()=>void importFile()}>匯入共用詞庫 JSON</Button>
++      <Button disabled={busy||!status?.revision} onClick={()=>void exportFile()}>匯出已核准共用詞庫</Button>
++      <Button disabled={busy} onClick={()=>void selectFolder()}>選擇交換資料夾</Button>
++      <Button disabled={busy} onClick={()=>void act(refresh)}>重新讀取版本</Button>
++      <Button disabled={busy||!status?.revision||!!preview} onClick={()=>void rollback()}>回復上一版</Button>
++    </div>
++    {folder&&<Text>本次交換資料夾：{folder}（不啟用同步服務）</Text>}
++    <Checkbox label="啟用本機共用候選" checked={status?.enabled??false} disabled={busy||!status?.revision||!!preview}
++      onChange={(_e,d)=>void act(async()=>{setStatus(await invoke<Status>("set_shared_lexicon_enabled",{enabled:d.checked===true,expected:status?.revision}));})}/>
++    <Text>中文別名尚不在 1.0.0 格式內。工程詞匯出會先列出不支援與省略內容，不會默默丟棄；私人中文詞自動匯出尚未提供。</Text>
++    <EngineeringSharedExport folder={folder}/>
++    {preview&&<>
++      <Text weight="semibold">待核准預覽：新增 {preview.diff.added}、相同 {preview.diff.identical}、衝突 {preview.diff.conflicts.length}、大小寫碰撞 {preview.diff.case_collisions.length}。碰撞詞條仍各自保留。</Text>
++      <Field label="部署版本名稱（同名但內容不同會拒絕；合併時請指定新名稱）"><Input value={version} disabled={busy} onChange={(_e,d)=>setVersion(d.value)}/></Field>
++      {preview.diff.conflicts.map(c=><div key={c.incoming.entry_id} style={{border:"1px solid #888",padding:8}}>
++        <Checkbox label={`${c.incoming.reading} → ${c.incoming.text}：採用匯入內容（未勾選保留本機）`} disabled={busy} checked={replace.includes(c.incoming.entry_id)}
++          onChange={(_e,d)=>setReplace(old=>d.checked===true?[...old,c.incoming.entry_id]:old.filter(id=>id!==c.incoming.entry_id))}/>
++        <details><summary>比較完整欄位</summary><pre style={{whiteSpace:"pre-wrap"}}>本機：{JSON.stringify(c.existing,null,2)}{"\n"}匯入：{JSON.stringify(c.incoming,null,2)}</pre></details>
++      </div>)}
++      <Input placeholder="篩選讀音／文字／註解" value={query} onChange={(_e,d)=>{setQuery(d.value);setPage(0);}}/>
++      <table><thead><tr><th>讀音／碼</th><th>候選</th><th>類型</th><th>來源審核</th><th>詳細資料</th></tr></thead><tbody>
++        {rows.slice(page*50,page*50+50).map(e=><tr key={e.entry_id}><td>{e.reading}</td><td>{e.text}</td><td>{e.term_type}</td><td>{e.review.status}</td><td><details><summary>展開</summary><pre style={{whiteSpace:"pre-wrap"}}>{JSON.stringify(e,null,2)}</pre></details></td></tr>)}
++      </tbody></table>
++      <Text>第 {page+1}／{pages} 頁；篩選後 {rows.length} 筆。來源 approved 仍須本機核准；rejected 詞條只保存、不提供候選。</Text>
++      <div style={{display:"flex",gap:8}}><Button disabled={page===0} onClick={()=>setPage(p=>p-1)}>上一頁</Button><Button disabled={page+1>=pages} onClick={()=>setPage(p=>p+1)}>下一頁</Button>
++      <Button disabled={busy||!version.trim()} appearance="primary" onClick={()=>void approve()}>確認並部署共用詞庫</Button><Button disabled={busy} onClick={()=>void cancel()}>取消匯入</Button></div>
++    </>}
++    <Text aria-live="polite">{message}</Text>{error&&<Text role="alert">{error}</Text>}
++  </section>;
++}
++
++type EngineeringTerm = {input:string;output:string;annotation:string;zh_aliases:string[]};
++type EngineeringSource = {terms:EngineeringTerm[];revision:string|null};
++type EngineeringExportPreview = {token:string;selected_count:number;preview:{document:{dictionary_version:string;entries:Entry[]}|null;
++  omitted_aliases:{index:number;input:string;aliases:string[]}[]; unsupported:{index:number;input:string;reason:string}[]}};
++const unsupportedReason:Record<string,string> = {
++  chinese_aliases_require_omission_approval:"含中文別名，須先明確允許省略，否則不可匯出。",
++  annotation_exceeds_utf16_limit:"註解超過共用格式的長度上限；不會自動截斷。",
++  incompatible_v1_fields:"欄位不符合共用格式 1.0.0，請回工程詞設定調整。",
++};
++function EngineeringSharedExport({folder}:{folder?:string}) {
++  const [source,setSource]=useState<EngineeringSource|null>(null);
++  const [selected,setSelected]=useState<number[]>([]);
++  const [version,setVersion]=useState("");
++  const [allowOmission,setAllowOmission]=useState(false);
++  const [preview,setPreview]=useState<EngineeringExportPreview|null>(null);
++  const [busy,setBusy]=useState(false);
++  const [message,setMessage]=useState("");
++  const [error,setError]=useState("");
++  const [page,setPage]=useState(0);
++  async function act(work:()=>Promise<void>){setBusy(true);setError("");try{await work();}catch(e){setError(String(e));}finally{setBusy(false);}}
++  function invalidate(){
++    if(preview)void invoke("cancel_engineering_shared_export",{token:preview.token}).catch(e=>setError(String(e)));
++    setPreview(null);setMessage("");
++  }
++  async function load(){await act(async()=>{
++    if(preview)await invoke("cancel_engineering_shared_export",{token:preview.token});
++    setPreview(null);
++    const next=await invoke<EngineeringSource>("load_engineering_export_source");
++    setSource(next);setSelected([]);setAllowOmission(false);setPage(0);
++    setVersion(`engineering-${new Date().toISOString().replace(/[:.]/g,"-")}`);
++    setMessage("已讀取已儲存的私人工程詞。預設不選取任何詞，請勾選要交換的項目。");
++  });}
++  async function makePreview(){if(!source)return;await act(async()=>{
++    setPreview(await invoke<EngineeringExportPreview>("preview_engineering_shared_export",{
++      selected,expected:source.revision,version,allowAliasOmission:allowOmission,
++    }));setMessage("這是匯出預覽，尚未建立檔案；來源工程詞不會被修改。");
++  });}
++  async function cancel(){await act(async()=>{
++    if(preview)await invoke("cancel_engineering_shared_export",{token:preview.token});
++    setPreview(null);setSource(null);setSelected([]);setAllowOmission(false);
++    setMessage("已取消工程詞匯出，未建立快照，來源詞庫未變更。");
++  });}
++  async function exportFile(){if(!preview?.preview.document)return;
++    const current=preview;
++    await act(async()=>{
++      const name=`engineering-shared-${new Date().toISOString().replace(/[:.]/g,"-")}.json`;
++      const path=await save({defaultPath:folder?`${folder}\\${name}`:name,filters:[{name:"共用詞庫 JSON",extensions:["json"]}]});
++      if(!path)return;
++      const omitted=current.preview.omitted_aliases;
++      const loss=omitted.length?`將依預覽省略 ${omitted.length} 筆詞條的 ${omitted.reduce((n,r)=>n+r.aliases.length,0)} 個中文別名。`:"沒有省略中文別名。";
++      if(!await ask(`將選取的 ${current.selected_count} 筆私人工程詞匯出成新 JSON 快照。${loss}來源工程詞保持完整且不變，另一台仍須匯入預覽與核准。確認匯出？`,{title:"確認工程詞交換內容",kind:"warning"}))return;
++      try{
++        await invoke("export_engineering_shared_lexicon",{token:current.token,path,confirmed:true});
++        setMessage("已匯出所選工程詞。來源詞庫未變更，省略的中文別名仍完整保留在原檔。");
++      }finally{setPreview(null);}
++    });
++  }
++  const pages=Math.max(1,Math.ceil((source?.terms.length??0)/50));
++  return <section aria-label="選取工程詞匯出" style={{border:"1px solid #888",padding:12,display:"flex",flexDirection:"column",gap:10}}>
++    <Text weight="semibold">從私人工程詞選取匯出</Text>
++    <Text>只讀取你已儲存的自訂工程詞；不包含內建詞、私人中文詞庫或 AI 待審資料。按下按鈕後才讀取來源。</Text>
++    <Button disabled={busy} onClick={()=>void load()}>{source?"重新讀取私人工程詞":"選取已儲存的私人工程詞"}</Button>
++    {source&&<>
++      <Text>已選 {selected.length}／{source.terms.length} 筆。若工程詞設定有未儲存修改，請先儲存，再重新讀取。</Text>
++      <div style={{display:"flex",gap:8}}>
++        <Button disabled={busy||!source.terms.length} onClick={()=>{invalidate();setSelected(source.terms.map((_t,i)=>i));}}>全選來源工程詞</Button>
++        <Button disabled={busy||!selected.length} onClick={()=>{invalidate();setSelected([]);}}>清除選取</Button>
++      </div>
++      <table><thead><tr><th>選取</th><th>輸入碼</th><th>候選</th><th>註解</th><th>原有中文別名</th></tr></thead><tbody>
++        {source.terms.slice(page*50,page*50+50).map((term,offset)=>{const index=page*50+offset;return <tr key={index}>
++          <td><Checkbox aria-label={`選取第 ${index+1} 筆 ${term.input}`} disabled={busy} checked={selected.includes(index)}
++            onChange={(_e,d)=>{invalidate();setSelected(old=>d.checked===true?[...old,index]:old.filter(i=>i!==index));}}/></td>
++          <td>{term.input}</td><td>{term.output}</td><td>{term.annotation}</td><td>{term.zh_aliases.join("、")||"無"}</td>
++        </tr>;})}
++      </tbody></table>
++      <div style={{display:"flex",gap:8}}><Button disabled={busy||page===0} onClick={()=>setPage(p=>p-1)}>上一頁</Button>
++        <Text>第 {page+1}／{pages} 頁</Text><Button disabled={busy||page+1>=pages} onClick={()=>setPage(p=>p+1)}>下一頁</Button></div>
++      <Field label="交換詞庫版本名稱"><Input disabled={busy} value={version} onChange={(_e,d)=>{invalidate();setVersion(d.value);}}/></Field>
++      <Checkbox disabled={busy} checked={allowOmission} label="我允許只匯出基本輸入碼／候選／註解，省略不相容的中文別名（原檔保留）"
++        onChange={(_e,d)=>{invalidate();setAllowOmission(d.checked===true);}}/>
++      <div style={{display:"flex",gap:8}}><Button disabled={busy||!selected.length||!version.trim()} onClick={()=>void makePreview()}>預覽所選工程詞的共用格式</Button>
++        <Button disabled={busy} onClick={()=>void cancel()}>取消工程詞匯出</Button></div>
++    </>}
++    {preview&&<>
++      <Text weight="semibold">工程詞匯出預覽：{preview.selected_count} 筆；不支援 {preview.preview.unsupported.length} 項；省略別名 {preview.preview.omitted_aliases.length} 筆。</Text>
++      {preview.preview.unsupported.length>0&&<><Text role="alert">以下項目未通過，不會只匯出其餘詞條。請取消相關選取或修正來源後重新預覽。</Text>
++        <ul>{preview.preview.unsupported.map((row,i)=><li key={i}>來源第 {row.index+1} 筆「{row.input}」：{unsupportedReason[row.reason]??"不符合共用格式。"}</li>)}</ul></>}
++      {preview.preview.omitted_aliases.length>0&&<><Text>此次 JSON 將省略下列中文別名，原始工程詞仍保留：</Text>
++        <ul>{preview.preview.omitted_aliases.map(row=><li key={row.index}>來源第 {row.index+1} 筆「{row.input}」：{row.aliases.join("、")}</li>)}</ul></>}
++      {preview.preview.document&&<details><summary>查看將匯出的 {preview.preview.document.entries.length} 筆詞條</summary>
++        <table><thead><tr><th>輸入碼</th><th>候選</th><th>註解</th></tr></thead><tbody>{preview.preview.document.entries.map(e=><tr key={e.entry_id}>
++          <td>{e.reading}</td><td>{e.text}</td><td>{e.annotation??""}</td></tr>)}</tbody></table></details>}
++      <Button appearance="primary" disabled={busy||!preview.preview.document} onClick={()=>void exportFile()}>確認內容並另存新 JSON</Button>
++    </>}
++    <Text aria-live="polite">{message}</Text>{error&&<Text role="alert">{error}</Text>}
++  </section>;
++}
+-- 
+2.54.0 (Apple Git-157)
+

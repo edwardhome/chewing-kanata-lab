@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "bd9d5f5feeac6e2e7ae7fed956b0096f99cf488b",
+  "tree": "ab512993523410284319161e6a193ca4253148fe",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -118,7 +118,15 @@
     {
       "file": "0029-test-input-preserve-existing-F-escape-and-transparen.patch",
       "sha256": "4eaf921a729d2ccaf74dc63184593610a56d81e916f696435572ad423b60589a"
+    },
+    {
+      "file": "0030-feat-shared-lexicon-v1.patch",
+      "sha256": "a3056c5f9fcbd3315a2e521acfdbde2da0de043f690cec211b030b4a89d9aee5"
+    },
+    {
+      "file": "0031-chore-shared-development-version.patch",
+      "sha256": "084f019f945986e9e343f82c9d734d8d77532a8ee967ea8f303a2e339a363aac"
     }
   ],
-  "native_commit": "f342e38e711442d5768593fd287d38ed98215ec8"
+  "native_commit": "b2b258edbdc9d2432e4a4585f6d95b9fa528e55c"
 }

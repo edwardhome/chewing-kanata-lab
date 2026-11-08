@@ -1,0 +1,632 @@
+From 2febd01ec5253df2765a73d6bb4e51cb2f945c8e Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Sun, 8 Nov 2026 19:27:43 +0800
+Subject: [PATCH] feat(lexicon): integrate locally approved shared candidates
+
+---
+ Cargo.lock                             |  90 ++++++++
+ tip/src/text_service/chewing.rs        |  38 +++-
+ tip/src/text_service/mod.rs            |   1 +
+ tip/src/text_service/shared_lexicon.rs | 288 +++++++++++++++++++++++++
+ 4 files changed, 412 insertions(+), 5 deletions(-)
+ create mode 100644 tip/src/text_service/shared_lexicon.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 07a139c..a5ecb72 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -305,8 +305,12 @@ dependencies = [
+ name = "chewing-policy-core"
+ version = "0.1.0"
+ dependencies = [
++ "fs2",
+  "serde",
+  "serde_json",
++ "sha2",
++ "tempfile",
++ "unicode-general-category",
+ ]
+ 
+ [[package]]
+@@ -884,6 +888,22 @@ dependencies = [
+  "typeid",
+ ]
+ 
++[[package]]
++name = "errno"
++version = "0.3.14"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
++dependencies = [
++ "libc",
++ "windows-sys 0.61.2",
++]
++
++[[package]]
++name = "fastrand"
++version = "2.5.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
++
+ [[package]]
+ name = "ff"
+ version = "0.13.1"
+@@ -924,6 +944,16 @@ version = "1.0.7"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
+ 
++[[package]]
++name = "fs2"
++version = "0.4.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
++dependencies = [
++ "libc",
++ "winapi",
++]
++
+ [[package]]
+ name = "funty"
+ version = "2.0.0"
+@@ -1319,6 +1349,12 @@ version = "0.2.16"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+ 
++[[package]]
++name = "linux-raw-sys"
++version = "0.12.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
++
+ [[package]]
+ name = "log"
+ version = "0.4.34"
+@@ -1985,6 +2021,19 @@ dependencies = [
+  "semver",
+ ]
+ 
++[[package]]
++name = "rustix"
++version = "1.1.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
++dependencies = [
++ "bitflags 2.13.2",
++ "errno",
++ "libc",
++ "linux-raw-sys",
++ "windows-sys 0.61.2",
++]
++
+ [[package]]
+ name = "rustls"
+ version = "0.23.46"
+@@ -2531,6 +2580,19 @@ version = "1.0.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
+ 
++[[package]]
++name = "tempfile"
++version = "3.27.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
++dependencies = [
++ "fastrand",
++ "getrandom 0.4.3",
++ "once_cell",
++ "rustix",
++ "windows-sys 0.61.2",
++]
++
+ [[package]]
+ name = "thiserror"
+ version = "1.0.69"
+@@ -2692,6 +2754,12 @@ version = "1.20.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+ 
++[[package]]
++name = "unicode-general-category"
++version = "0.6.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2281c8c1d221438e373249e065ca4989c4c36952c211ff21a0ee91c44a3869e7"
++
+ [[package]]
+ name = "unicode-ident"
+ version = "1.0.27"
+@@ -2933,6 +3001,22 @@ version = "1.2.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
+ 
++[[package]]
++name = "winapi"
++version = "0.3.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
++dependencies = [
++ "winapi-i686-pc-windows-gnu",
++ "winapi-x86_64-pc-windows-gnu",
++]
++
++[[package]]
++name = "winapi-i686-pc-windows-gnu"
++version = "0.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
++
+ [[package]]
+ name = "winapi-util"
+ version = "0.1.11"
+@@ -2942,6 +3026,12 @@ dependencies = [
+  "windows-sys 0.61.2",
+ ]
+ 
++[[package]]
++name = "winapi-x86_64-pc-windows-gnu"
++version = "0.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
++
+ [[package]]
+ name = "windows"
+ version = "0.62.2"
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 2528dbc..f7b1f63 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -55,6 +55,7 @@ use zhconv::{Variant, zhconv};
+ use super::CommandType;
+ use super::pending_transition::PendingTransitionQueue;
+ use super::recovery::RecoveryGate;
++use super::shared_lexicon::{SharedLexicon, full_composition_reading};
+ use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardState;
+ use super::kanata_layer;
+ use super::GUID_INPUT_DISPLAY_ATTRIBUTE_1;
+@@ -185,6 +186,7 @@ pub(super) struct ChewingTextService {
+     shift_key_state: ShiftKeyState,
+     shift_session: Option<ShiftLetterSession>,
+     lexicon: TechnicalLexicon,
++    shared_lexicon: SharedLexicon,
+     f_key_state: kanata_layer::FKeyState,
+     f_event: Option<SystemKeyboardEvent>,
+     f_buffer: Option<FCompositionBuffer>,
+@@ -203,6 +205,7 @@ pub(super) struct ChewingTextService {
+     candidate_context: Option<IUnknown>,
+     candidate_cursor: usize,
+     candidate_syllable: String,
++    candidate_reading: Option<String>,
+     composition: Rc<RefCell<Option<ITfComposition>>>,
+     pending_state: Option<Rc<CompositionSession>>,
+     retired_states: Vec<Rc<CompositionSession>>,
+@@ -320,6 +323,7 @@ impl ChewingTextService {
+             shift_key_state: ShiftKeyState::Up,
+             shift_session: None,
+             lexicon: TechnicalLexicon::load_from_file_or_default(),
++            shared_lexicon: SharedLexicon::new(),
+             f_key_state: kanata_layer::FKeyState::Up,
+             f_event: None,
+             f_buffer: None,
+@@ -342,6 +346,7 @@ impl ChewingTextService {
+             candidate_context: None,
+             candidate_cursor: 0,
+             candidate_syllable: String::new(),
++            candidate_reading: None,
+             composition: Default::default(),
+             pending_state: None,
+             retired_states: Vec::new(),
+@@ -405,6 +410,7 @@ impl ChewingTextService {
+         self.has_focus = true;
+         self.reset_shift_gesture();
+         self.recover_focused_context();
++        self.refresh_shared_lexicon();
+         Ok(())
+     }
+ 
+@@ -415,6 +421,7 @@ impl ChewingTextService {
+ 
+     pub(super) fn on_thread_focus(&mut self) -> Result<()> {
+         self.reset_shift_gesture();
++        self.refresh_shared_lexicon();
+         // Focus changes must not rebuild an editor that still owns uncommitted text.
+         if !self.has_pending_input() {
+             self.apply_config_if_changed()?;
+@@ -434,6 +441,14 @@ impl ChewingTextService {
+             || self.retired_states.iter().any(|state| state.is_busy() || state.has_work())
+     }
+ 
++    fn refresh_shared_lexicon(&mut self) {
++        let idle = !self.has_pending_input();
++        if self.shared_lexicon.poll(idle) {
++            self.lexicon = self.lexicon.clone().with_shared_index(self.shared_lexicon.index());
++        }
++        if idle { self.shared_lexicon.request_refresh(); }
++    }
++
+     fn recovery_time_ms() -> Result<u64> {
+         Ok(u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?)
+     }
+@@ -538,6 +553,9 @@ impl ChewingTextService {
+             self.double_shift.reset();
+             return Ok(false);
+         }
++        // Only a nonblocking channel operation here. Disk and JSON stay on the
++        // process worker; an active composition keeps its existing snapshot.
++        self.refresh_shared_lexicon();
+         let evt = ev.to_keyboard_event(self.keymap);
+         self.shift_key_state.reconcile(evt.is_state_on(KeyState::Shift),
+             evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT);
+@@ -1744,10 +1762,16 @@ impl ChewingTextService {
+                 && self.lang_mode.get() == TsfLangMode::Chinese {
+                 self.lexicon.chinese_candidate_items(&original)
+             } else { vec![] };
++            let reading = full_composition_reading(&self.chewing_editor);
++            let shared_index = self.shared_lexicon.index();
++            let shared = if self.lang_mode.get() == TsfLangMode::Chinese {
++                shared_index.as_ref().zip(reading.as_deref())
++                    .map_or_else(Vec::new, |(index, reading)| index.chinese(reading))
++            } else { vec![] };
+             let size = self.chewing_editor.editor_options().candidates_per_page.max(1);
+             self.candidate_generation = self.candidate_generation.checked_add(1)
+                 .ok_or_else(|| anyhow::anyhow!("candidate generation exhausted"))?;
+-            let snapshot = CandidateSnapshot::new(self.candidate_generation, &original, &native, &engineering, size)
++            let snapshot = CandidateSnapshot::new_with_shared(self.candidate_generation, &original, &native, &engineering, &shared, size)
+                 .map_err(|_| anyhow::anyhow!("invalid candidate page size"))?;
+             if snapshot.page_count() == 0 {
+                 self.chewing_editor.cancel_selecting()?;
+@@ -1757,6 +1781,7 @@ impl ChewingTextService {
+             self.candidate_context = Some(context.cast::<IUnknown>()?);
+             self.candidate_cursor = self.chewing_editor.cursor();
+             self.candidate_syllable = self.chewing_editor.syllable_buffer_display();
++            self.candidate_reading = reading;
+             self.candidate_snapshot = Some(snapshot);
+             self.render_shared_candidates(context)?;
+             Ok(())
+@@ -1766,10 +1791,11 @@ impl ChewingTextService {
+     fn render_shared_candidates(&mut self, context: &ITfContext) -> Result<()> {
+         let Some(snapshot) = &self.candidate_snapshot else { return Ok(()); };
+         let all_items: Vec<String> = snapshot.items().iter().map(|candidate| {
+-            if candidate.source() == CandidateSource::Engineering {
++            if matches!(candidate.source(), CandidateSource::Engineering | CandidateSource::Shared) {
++                let label = if candidate.source() == CandidateSource::Shared { "共用" } else { "工程" };
+                 match candidate.annotation() {
+-                    Some(note) => format!("{} 〔工程：{}〕", candidate.commit_text(), note),
+-                    None => format!("{} 〔工程〕", candidate.commit_text()),
++                    Some(note) => format!("{} 〔{}：{}〕", candidate.commit_text(), label, note),
++                    None => format!("{} 〔{}〕", candidate.commit_text(), label),
+                 }
+             } else { candidate.commit_text().to_owned() }
+         }).collect();
+@@ -1801,6 +1827,7 @@ impl ChewingTextService {
+         if !self.has_focus || context_identity.is_none() || context_identity != self.candidate_context
+             || self.chewing_editor.cursor() != self.candidate_cursor
+             || self.chewing_editor.syllable_buffer_display() != self.candidate_syllable
++            || full_composition_reading(&self.chewing_editor) != self.candidate_reading
+             || !self.chewing_editor.is_selecting() || self.lang_mode.get() != TsfLangMode::Chinese
+             || !snapshot.is_current(self.candidate_generation, &self.chewing_editor.display()) { return false; }
+         let Ok(current) = self.chewing_editor.all_candidates() else { return false; };
+@@ -1839,7 +1866,7 @@ impl ChewingTextService {
+                 self.chewing_editor.ack();
+                 self.update_candidates(context)?;
+             }
+-            CandidateAction::Engineering { .. } => {
++            CandidateAction::Engineering { .. } | CandidateAction::Shared { .. } => {
+                 if self.chewing_editor.entering_syllable() { return Ok(()); }
+                 self.set_composition_string(context, candidate.commit_text(), "", vec![], 0)?;
+                 self.chewing_editor.cancel_selecting()?;
+@@ -1930,6 +1957,7 @@ impl ChewingTextService {
+         self.candidate_snapshot = None;
+         self.candidate_context = None;
+         self.candidate_syllable.clear();
++        self.candidate_reading = None;
+         if let Some(candidate_list) = self.candidate_list.take() {
+             candidate_list.end_ui_element();
+         }
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index 07256c2..1f356f2 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -41,6 +41,7 @@ mod menu;
+ mod pending_transition;
+ mod resources;
+ mod recovery;
++mod shared_lexicon;
+ mod theme;
+ mod ui_elements;
+ 
+diff --git a/tip/src/text_service/shared_lexicon.rs b/tip/src/text_service/shared_lexicon.rs
+new file mode 100644
+index 0000000..5b3ce50
+--- /dev/null
++++ b/tip/src/text_service/shared_lexicon.rs
+@@ -0,0 +1,288 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Copyright (c) 2026 AI-Chewing contributors
++
++//! Read-only deployment reader. No keystrokes or composition text enter the worker.
++//! A single worker pins this DLL until its host application exits. This is required
++//! because its code may still be running after TSF deactivates an individual service.
++//! There is no timer, blocking join on deactivation, or filesystem access on a key path.
++
++use std::sync::{Arc, OnceLock, mpsc::{self, Receiver, SyncSender}};
++use std::time::{Duration, Instant};
++
++use chewing::editor::Editor;
++use chewing::zhuyin::{Bopomofo, Syllable};
++use chewing_policy_core::shared_lexicon::LexiconIndex;
++use chewing_policy_core::shared_lexicon_store::SharedStore;
++use windows::Win32::Foundation::HMODULE;
++use windows::Win32::System::LibraryLoader::{
++    GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN,
++};
++use windows_core::PCWSTR;
++
++const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
++
++#[derive(Clone, Default)]
++struct Loaded {
++    identity: Option<(String, String, bool)>,
++    index: Option<Arc<LexiconIndex>>,
++}
++
++struct Request { reply: SyncSender<Loaded> }
++
++static WORKER: OnceLock<Option<SyncSender<Request>>> = OnceLock::new();
++
++fn load() -> Loaded {
++    let result = (|| -> anyhow::Result<Loaded> {
++        let path = chewing_tip_core::shell::user_dir()?.join("SharedLexicon");
++        let Some(snapshot) = SharedStore::new(path).load()? else { return Ok(Loaded::default()); };
++        let index = if snapshot.enabled {
++            Some(Arc::new(LexiconIndex::new(&snapshot.document)?))
++        } else { None };
++        Ok(Loaded { identity: Some((snapshot.revision, snapshot.checksum, snapshot.enabled)), index })
++    })();
++    result.unwrap_or_else(|_| {
++        // Do not log document contents, private paths, or parser excerpts.
++        log::warn!("shared lexicon unavailable; native candidates remain active");
++        Loaded::default()
++    })
++}
++
++fn start_worker() -> Option<SyncSender<Request>> {
++    let (requests, incoming) = mpsc::sync_channel::<Request>(1);
++    let (start, ready) = mpsc::sync_channel::<bool>(1);
++    // Spawn before pinning so a failed spawn does not leave an unnecessary pin.
++    // Activation still owns the DLL while this startup handshake is in progress.
++    let thread = std::thread::Builder::new().name("shared-lexicon-reader".into()).spawn(move || {
++        if ready.recv() != Ok(true) { return; }
++        while let Ok(request) = incoming.recv() {
++            let _ = request.reply.try_send(load());
++        }
++    }).ok()?;
++    let mut module = HMODULE::default();
++    // FROM_ADDRESS treats this value as an address inside our module, not a string.
++    let pinned = unsafe { GetModuleHandleExW(
++        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
++        PCWSTR(start_worker as *const () as *const u16), &mut module,
++    ) }.is_ok();
++    if !pinned {
++        let _ = start.send(false);
++        // Startup only: the thread cannot have started any I/O yet.
++        let _ = thread.join();
++        return None;
++    }
++    let _ = start.send(true);
++    Some(requests)
++}
++
++/// A pending deployment can be received during composition but never applied then.
++#[derive(Default)]
++struct IdleGate<T> { pending: Option<T> }
++impl<T> IdleGate<T> {
++    fn receive(&mut self, value: T) { self.pending = Some(value); }
++    fn take_if_idle(&mut self, idle: bool) -> Option<T> {
++        if idle { self.pending.take() } else { None }
++    }
++}
++
++pub(super) struct SharedLexicon {
++    requests: Option<SyncSender<Request>>,
++    reply: SyncSender<Loaded>,
++    incoming: Receiver<Loaded>,
++    in_flight: bool,
++    last_request: Option<Instant>,
++    pending: IdleGate<Loaded>,
++    active: Loaded,
++}
++
++impl SharedLexicon {
++    /// Called only at activation, outside the key callback.
++    pub(super) fn new() -> Self {
++        let requests = WORKER.get_or_init(start_worker).clone();
++        let (reply, incoming) = mpsc::sync_channel(1);
++        let mut this = Self { requests, reply, incoming, in_flight: false,
++            last_request: None, pending: IdleGate::default(), active: Loaded::default() };
++        this.request_refresh();
++        this
++    }
++
++    /// Bounded, nonblocking notification; no per-instance polling thread or timer.
++    pub(super) fn request_refresh(&mut self) {
++        if self.in_flight || self.last_request.is_some_and(|at| at.elapsed() < REFRESH_INTERVAL) { return; }
++        let Some(requests) = &self.requests else { return; };
++        if requests.try_send(Request { reply: self.reply.clone() }).is_ok() {
++            self.in_flight = true;
++            self.last_request = Some(Instant::now());
++        }
++    }
++
++    /// Cheap channel poll. A changed index is adopted only before a new composition.
++    pub(super) fn poll(&mut self, idle: bool) -> bool {
++        if let Ok(loaded) = self.incoming.try_recv() {
++            self.in_flight = false;
++            self.pending.receive(loaded);
++        }
++        let Some(loaded) = self.pending.take_if_idle(idle) else { return false; };
++        if loaded.identity == self.active.identity { return false; }
++        self.active = loaded;
++        true
++    }
++
++    pub(super) fn index(&self) -> Option<Arc<LexiconIndex>> { self.active.index.clone() }
++}
++
++fn canonical_syllable(mut syllable: Syllable) -> String {
++    // Some layouts encode an explicit first tone. Shared schema uses no tone mark
++    // for that tone; all other tones (including final neutral tone) are retained.
++    if syllable.tone() == Some(Bopomofo::TONE1) { syllable.remove_tone(); }
++    syllable.to_string()
++}
++
++/// Exact whole-composition readings only; never infer pronunciation from Han text.
++pub(super) fn full_composition_reading(editor: &Editor) -> Option<String> {
++    if editor.entering_syllable() { return None; }
++    let symbols = editor.symbols();
++    if !(1..=8).contains(&symbols.len()) || editor.display().chars().count() != symbols.len() {
++        return None;
++    }
++    let syllables: Option<Vec<_>> = symbols.iter().map(|symbol| symbol.to_syllable()).collect();
++    Some(syllables?.into_iter().map(canonical_syllable).collect::<Vec<_>>().join("-"))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use chewing::dictionary::StringTableBuilder;
++    use chewing::editor::{BasicEditor, EditorBuilder, SymbolSelector};
++    use chewing::input::keymap::{map_ascii, QWERTY_MAP};
++    use chewing::lm::StaticDictBuilder;
++
++    fn fixture_editor() -> Editor {
++        let mut strings = StringTableBuilder::new();
++        strings.insert("冊");
++        let strings = strings.build();
++        let mut dictionary = StaticDictBuilder::new();
++        dictionary.insert(&["ㄘㄜˋ".parse().unwrap()], strings.get_wid("冊").unwrap());
++        EditorBuilder::new().string_table(strings).static_dict(dictionary.build())
++            .symbol_selector(SymbolSelector::new("@\n".as_bytes()).unwrap()).build()
++    }
++
++    fn type_keys(editor: &mut Editor, keys: &[u8]) {
++        for &key in keys { editor.process_keyevent(map_ascii(&QWERTY_MAP, key)); }
++    }
++
++    #[test]
++    fn actual_editor_whole_reading_survives_candidate_cursor_clamp() {
++        let mut editor = fixture_editor();
++        type_keys(&mut editor, b"hk4hk4");
++        assert_eq!(editor.display(), "冊冊");
++        assert_eq!(editor.cursor(), 2);
++        assert_eq!(full_composition_reading(&editor).as_deref(), Some("ㄘㄜˋ-ㄘㄜˋ"));
++        editor.start_selecting().unwrap();
++        assert!(editor.is_selecting());
++        assert_eq!(editor.cursor(), 1);
++        assert_eq!(full_composition_reading(&editor).as_deref(), Some("ㄘㄜˋ-ㄘㄜˋ"));
++    }
++
++    #[test]
++    fn actual_editor_rejects_unfinished_syllable_after_completed_text() {
++        let mut editor = fixture_editor();
++        type_keys(&mut editor, b"hk4h");
++        assert_eq!(editor.display(), "冊");
++        assert!(editor.entering_syllable());
++        assert_eq!(full_composition_reading(&editor), None);
++    }
++
++    #[test]
++    fn actual_editor_rejects_mixed_symbols_even_when_scalar_count_matches() {
++        let mut editor = fixture_editor();
++        type_keys(&mut editor, b"`1hk4");
++        assert_eq!(editor.display(), "@冊");
++        assert_eq!(editor.symbols().len(), 2);
++        assert_eq!(full_composition_reading(&editor), None);
++    }
++
++    fn client() -> SharedLexicon {
++        let (reply, incoming) = mpsc::sync_channel(1);
++        SharedLexicon { requests: None, reply, incoming, in_flight: false,
++            last_request: None, pending: IdleGate::default(), active: Loaded::default() }
++    }
++
++    #[test]
++    fn received_snapshot_and_failure_wait_until_next_idle_boundary() {
++        let mut client = client();
++        client.in_flight = true;
++        assert!(client.reply.try_send(Loaded { identity: Some(("revision-1".into(), "checksum".into(), true)), index: None }).is_ok());
++        assert!(!client.poll(false));
++        assert!(client.active.identity.is_none());
++        assert!(!client.in_flight);
++        assert!(client.poll(true));
++        assert_eq!(client.active.identity.as_ref().unwrap().0, "revision-1");
++        assert!(client.reply.try_send(Loaded::default()).is_ok());
++        assert!(!client.poll(false));
++        assert!(client.active.identity.is_some());
++        assert!(client.poll(true));
++        assert!(client.active.identity.is_none());
++    }
++
++    #[test]
++    fn requests_are_bounded_and_never_duplicated_in_flight() {
++        let mut client = client();
++        let (requests, incoming) = mpsc::sync_channel(1);
++        client.requests = Some(requests);
++        client.request_refresh();
++        client.request_refresh();
++        let request = incoming.try_recv().unwrap();
++        assert!(incoming.try_recv().is_err());
++        assert!(request.reply.try_send(Loaded::default()).is_ok());
++        assert!(!client.poll(true));
++        client.request_refresh();
++        assert!(incoming.try_recv().is_err());
++    }
++
++    #[test]
++    fn busy_global_worker_can_retry_without_blocking() {
++        let mut client = client();
++        let (requests, incoming) = mpsc::sync_channel(1);
++        assert!(requests.try_send(Request { reply: client.reply.clone() }).is_ok());
++        client.requests = Some(requests);
++        client.request_refresh();
++        assert!(!client.in_flight);
++        assert!(client.last_request.is_none());
++        incoming.try_recv().unwrap();
++        client.request_refresh();
++        assert!(client.in_flight);
++    }
++
++    #[test]
++    fn pending_snapshot_waits_for_idle_and_keeps_latest() {
++        let mut gate = IdleGate::default();
++        gate.receive(1);
++        assert_eq!(gate.take_if_idle(false), None);
++        gate.receive(2);
++        assert_eq!(gate.take_if_idle(false), None);
++        assert_eq!(gate.take_if_idle(true), Some(2));
++        assert_eq!(gate.take_if_idle(true), None);
++    }
++
++    #[test]
++    fn invalid_or_disabled_snapshot_clears_only_at_idle() {
++        let mut gate = IdleGate::default();
++        gate.receive(None::<Arc<LexiconIndex>>);
++        assert!(gate.take_if_idle(false).is_none());
++        assert!(matches!(gate.take_if_idle(true), Some(None)));
++    }
++
++    #[test]
++    fn canonical_reading_removes_only_first_tone() {
++        for (input, expected) in [("ㄧˉ", "ㄧ"), ("ㄋㄧˇ", "ㄋㄧˇ"),
++            ("ㄏㄠˋ", "ㄏㄠˋ"), ("ㄇㄚ˙", "ㄇㄚ˙")] {
++            assert_eq!(canonical_syllable(input.parse().unwrap()), expected);
++        }
++    }
++
++    #[test]
++    fn empty_editor_has_no_shared_reading() {
++        // fallback() uses an empty in-memory dictionary, never an actual user file.
++        assert_eq!(full_composition_reading(&Editor::fallback()), None);
++    }
++}
+-- 
+2.54.0 (Apple Git-157)
+
