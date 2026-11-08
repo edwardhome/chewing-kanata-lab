@@ -30,3 +30,14 @@ The user explicitly authorized Windows canonical main integration and source pus
 - Preferences EXE SHA-256: `d956f12780d98a81833bb1984b25ac9edf468438d04b114d4212b54da23824c8`.
 
 Manual GUI, physical keys, real installation/removal and Mac GUI remain NOT_RUN. Format roundtrip equality is not deployment-metadata equality: Mac approval clears usage and changes review status; Windows retains source metadata and uses an independent local receipt. v1 rejects zh_aliases; explicit omission export preserves originals and reports exact omissions. Automatic private Chinese dictionary export is not implemented.
+
+## Canonical integration confirmation
+
+- Windows canonical main integration commit: `3d331c7e0890105ed8ce436db914c3a3346fe42c`. Push succeeded to `edwardhome/chewing-kanata-lab`; `git ls-remote` independently returned the same main SHA.
+- Compared package source `5478af1` with integrated main: no differences in policy-core, either nested patch series, or packaging scripts. Remaining differences are review/documentation history. The package manifest intentionally pins the exact build source, not a later documentation commit.
+- Mac integration was reported by its owning thread as main `af1417343f6888af5cb8665b2f5606dfba7149c4`, 292 passed / 2 ignored, Release and bundle verification passed. Windows did not modify or install Mac sources; this Mac result is a handoff report, not a Windows-run test.
+- Development archive (not a GitHub Release): `C:\Users\Defu\Documents\AI-Chewing\AI-Chewing-1.1.1-dev.shared.20261108-portable.zip`. Archive extracted into a new temporary directory and passed full package validation; no installer executed.
+
+- Portable ZIP: 9,536,323 bytes; SHA-256 `f7bcb5f0352e467942c55bf34483ef7b7e3b9730fbdb7a10a634b76ca836eece`. Local copy: `dist/windows/shared-lexicon/AI-Chewing-1.1.1-dev.shared.20261108-portable.zip`; independently verified same SHA-256 after transfer.
+- PowerShell Compress-Archive stalled; only that owned compression process was stopped. Its incomplete output is not a deliverable. The portable ZIP above was created with tar and validated after extraction.
+- Final source delivery includes AGY follow-up `1923c23`, documentation only. Windows shared checkout synchronization preserves the two existing untracked verification reports.
