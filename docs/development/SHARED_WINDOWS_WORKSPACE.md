@@ -44,3 +44,11 @@ AGY 保持對話 `9718153a-085c-4fb6-bfa4-219555c0aaac`；目前 Codex 已要求
 本版隔離建置來源 `%TEMP%\ckai-catalog-110-review`、target `%TEMP%\ckai-catalog-110-target`；封裝來源 worktree `%TEMP%\ckai-package-final-110` 固定外層提交。196 個建置來源／dist 雜湊與固定來源一致，舊 1.0.2 成品及 target 保留。
 
 詳見 [1.1.0 整合驗證](../verification/runs/RUN-20261107-110-INTEGRATION.md)。使用者自行安裝及實體按鍵驗收；沒有遠端安裝 Zbook。
+
+## 1.1.1 正式發布
+
+更新時間：2026-11-08T20:38:15+08:00
+
+Windows 共用外層與兩個 nested repositories 轉至 release/v1.1.1。發布來源外層 73a1623、native c545fdb、preferences cbc0cd3；main/tag/套件來源一致，後續僅同步發布文件。33 份原生與 10 份設定 patch 已完整重播。保留 feature/shared-lexicon-v1、開發套件及兩份既有未追蹤報告。AGY 維持原對話並已要求 idle，不建立重複程序。
+
+正式套件 `C:\Users\Defu\Documents\AI-Chewing\1.1.1`，ZIP `AI-Chewing-Windows-x64-1.1.1.zip`。沒有執行安裝或重啟；版本資源不正確的第一份候選已明確隔離，不列入正式附件。詳見 RUN-20261108-111-RELEASE.md。
