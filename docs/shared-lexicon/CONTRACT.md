@@ -31,3 +31,7 @@ Windows 端在 feature/shared-lexicon-v1 開發；Mac 端由 AI-Bopomofo 對話�
 ## 目前證據
 
 合成 fixture 位於 tests/shared-lexicon/fixtures/valid-v1.json。check_mac.swift 直接編譯 Mac 現有 LexiconSchema.swift，驗證共用身分與無損 decode/export/decode；它不啟動或安裝輸入法。Windows UI 與候選部署已有開發實作；270 項 Windows 測試通過，7 筆合成資料通過 Windows → Mac → Windows 完整欄位往返。封裝及實機驗收仍待完成，詳見 VALIDATION.md。
+
+## 格式交換與本機部署的差異
+
+7 筆逐欄相等驗證只涵蓋解析／匯出，不表示兩平台核准部署後元資料完全相同。Mac 既有 approve 流程會清除 usage 並更新 review.status；Windows 獨立快照保留來源元資料，再以本機 receipt 授權候選。兩端皆不得把外部核准旗標當作本機授權，不同步或累加內部學習分數。
