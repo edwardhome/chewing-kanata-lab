@@ -1,0 +1,66 @@
+From b2b258edbdc9d2432e4a4585f6d95b9fa528e55c Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Sun, 8 Nov 2026 20:14:11 +0800
+Subject: [PATCH] chore(release): identify shared lexicon development build
+
+---
+ Cargo.lock | 8 ++++----
+ Cargo.toml | 2 +-
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index a5ecb72..1712e16 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -315,7 +315,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip"
+-version = "1.1.0"
++version = "1.1.1-dev.shared.20261108"
+ dependencies = [
+  "anyhow",
+  "cc",
+@@ -338,7 +338,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.1.0"
++version = "1.1.1-dev.shared.20261108"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+@@ -359,7 +359,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_host"
+-version = "1.1.0"
++version = "1.1.1-dev.shared.20261108"
+ dependencies = [
+  "anyhow",
+  "chewing",
+@@ -2718,7 +2718,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
+ 
+ [[package]]
+ name = "tsfreg"
+-version = "1.1.0"
++version = "1.1.1-dev.shared.20261108"
+ dependencies = [
+  "chewing_tip_core",
+  "scoped-error",
+diff --git a/Cargo.toml b/Cargo.toml
+index 8c2ae86..05d99df 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -9,7 +9,7 @@ members = [
+ ]
+ 
+ [workspace.package]
+-version = "1.1.0"
++version = "1.1.1-dev.shared.20261108"
+ 
+ [workspace.dependencies]
+ anyhow = "1"
+-- 
+2.54.0 (Apple Git-157)
+

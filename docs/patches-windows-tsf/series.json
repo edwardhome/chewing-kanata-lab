@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "60c424a14d71f37c4030bdb52801b8a391024c88",
+  "tree": "ab512993523410284319161e6a193ca4253148fe",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -122,7 +122,11 @@
     {
       "file": "0030-feat-shared-lexicon-v1.patch",
       "sha256": "a3056c5f9fcbd3315a2e521acfdbde2da0de043f690cec211b030b4a89d9aee5"
+    },
+    {
+      "file": "0031-chore-shared-development-version.patch",
+      "sha256": "084f019f945986e9e343f82c9d734d8d77532a8ee967ea8f303a2e339a363aac"
     }
   ],
-  "native_commit": "2febd01ec5253df2765a73d6bb4e51cb2f945c8e"
+  "native_commit": "b2b258edbdc9d2432e4a4585f6d95b9fa528e55c"
 }
