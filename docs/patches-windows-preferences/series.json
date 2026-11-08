@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "d9734c0e909679e3695267c7ee75ad9ad6a8a4d0",
-  "preferences_commit": "0edbe1577be9f7d4ff23086672b36e3f92bff8db",
+  "tree": "c275f6f9b4feb2f9647b7d358d43d2d4ebee3235",
+  "preferences_commit": "cbc0cd3d6740c9d2b6e45fb7b6eedb915bffc044",
   "patches": [
     {
       "file": "0001-fix-preferences-restore-native-settings.patch",
@@ -39,6 +39,10 @@
     {
       "file": "0009-chore-shared-development-version.patch",
       "sha256": "028c14756f43e42d00b5c0a296383b18ffd89fcafc4e00cf57a748549f53c5e3"
+    },
+    {
+      "file": "0010-chore-release-1.1.1.patch",
+      "sha256": "0f2d1e864ef0ff0682afa12fcdc124c2671f3db017ef44c395b77312ba2203f7"
     }
   ]
 }
