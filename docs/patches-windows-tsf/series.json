@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "9653f38dd029309b2a398fc1266b18ec6ff60931",
+  "tree": "ba7619f382f849dbf64b5e97f9c4fed22c3bf758",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -130,7 +130,11 @@
     {
       "file": "0032-chore-release-1.1.1.patch",
       "sha256": "5760f5e2af4b1d7f03769c4f275eca25c5d3b12fa395f65884aa510c5dbb463a"
+    },
+    {
+      "file": "0033-chore-release-1.1.1.patch",
+      "sha256": "eeafb408b3fd18adcf2b95d7ce852a8d6f46f38d262b468a3de24caafe3283c7"
     }
   ],
-  "native_commit": "3ea2e6c65ada35f02a5fe5e9445b432c1ee2ca06"
+  "native_commit": "c545fdbf4e2f9cb3b63758361411a778110425e4"
 }
