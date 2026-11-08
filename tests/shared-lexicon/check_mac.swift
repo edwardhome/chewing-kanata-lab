@@ -15,6 +15,7 @@ import Foundation
         }
         let restored = try LexiconDocument.decode(document.exchangeData())
         guard restored == document else { throw LexiconError.invalid("Round trip changed data") }
+        if CommandLine.arguments.count == 3 { try restored.exchangeData().write(to: URL(fileURLWithPath: CommandLine.arguments[2]), options: .withoutOverwriting) }
         print("PASS: 7 shared v1 entries; identity, exact Unicode/case, Mac decode/export/decode")
     }
 }

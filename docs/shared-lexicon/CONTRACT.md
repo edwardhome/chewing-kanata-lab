@@ -14,7 +14,7 @@ Windows 端在 feature/shared-lexicon-v1 開發；Mac 端由 AI-Bopomofo 對話�
 
 ## 必須共同解決的相容缺口
 
-1. Windows v2 工程詞含 zh_aliases，Mac v1 沒有此欄位且拒絕未知欄位。不可把別名塞進 annotation 或 sources，或靜默丟棄。擴充 schema 的版本與 Mac 支援需共同定案。
+1. Windows v2 工程詞含 zh_aliases，Mac v1 沒有此欄位且拒絕未知欄位。不可把別名塞進 annotation 或 sources，或靜默丟棄。本輪依 Mac 正式交接先完成 v1；擴充另議，不阻擋基本交換。工程匯出預設拒絕省略別名，只有使用者明確同意並看到逐項省略清單，才允許基本欄位匯出，原資料保持不變。
 2. Windows 現行工程詞以小寫輸入碼加輸出去重；交換格式身分區分大小寫。交換儲存層必須無損保留，候選查找的去重不可反向修改交換資料。
 3. Windows 工程詞目前最多 500 條／256 KiB；Mac 文件最多 20,000 條／8 MiB。不可沿用較小限制截斷共用詞庫，應提供獨立驗證與明確容量錯誤。
 4. 中文詞須完整標準注音與聲調，每字一音節。中文別名本身不是注音讀音，不推測或由模型自動補成已核准讀音。
@@ -30,4 +30,4 @@ Windows 端在 feature/shared-lexicon-v1 開發；Mac 端由 AI-Bopomofo 對話�
 
 ## 目前證據
 
-合成 fixture 位於 tests/shared-lexicon/fixtures/valid-v1.json。check_mac.swift 直接編譯 Mac 現有 LexiconSchema.swift，驗證共用身分與無損 decode/export/decode；它不啟動或安裝輸入法。Windows UI 與候選部署尚未完成。
+合成 fixture 位於 tests/shared-lexicon/fixtures/valid-v1.json。check_mac.swift 直接編譯 Mac 現有 LexiconSchema.swift，驗證共用身分與無損 decode/export/decode；它不啟動或安裝輸入法。Windows UI 與候選部署已有開發實作；270 項 Windows 測試通過，7 筆合成資料通過 Windows → Mac → Windows 完整欄位往返。封裝及實機驗收仍待完成，詳見 VALIDATION.md。

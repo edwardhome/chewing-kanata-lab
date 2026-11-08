@@ -5,6 +5,8 @@
 use std::collections::BTreeSet;
 use crate::engineering_lexicon::{EngineeringLexicon, TechnicalCandidate};
 use std::path::PathBuf;
+use std::sync::Arc;
+use crate::shared_lexicon::LexiconIndex;
 use crate::user_engineering::{UserEngineeringTerm, UserTermsError, validate_user_terms,
     parse_user_terms, MAX_USER_TERMS_BYTES, USER_TERMS_FILENAME};
 
@@ -39,6 +41,7 @@ pub const BUILTIN_TERMS: &[&str] = &[
 pub struct TechnicalLexicon {
     words: Vec<String>,
     user_terms: Vec<UserEngineeringTerm>,
+    shared_index: Option<Arc<LexiconIndex>>,
 }
 
 impl Default for TechnicalLexicon {
@@ -61,7 +64,14 @@ impl TechnicalLexicon {
         Self {
             words: set.into_iter().collect(),
             user_terms: vec![],
+            shared_index: None,
         }
+    }
+
+    /// Install an already locally approved immutable snapshot at an idle boundary.
+    pub fn with_shared_index(mut self, index: Option<Arc<LexiconIndex>>) -> Self {
+        self.shared_index = index;
+        self
     }
 
     pub fn with_user_terms(mut self, terms: Vec<UserEngineeringTerm>) -> Result<Self, UserTermsError> {
@@ -176,7 +186,11 @@ impl TechnicalLexicon {
         let legacy = self.words.iter().filter(|w| w.to_ascii_lowercase().starts_with(&lower))
             .map(|w| TechnicalCandidate { text: w.clone(), annotation: None });
         let mut seen = BTreeSet::from([prefix.to_string()]);
-        user_matches(true).chain(exact).chain(legacy).chain(user_matches(false)).chain(engineering_prefix)
+        let shared = self.shared_index.as_ref().into_iter()
+            .flat_map(|index| index.engineering(prefix)).map(|entry| TechnicalCandidate {
+                text: entry.text.clone(), annotation: entry.annotation.clone(),
+            });
+        user_matches(true).chain(exact).chain(legacy).chain(user_matches(false)).chain(engineering_prefix).chain(shared)
             .filter(|c| seen.insert(c.text.clone())).take(8).collect()
     }
 

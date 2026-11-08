@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "43f044ab7a2d303443c915d692894b300a550e2b",
-  "preferences_commit": "a9b224315486caa6dcd1b3f002bd2f905686b771",
+  "tree": "c8d563151416db96e06efc7325889251d2f0070e",
+  "preferences_commit": "7c6e173ccb3b5d0950b2c96c4e837be39b1dda41",
   "patches": [
     {
       "file": "0001-fix-preferences-restore-native-settings.patch",
@@ -31,6 +31,10 @@
     {
       "file": "0007-chore-release-prepare-settings-version-1.1.0.patch",
       "sha256": "b83141148275ae908fb0385995443d7e1c8d37f43745913fe1ca24d35e16e9b8"
+    },
+    {
+      "file": "0008-feat-shared-lexicon-v1.patch",
+      "sha256": "40c1683fd6d4986f5fe54eb8dd6f2868c52905149a72d68b7873d0da68328e13"
     }
   ]
 }

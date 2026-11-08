@@ -5,9 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use crate::engineering_lexicon::TechnicalCandidate;
+use crate::shared_lexicon::SharedCandidate;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CandidateSource { Native, Engineering }
+pub enum CandidateSource { Native, Engineering, Shared }
 
 /// Structural IDs avoid delimiter ambiguity and do not depend on displayed row numbers.
 /// Native occurrence distinguishes identical native strings without dropping engine choices.
@@ -15,6 +16,7 @@ pub enum CandidateSource { Native, Engineering }
 pub enum CandidateId {
     Native { text: String, occurrence: usize },
     Engineering { alias: String, output: String },
+    Shared { entry_id: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +26,7 @@ pub enum ReplacementScope { WholeComposition { utf16_len: usize } }
 pub enum CandidateAction {
     Native { original_index: usize },
     Engineering { entry_id: CandidateId, scope: ReplacementScope },
+    Shared { entry_id: CandidateId, scope: ReplacementScope },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -32,15 +35,18 @@ pub struct Candidate {
     commit_text: String,
     annotation: Option<String>,
     action: CandidateAction,
+    shared_entry_ids: Vec<String>,
 }
 impl Candidate {
     pub fn id(&self) -> &CandidateId { &self.id }
     pub fn commit_text(&self) -> &str { &self.commit_text }
     pub fn annotation(&self) -> Option<&str> { self.annotation.as_deref() }
     pub fn action(&self) -> &CandidateAction { &self.action }
+    pub fn shared_entry_ids(&self) -> &[String] { &self.shared_entry_ids }
     pub fn source(&self) -> CandidateSource {
         match self.action { CandidateAction::Native { .. } => CandidateSource::Native,
-            CandidateAction::Engineering { .. } => CandidateSource::Engineering }
+            CandidateAction::Engineering { .. } => CandidateSource::Engineering,
+            CandidateAction::Shared { .. } => CandidateSource::Shared }
     }
 }
 
@@ -77,14 +83,14 @@ impl CandidateSnapshot {
             *occurrence += 1;
             seen.insert(text.clone());
             items.push(Candidate { id, commit_text: text.clone(), annotation: None,
-                action: CandidateAction::Native { original_index } });
+                action: CandidateAction::Native { original_index }, shared_entry_ids: Vec::new() });
         }
         if !composition.is_empty() {
             for entry in engineering {
                 if entry.text.is_empty() || !seen.insert(entry.text.clone()) { continue; }
                 let id = CandidateId::Engineering { alias: composition.to_string(), output: entry.text.clone() };
                 items.push(Candidate { id: id.clone(), commit_text: entry.text.clone(),
-                    annotation: entry.annotation.clone(), action: CandidateAction::Engineering {
+                    annotation: entry.annotation.clone(), shared_entry_ids: Vec::new(), action: CandidateAction::Engineering {
                         entry_id: id, scope: ReplacementScope::WholeComposition {
                             utf16_len: composition.encode_utf16().count(),
                         },
@@ -93,6 +99,34 @@ impl CandidateSnapshot {
             }
         }
         Ok(Self { generation, composition: composition.to_string(), page_size, items })
+    }
+    /// Shared entries must already match the full engine reading. Preserve native
+    /// and engineering order, with source IDs retained even when output is deduplicated.
+    pub fn new_with_shared(generation: u64, composition: &str, native: &[String],
+        engineering: &[TechnicalCandidate], shared_entries: &[SharedCandidate<'_>],
+        page_size: usize) -> Result<Self, SnapshotError> {
+        let mut snapshot = Self::new(generation, composition, native, engineering, page_size)?;
+        if composition.is_empty() { return Ok(snapshot); }
+        let mut outputs: BTreeMap<String, usize> = snapshot.items.iter().enumerate()
+            .map(|(i, item)| (item.commit_text.clone(), i)).collect();
+        for entry in shared_entries {
+            if entry.text == composition { continue; }
+            if let Some(&i) = outputs.get(&entry.text) {
+                if !snapshot.items[i].shared_entry_ids.contains(&entry.entry_id) {
+                    snapshot.items[i].shared_entry_ids.push(entry.entry_id.clone());
+                }
+                continue;
+            }
+            let id = CandidateId::Shared { entry_id: entry.entry_id.clone() };
+            outputs.insert(entry.text.clone(), snapshot.items.len());
+            snapshot.items.push(Candidate { id: id.clone(), commit_text: entry.text.clone(),
+                annotation: entry.annotation.clone(), shared_entry_ids: vec![entry.entry_id.clone()],
+                action: CandidateAction::Shared { entry_id: id, scope: ReplacementScope::WholeComposition {
+                    utf16_len: composition.encode_utf16().count(),
+                } },
+            });
+        }
+        Ok(snapshot)
     }
     pub fn generation(&self) -> u64 { self.generation }
     pub fn items(&self) -> &[Candidate] { &self.items }
@@ -131,7 +165,7 @@ impl CandidateSnapshot {
             CandidateAction::Native { original_index } => Some(NativeSelection {
                 original_index, page: original_index / self.page_size, slot: original_index % self.page_size,
             }),
-            CandidateAction::Engineering { .. } => None,
+            CandidateAction::Engineering { .. } | CandidateAction::Shared { .. } => None,
         }
     }
     /// Engineering entries cannot become native dictionary deletion requests.
