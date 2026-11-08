@@ -1,0 +1,123 @@
+# 跨平台共用個人詞庫手動驗收核對表 (Manual Acceptance Checklist)
+
+> **當前狀態 (Status)**：`NOT_RUN`  
+> **適用版本**：開發中建置（In-Development Development Build），非已發布功能。  
+> **基準版本**：AI-Bopomofo（Mac）與 AI新酷音 1.1.0（Windows feature/shared-lexicon-v1）。  
+> **執行規範**：本驗收清單供實體環境手動驗收使用。本文件僅記錄查核項目與預期行為，嚴禁偽造執行結果；未實際於實機完成之項目狀態一律為 `NOT_RUN`。
+
+---
+
+## 1. Windows 設定介面匯入生命週期 (Settings Import Lifecycle)
+
+- [ ] **1.1 純記憶體預覽 (Memory-Only Preview)**
+  - **前置**：選取一筆標準 `valid-v1.json` 交換檔案載入。
+  - **預期行為**：介面完整展示檔案內詞條解析結果，列出新增、重複、不支援等分類。此階段**僅在記憶體中解析**，本機詞庫目錄（`ChewingDev`）無任何新檔案或版本目錄寫入。
+  - **狀態**：`NOT_RUN`
+
+- [ ] **1.2 預覽取消不寫入 (Cancel Writes Nothing)**
+  - **操作**：在預覽畫面點選「取消 (Cancel)」或直接關閉視窗。
+  - **預期行為**：系統立即中止匯入流程。檢查儲存層，保證**不寫入任何磁碟資料 (writes nothing)**，既有版本指標與目錄保持原狀。
+  - **狀態**：`NOT_RUN`
+
+- [ ] **1.3 本機明確授權儲存 (Explicit Local Approval)**
+  - **操作**：在預覽畫面逐筆檢視後，由使用者主動點選「確認匯入／核准」。
+  - **預期行為**：系統以原子寫入建立全新以校驗雜湊命名之不可變版本目錄，並將 `current` 指標切換至新版本，`previous` 指向舊版本。
+  - **狀態**：`NOT_RUN`
+
+- [ ] **1.4 組字中延後生效 (Active-Composition Idle Adoption)**
+  - **操作**：在文字編輯器中啟動輸入法組字（處於 preedit 活躍輸入中途），同時觸發詞庫更新或回復。
+  - **預期行為**：正在進行的組字緩衝區**絕不中途突變或重載候選**，以避免候選詞選取位置突變造成跳字；新詞庫必須平順延後至組字送出或清空後的**閒置邊界 (idle boundary)** 才安全生效。
+  - **狀態**：`NOT_RUN`
+
+---
+
+## 2. 候選字整合與精確送出 (Candidates & Commit)
+
+- [ ] **2.1 中文與原生候選排序 (Exact Chinese / Native Candidate Order)**
+  - **操作**：輸入已匯入中文詞（例如「磊晶」`ㄌㄟˇ-ㄐㄧㄥ`）之注音。
+  - **預期行為**：共用詞庫之中文詞彙正確作為候選字投影呈現，且原生新酷音詞庫候選與共用詞庫候選之相對順序保持確定性，不破壞原生既有選字排名。
+  - **狀態**：`NOT_RUN`
+
+- [ ] **2.2 明確送出確認 (Explicit Commit)**
+  - **操作**：選取共用詞庫候選項目並按下確認鍵送出。
+  - **預期行為**：目標編輯區精確收到所選文字，TSF 狀態機平順關閉組字，無重複送出、字元殘留或游標錯位。
+  - **狀態**：`NOT_RUN`
+
+- [ ] **2.3 工程詞與大小寫精確身分 (Engineering H₂O / H2O & Case Identity)**
+  - **操作**：
+    1. 輸入 `H2O`：候選清單中應同時包含且能區分原碼 `H2O` 與下標 `H₂O`。
+    2. 分別輸入小寫 `finfet` 與大寫 `FinFET`：兩者各自精確對應至不同身分條目。
+  - **預期行為**：系統嚴格區分大小寫與 Unicode 字元（不進行小寫化或 NFKC 正規化合併），使用者明確選取時才送出對應形式。
+  - **狀態**：`NOT_RUN`
+
+---
+
+## 3. 私人工程詞匯出與別名防護 (Selected Engineering Export)
+
+- [ ] **3.1 勾選手動選取 (Explicitly Selected Private Entries)**
+  - **操作**：進入工程詞設定頁，嘗試執行匯出。
+  - **預期行為**：使用者必須主動勾選欲匯出的條目；未勾選時不得進行整批預設盲目匯出。
+  - **狀態**：`NOT_RUN`
+
+- [ ] **3.2 預設拒絕別名遺失 (Default Refuses `zh_aliases` Loss)**
+  - **操作**：選取包含中文別名（`zh_aliases`）之工程詞，在未勾選略過別名前嘗試匯出為 v1 格式。
+  - **預期行為**：系統**預設拒絕匯出**，並明確警告 v1 規範無法容納別名，防止跨平台資料無預警遺失。
+  - **狀態**：`NOT_RUN`
+
+- [ ] **3.3 明確略過別名報告 (Explicit Omission Report & Opt-In)**
+  - **操作**：使用者主動勾選「確認略過別名」之選項。
+  - **預期行為**：介面必須清楚列出**將被省略之確切別名清單**。確認匯出後，輸出的 v1 JSON 中不含 `zh_aliases`，但本機原始工程詞與其別名**絕對完好保留、無損未更動**。
+  - **狀態**：`NOT_RUN`
+
+- [ ] **3.4 不支援條目阻擋整批匯出 (Unsupported Entries Block Entire Export)**
+  - **操作**：選取包含格式錯誤或不合規之條目嘗試匯出。
+  - **預期行為**：系統**直接阻擋整批匯出**，嚴禁擅自丟棄該條目或僅輸出部分資料。
+  - **狀態**：`NOT_RUN`
+
+- [ ] **3.5 舊版來源修訂檢查 (Stale Source Rejection)**
+  - **操作**：在匯出對話框開啟期間，外部若發生並行寫入使本機修訂版號（source revision）變更。
+  - **預期行為**：系統偵測到 stale revision 時**拒絕完成匯出**，提示重新整理。
+  - **狀態**：`NOT_RUN`
+
+- [ ] **3.6 既有檔案不覆寫 (Existing Export File Never Overwritten)**
+  - **操作**：匯出儲存路徑若指定為磁碟上已存在之檔案。
+  - **預期行為**：系統**拒絕自動覆寫**，強制提示使用者更名或另存新檔。
+  - **狀態**：`NOT_RUN`
+
+---
+
+## 4. 回復與停用機制 (Rollback & Disable)
+
+- [ ] **4.1 不可變指標回復 (Immutable Pointer Rollback)**
+  - **操作**：於設定介面選取「回復至上一版本 (Rollback to Previous)」。
+  - **預期行為**：`current` 指標平順切換回 `previous` 雜湊目錄；同樣在組字**閒置邊界**生效，不損毀任何既有不可變版本目錄。
+  - **狀態**：`NOT_RUN`
+
+- [ ] **4.2 詞庫停用功能 (Disable)**
+  - **操作**：於設定中切換關閉共用詞庫擴充支援。
+  - **預期行為**：輸入法候選字立即不再投影共用詞庫內容，且本機儲存資料保持完整未刪除。
+  - **狀態**：`NOT_RUN`
+
+---
+
+## 5. 原生設定與既有功能回歸 (Native Settings Regression)
+
+- [ ] **5.1 原生偏好設定回歸 (Native Preferences Regression)**
+  - **操作**：檢查既有新酷音偏好設定（選字鍵配置、F 延遲滑桿、外觀主題、輸入模式切換）。
+  - **預期行為**：各項既有控制項運作如常，登錄檔鍵值不被污染，原 1.1.0 功能無任何退化。
+  - **狀態**：`NOT_RUN`
+
+- [ ] **5.2 詞庫隔離驗證 (Storage Isolation Check)**
+  - **檢查**：檢查系統 `%APPDATA%\Chewing\userphrase.sqlite` 與註冊表。
+  - **預期行為**：正式新酷音詞庫檔案最後修改時間與內容完全未受影響，嚴格落實隔離邊界。
+  - **狀態**：`NOT_RUN`
+
+---
+
+## 6. Mac 交換驗證協同 (Mac Exchange Verification Coordination)
+
+- [ ] **6.1 跨平台交換格式對照 (Cross-Platform Coordination Required)**
+  - **說明**：本項目需要與 Mac 端（AI-Bopomofo）進行交換驗證協同。
+  - **邊界宣告**：目前僅透過無介面解析指令碼（`check_mac.swift`）確認交換格式無損編解碼，**未宣稱已進行 Mac GUI 實機測試 (NOT claimed GUI tested)**。
+  - **預期行為**：Windows 匯出之標準 JSON 交換檔可於 Mac 端由 `LexiconSchema.swift` 無損解析；Mac 匯出之交換檔亦可在 Windows 設定端無損載入預覽。
+  - **狀態**：`NOT_RUN`
