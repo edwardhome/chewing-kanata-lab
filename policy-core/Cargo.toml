@@ -16,3 +16,11 @@ sha2 = "0.10"
 unicode-general-category = "0.6"
 fs2 = "0.4"
 tempfile = "3"
+
+[features]
+unified-sqlite = ["dep:rusqlite"]
+
+[dependencies.rusqlite]
+version = "0.32"
+optional = true
+features = ["bundled", "limits"]

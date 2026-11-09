@@ -185,3 +185,6 @@ pub use prediction::{validate_and_extract_continuation, PredictionLanguage};
 pub mod shared_lexicon;
 pub mod shared_lexicon_store;
 pub mod shared_engineering_exchange;
+
+#[cfg(feature = "unified-sqlite")]
+pub mod unified_sqlite;
