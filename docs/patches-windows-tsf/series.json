@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "ba7619f382f849dbf64b5e97f9c4fed22c3bf758",
+  "tree": "fec62af83f51dcdd7bbdb77e733f5708ade9fe20",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -134,7 +134,15 @@
     {
       "file": "0033-chore-release-1.1.1.patch",
       "sha256": "eeafb408b3fd18adcf2b95d7ce852a8d6f46f38d262b468a3de24caafe3283c7"
+    },
+    {
+      "file": "0034-fix-word-recover-Chinese-mode-from-disabled-openclos.patch",
+      "sha256": "78bd5e865365c82b7d7ce915b044452c4db7f8d318bd0caf13394361e7194d92"
+    },
+    {
+      "file": "0035-fix-word-state-and-notification-lifecycle.patch",
+      "sha256": "fe1cb6873496df2cd32e218edfb2bfbf22996585c7d3ea684574c1903383f039"
     }
   ],
-  "native_commit": "c545fdbf4e2f9cb3b63758361411a778110425e4"
+  "native_commit": "56a9321dd9a1fb080a729c7cb60275625915a29d"
 }

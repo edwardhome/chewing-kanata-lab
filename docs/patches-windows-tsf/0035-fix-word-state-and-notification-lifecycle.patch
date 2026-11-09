@@ -1,0 +1,331 @@
+From 56a9321dd9a1fb080a729c7cb60275625915a29d Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Mon, 9 Nov 2026 23:19:51 +0800
+Subject: [PATCH] fix(word): preserve unknown state and close Shift
+ notifications safely
+
+---
+ tip/src/text_service/chewing.rs               | 195 ++++++++----------
+ .../text_service/ui_elements/notification.rs  |   4 +
+ 2 files changed, 95 insertions(+), 104 deletions(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index a462fa2..223ae7a 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -33,7 +33,7 @@ use log::{debug, error, info};
+ use scoped_error::impl_context_error;
+ use scoped_error::{ErrorExt, expect_error};
+ use windows::Win32::Foundation::{GetLastError, HINSTANCE, POINT, RECT};
+-use windows::Win32::System::Variant::VARIANT;
++use windows::Win32::System::Variant::{VARIANT, VT_EMPTY, VT_I4};
+ use windows::Win32::UI::TextServices::{
+     GUID_COMPARTMENT_EMPTYCONTEXT, GUID_COMPARTMENT_KEYBOARD_DISABLED,
+     GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, GUID_LBI_INPUTMODE, ITfCompartmentMgr, ITfCompositionSink,
+@@ -139,6 +139,35 @@ impl TsfLangMode {
+     }
+ }
+ 
++// Unknown/failed host reads are not an explicit request to close the IME.
++fn compartment_flag(value: &VARIANT) -> Result<Option<bool>> {
++    let kind = unsafe { value.Anonymous.Anonymous.vt };
++    if kind == VT_EMPTY { return Ok(None); }
++    if kind != VT_I4 { bail!("Unexpected compartment value type"); }
++    match i32::try_from(value)? {
++        0 => Ok(Some(false)),
++        1 => Ok(Some(true)),
++        _ => bail!("Unexpected compartment flag"),
++    }
++}
++
++fn mode_from_compartment(mode: TsfLangMode, value: Result<Option<bool>>) -> TsfLangMode {
++    match (value, mode) {
++        (Ok(Some(true)), TsfLangMode::DisabledChinese) => TsfLangMode::Chinese,
++        (Ok(Some(true)), TsfLangMode::DisabledEnglish) => TsfLangMode::English,
++        (Ok(Some(false)), TsfLangMode::Chinese) => TsfLangMode::DisabledChinese,
++        (Ok(Some(false)), TsfLangMode::English) => TsfLangMode::DisabledEnglish,
++        _ => mode,
++    }
++}
++
++fn toggled_lang_mode(mode: TsfLangMode) -> TsfLangMode {
++    match mode {
++        TsfLangMode::Chinese => TsfLangMode::English,
++        _ => TsfLangMode::Chinese,
++    }
++}
++
+ impl From<TsfLangMode> for LanguageMode {
+     fn from(value: TsfLangMode) -> Self {
+         match value {
+@@ -372,6 +401,7 @@ impl ChewingTextService {
+     }
+ 
+     pub(super) fn deactivate(mut self) -> ITfThreadMgr {
++        self.hide_message();
+         if let Ok(lang_bar_item_mgr) = self.thread_mgr.cast::<ITfLangBarItemMgr>() {
+             for button in self.lang_bar_buttons.drain(0..) {
+                 if let Err(error) = unsafe { lang_bar_item_mgr.RemoveItem(&button) } {
+@@ -388,6 +418,7 @@ impl ChewingTextService {
+     pub(super) fn on_kill_focus(&mut self, context: Option<ITfContext>) -> Result<()> {
+         debug!("on_kill_focus");
+         self.has_focus = false;
++        self.hide_message();
+         self.hide_candidates();
+         self.reset_shift_gesture();
+         if let Some(context) = context {
+@@ -513,34 +544,17 @@ impl ChewingTextService {
+                 debug!("key not handled - readonly document");
+                 return Ok(false);
+             }
+-            let compartment_mgr: ITfCompartmentMgr = match context.cast() {
+-                Ok(mgr) => mgr,
+-                Err(_) => return Ok(true),
+-            };
+-            unsafe {
+-                if let Ok(empty_context) =
+-                    compartment_mgr.GetCompartment(&GUID_COMPARTMENT_EMPTYCONTEXT)
+-                {
+-                    if let Ok(val) = empty_context.GetValue() {
+-                        if let Ok(1) = i32::try_from(&val) {
+-                            debug!("key not handled - empty context");
+-                            return Ok(false);
+-                        }
+-                    }
++            let flags = (|| -> Result<bool> {
++                let mgr: ITfCompartmentMgr = context.cast()?;
++                for guid in [GUID_COMPARTMENT_EMPTYCONTEXT, GUID_COMPARTMENT_KEYBOARD_DISABLED] {
++                    let compartment = unsafe { mgr.GetCompartment(&guid)? };
++                    let value = unsafe { compartment.GetValue()? };
++                    if compartment_flag(&value)? == Some(true) { return Ok(false); }
+                 }
+-
+-                if let Ok(disabled) =
+-                    compartment_mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED)
+-                {
+-                    if let Ok(val) = disabled.GetValue() {
+-                        if let Ok(1) = i32::try_from(&val) {
+-                            debug!("key not handled - keyboard disabled");
+-                            return Ok(false);
+-                        }
+-                    }
+-                }
+-            }
+-            Ok(true)
++                Ok(true)
++            })();
++            // VT_EMPTY is an uninitialized flag. Other errors must not grant edit access.
++            Ok(flags.unwrap_or(false))
+         })
+     }
+ 
+@@ -855,9 +869,6 @@ impl ChewingTextService {
+                     SessionResult::Updated(next) => {
+                         self.shift_session = Some(next);
+                         self.render_ascii(context)?;
+-                        if self.cfg.chewing_tsf.show_notification {
+-                            let _ = self.show_message(context, &HSTRING::from("英文"), Duration::from_secs(3600));
+-                        }
+                     }
+                     SessionResult::Commit(text) => {
+                         self.commit_ascii(context, &text)?;
+@@ -1255,23 +1266,16 @@ impl ChewingTextService {
+         Ok(false)
+     }
+ 
+-    fn handle_keyboard_openclose_change(&self) {
+-        let openclose = (|| -> Result<i32> {
+-            let compartment_mgr: ITfCompartmentMgr = self.thread_mgr.cast()?;
+-            let compartment = unsafe {
+-                compartment_mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)?
+-            };
+-            let val = unsafe { compartment.GetValue()? };
+-            Ok(i32::try_from(&val)?)
+-        })().unwrap_or(0);
+-
+-        self.lang_mode.update(|mode| match (openclose != 0, mode) {
+-            (true, TsfLangMode::DisabledChinese) => TsfLangMode::Chinese,
+-            (true, TsfLangMode::DisabledEnglish) => TsfLangMode::English,
+-            (false, TsfLangMode::Chinese) => TsfLangMode::DisabledChinese,
+-            (false, TsfLangMode::English) => TsfLangMode::DisabledEnglish,
+-            _ => mode,
+-        });
++    fn handle_keyboard_openclose_change(&self) -> bool {
++        let value = (|| -> Result<Option<bool>> {
++            let mgr: ITfCompartmentMgr = self.thread_mgr.cast()?;
++            let compartment = unsafe { mgr.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)? };
++            compartment_flag(&unsafe { compartment.GetValue()? })
++        })();
++        let prev = self.lang_mode.get();
++        let next = mode_from_compartment(prev, value);
++        self.lang_mode.set(next);
++        next != prev
+     }
+ 
+     pub(super) fn on_composition_terminated(
+@@ -1289,6 +1293,7 @@ impl ChewingTextService {
+         }
+         let is_current = self.pending_state.as_ref().is_some_and(|state| state.owns_composition(terminated));
+         if !is_current { return Ok(matched); }
++        self.hide_message();
+         if let Some(state) = &self.pending_state { state.invalidate(); }
+         debug!(has_focus=self.has_focus; "on_composition_terminated_tail");
+         self.f_key_state = kanata_layer::FKeyState::Up;
+@@ -1316,7 +1321,7 @@ impl ChewingTextService {
+             && !self.pending_lang_mode_change.take()
+             && self.has_focus
+         {
+-            self.handle_keyboard_openclose_change();
++            if !self.handle_keyboard_openclose_change() { return Ok(()); }
+             self.sync_lang_mode(false)?;
+         }
+         Ok(())
+@@ -1328,7 +1333,7 @@ impl ChewingTextService {
+             && !self.pending_lang_mode_change.take()
+             && self.has_focus
+         {
+-            self.handle_keyboard_openclose_change();
++            if !self.handle_keyboard_openclose_change() { return Ok(()); }
+             self.sync_lang_mode(false)?;
+             if self.is_composing() && self.lang_mode.get().is_disabled() {
+                 self.chewing_editor.commit()?;
+@@ -1773,6 +1778,8 @@ impl ChewingTextService {
+         text: &HSTRING,
+         dur: Duration,
+     ) -> Result<(), scoped_error::Error> {
++        // End the registered TSF element before replacing its owning handle.
++        self.hide_message();
+         expect_error("Failed to show message", || {
+             let hwnd = unsafe {
+                 let view = context.GetActiveView()?;
+@@ -2122,11 +2129,7 @@ impl ChewingTextService {
+     fn toggle_lang_mode_with_context(&mut self, context: &ITfContext) -> Result<()> {
+         self.cancel_custom_input(context)?;
+         let prev = self.lang_mode.get();
+-        self.lang_mode.update(|v| match v {
+-            TsfLangMode::English => TsfLangMode::Chinese,
+-            TsfLangMode::Chinese => TsfLangMode::English,
+-            TsfLangMode::DisabledEnglish | TsfLangMode::DisabledChinese => TsfLangMode::Chinese,
+-        });
++        self.lang_mode.update(toggled_lang_mode);
+         self.pending_lang_mode_change.set(true);
+         if prev.is_disabled() || self.lang_mode.get() == TsfLangMode::Chinese {
+             self.recovery_open_pending.set(true);
+@@ -2143,11 +2146,7 @@ impl ChewingTextService {
+ 
+     fn toggle_lang_mode(&mut self) -> Result<()> {
+         let prev = self.lang_mode.get();
+-        self.lang_mode.update(|v| match v {
+-            TsfLangMode::English => TsfLangMode::Chinese,
+-            TsfLangMode::Chinese => TsfLangMode::English,
+-            TsfLangMode::DisabledEnglish | TsfLangMode::DisabledChinese => TsfLangMode::Chinese,
+-        });
++        self.lang_mode.update(toggled_lang_mode);
+         self.pending_lang_mode_change.set(true);
+         if prev.is_disabled() || self.lang_mode.get() == TsfLangMode::Chinese {
+             self.recovery_open_pending.set(true);
+@@ -2762,54 +2761,42 @@ mod f_and_shift_handoff_tests {
+     }
+ 
+     #[test]
+-    fn test_disabled_mode_recovers_to_chinese_on_toggle() {
+-        for initial in [TsfLangMode::DisabledEnglish, TsfLangMode::DisabledChinese] {
+-            let mut mode = initial;
+-            // Simulated toggle_lang_mode update logic
+-            mode = match mode {
+-                TsfLangMode::English => TsfLangMode::Chinese,
+-                TsfLangMode::Chinese => TsfLangMode::English,
+-                TsfLangMode::DisabledEnglish | TsfLangMode::DisabledChinese => TsfLangMode::Chinese,
+-            };
+-            assert_eq!(mode, TsfLangMode::Chinese);
+-            assert!(!mode.is_disabled());
++    fn explicit_toggle_recovers_disabled_modes() {
++        for mode in [TsfLangMode::DisabledEnglish, TsfLangMode::DisabledChinese, TsfLangMode::English] {
++            assert_eq!(toggled_lang_mode(mode), TsfLangMode::Chinese);
+         }
++        assert_eq!(toggled_lang_mode(TsfLangMode::Chinese), TsfLangMode::English);
+     }
+ 
+     #[test]
+-    fn test_compartment_openclose_status_transition() {
+-        // When openclose != 0 (Open)
+-        for (initial, expected) in [
+-            (TsfLangMode::DisabledChinese, TsfLangMode::Chinese),
+-            (TsfLangMode::DisabledEnglish, TsfLangMode::English),
+-            (TsfLangMode::Chinese, TsfLangMode::Chinese),
+-            (TsfLangMode::English, TsfLangMode::English),
+-        ] {
+-            let next = match (true, initial) {
+-                (true, TsfLangMode::DisabledChinese) => TsfLangMode::Chinese,
+-                (true, TsfLangMode::DisabledEnglish) => TsfLangMode::English,
+-                (false, TsfLangMode::Chinese) => TsfLangMode::DisabledChinese,
+-                (false, TsfLangMode::English) => TsfLangMode::DisabledEnglish,
+-                _ => initial,
+-            };
+-            assert_eq!(next, expected);
+-        }
+-
+-        // When openclose == 0 (Closed / Word document init)
+-        for (initial, expected) in [
+-            (TsfLangMode::Chinese, TsfLangMode::DisabledChinese),
+-            (TsfLangMode::English, TsfLangMode::DisabledEnglish),
+-            (TsfLangMode::DisabledChinese, TsfLangMode::DisabledChinese),
+-            (TsfLangMode::DisabledEnglish, TsfLangMode::DisabledEnglish),
+-        ] {
+-            let next = match (false, initial) {
+-                (true, TsfLangMode::DisabledChinese) => TsfLangMode::Chinese,
+-                (true, TsfLangMode::DisabledEnglish) => TsfLangMode::English,
+-                (false, TsfLangMode::Chinese) => TsfLangMode::DisabledChinese,
+-                (false, TsfLangMode::English) => TsfLangMode::DisabledEnglish,
+-                _ => initial,
+-            };
+-            assert_eq!(next, expected);
++    fn compartment_variants_distinguish_unset_closed_and_invalid() {
++        assert_eq!(compartment_flag(&VARIANT::default()).unwrap(), None);
++        assert_eq!(compartment_flag(&0i32.into()).unwrap(), Some(false));
++        assert_eq!(compartment_flag(&1i32.into()).unwrap(), Some(true));
++        assert!(compartment_flag(&2i32.into()).is_err());
++        assert!(compartment_flag(&1u32.into()).is_err());
++    }
++
++    #[test]
++    fn failed_or_unset_compartment_preserves_every_mode() {
++        for mode in [TsfLangMode::Chinese, TsfLangMode::English,
++                     TsfLangMode::DisabledChinese, TsfLangMode::DisabledEnglish] {
++            assert_eq!(mode_from_compartment(mode, compartment_flag(&VARIANT::default())), mode);
++            assert_eq!(mode_from_compartment(mode, Err(anyhow::anyhow!("COM read failed"))), mode);
++            assert_eq!(mode_from_compartment(mode, compartment_flag(&2i32.into())), mode);
++        }
++    }
++
++    #[test]
++    fn repeated_compartment_notifications_are_idempotent() {
++        for (enabled, disabled) in [(TsfLangMode::Chinese, TsfLangMode::DisabledChinese),
++                                    (TsfLangMode::English, TsfLangMode::DisabledEnglish)] {
++            let closed = mode_from_compartment(enabled, compartment_flag(&0i32.into()));
++            assert_eq!(closed, disabled);
++            assert_eq!(mode_from_compartment(closed, compartment_flag(&0i32.into())), disabled);
++            let opened = mode_from_compartment(closed, compartment_flag(&1i32.into()));
++            assert_eq!(opened, enabled);
++            assert_eq!(mode_from_compartment(opened, compartment_flag(&1i32.into())), enabled);
+         }
+     }
+ }
+diff --git a/tip/src/text_service/ui_elements/notification.rs b/tip/src/text_service/ui_elements/notification.rs
+index d49d682..529ca5e 100644
+--- a/tip/src/text_service/ui_elements/notification.rs
++++ b/tip/src/text_service/ui_elements/notification.rs
+@@ -383,6 +383,10 @@ impl Notification {
+         Ok(candidate_list)
+     }
+     pub(crate) fn end_ui_element(&self) {
++        self.set_timer(Duration::ZERO);
++        if let Some(window) = self.inner.view.borrow().window() {
++            window.hide();
++        }
+         let Ok(ui_manager): Result<ITfUIElementMgr, windows_core::Error> = self.thread_mgr.cast()
+         else {
+             error!("unable to cast thread manager to ITfUIElementMgr");
+-- 
+2.55.0.windows.3
+

@@ -188,3 +188,6 @@ pub mod shared_engineering_exchange;
 
 #[cfg(feature = "unified-sqlite")]
 pub mod unified_sqlite;
+
+#[cfg(feature = "unified-sqlite")]
+pub mod unified_management;

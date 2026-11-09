@@ -80,6 +80,8 @@ pub struct PreparedImport {
     bytes: Vec<u8>,
     document: LexiconDocument,
     checksum: String,
+    #[cfg(feature = "unified-sqlite")]
+    unified: Option<crate::unified_sqlite::UnifiedLexicon>,
 }
 impl std::fmt::Debug for PreparedImport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -88,6 +90,8 @@ impl std::fmt::Debug for PreparedImport {
 }
 impl PreparedImport {
     pub fn document(&self) -> &LexiconDocument { &self.document }
+    #[cfg(feature="unified-sqlite")]
+    pub fn unified_value(&self) -> Option<&crate::unified_sqlite::UnifiedLexicon> { self.unified.as_ref() }
     pub fn checksum(&self) -> &str { &self.checksum }
     pub fn base_revision(&self) -> Option<&str> { self.revision.as_deref() }
 }
@@ -116,13 +120,34 @@ struct Receipt {
     source_checksum: String,
     checksum: String,
     dictionary_version: String,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    sqlite_checksum: Option<String>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    projection_checksum: Option<String>,
 }
 struct LoadedPointer { pointer: Pointer, revision: String }
-struct VerifiedVersion { document: LexiconDocument }
+struct VerifiedVersion {
+    document: LexiconDocument,
+    #[cfg(feature="unified-sqlite")]
+    unified: Option<crate::unified_sqlite::UnifiedLexicon>,
+    #[cfg(feature="unified-sqlite")]
+    recovered: bool,
+}
+#[cfg(feature="unified-sqlite")]
+#[derive(Debug, Clone)]
+pub struct UnifiedSnapshot { pub snapshot: Snapshot, pub value: crate::unified_sqlite::UnifiedLexicon, pub recovered: bool }
+
 
 impl SharedStore {
     /// Root is supplied by the platform data-directory resolver, never by a document.
     pub fn new(root: PathBuf) -> Self { Self { root } }
+
+    /// A validated local disable remains effective even if its payload is damaged.
+    pub fn disabled_revision(&self) -> Result<Option<String>> {
+        let Some(state) = self.read_pointer()? else { return Ok(None); };
+        self.read_identity()?;
+        Ok((!state.pointer.enabled).then_some(state.revision))
+    }
 
     pub fn status(&self) -> Result<StoreStatus> {
         let loaded = self.read_pointer()?;
@@ -156,13 +181,18 @@ impl SharedStore {
         let state = self.read_pointer()?;
         check_revision(state.as_ref(), expected_revision)?;
         if let Some(state) = &state {
-            self.read_version(&state.pointer.active, &self.read_identity()?)?;
+            let current = self.read_version(&state.pointer.active, &self.read_identity()?)?;
+            #[cfg(feature="unified-sqlite")]
+            if current.unified.is_some() { return Err(StoreError::InvalidDocument); }
+            #[cfg(not(feature="unified-sqlite"))]
+            let _ = current;
         }
         // Source approval and usage remain exchange data. Only the separately
         // generated local receipt grants deployment; usage never updates an engine.
         let bytes = shared_lexicon::encode(&document).map_err(|_| StoreError::InvalidDocument)?;
         let prepared = PreparedImport { root: self.root.clone(), revision: expected_revision.map(str::to_owned),
-            source_checksum, checksum: digest(&bytes), bytes, document };
+            source_checksum, checksum: digest(&bytes), bytes, document,
+            #[cfg(feature="unified-sqlite")] unified: None };
         self.check_version_name(&prepared)?;
         Ok(prepared)
     }
@@ -195,10 +225,21 @@ impl SharedStore {
         let stage = tempfile::Builder::new().prefix("operation-").tempdir_in(&staging)
             .map_err(|_| StoreError::StorageFailure)?;
         let operation_id = digest(stage.path().file_name().ok_or(StoreError::InvalidStore)?.to_string_lossy().as_bytes());
-        let receipt = Receipt { format_version: FORMAT_VERSION, store_id: identity.store_id.clone(),
+        let mut receipt = Receipt { format_version: FORMAT_VERSION, store_id: identity.store_id.clone(),
             approval_id: operation_id, approved_at_unix_ms: now_ms()?,
             source_checksum: prepared.source_checksum.clone(), checksum: prepared.checksum.clone(),
-            dictionary_version: prepared.document.dictionary_version.clone() };
+            dictionary_version: prepared.document.dictionary_version.clone(),
+            sqlite_checksum: None, projection_checksum: None };
+        #[cfg(feature="unified-sqlite")]
+        if let Some(value) = &prepared.unified {
+            let sqlite = crate::unified_sqlite::encode(value).map_err(|_| StoreError::InvalidDocument)?;
+            let fallback = serde_json::to_vec(value).map_err(|_| StoreError::InvalidDocument)?;
+            receipt.format_version = 2;
+            receipt.sqlite_checksum = Some(digest(&sqlite));
+            receipt.projection_checksum = Some(digest(&prepared.bytes));
+            write_new(&stage.path().join("lexicon.sqlite"), &sqlite)?;
+            write_new(&stage.path().join("unified.json"), &fallback)?;
+        }
         write_new(&stage.path().join("lexicon.json"), &prepared.bytes)?;
         write_new(&stage.path().join("receipt.json"), &json(&receipt)?)?;
         checkpoint(Checkpoint::Staged)?;
@@ -221,6 +262,41 @@ impl SharedStore {
         let revision = self.commit_pointer_impl(&next, || checkpoint(Checkpoint::PointerSwap))?;
         // After the single commit point there are no fallible operations.
         Ok(Snapshot { revision, checksum: prepared.checksum, document: prepared.document, enabled: next.enabled })
+    }
+
+    #[cfg(feature="unified-sqlite")]
+    pub fn load_unified(&self) -> Result<Option<UnifiedSnapshot>> {
+        let Some(state) = self.read_pointer()? else { return Ok(None); };
+        let v = self.read_version(&state.pointer.active, &self.read_identity()?)?;
+        let value = v.unified.unwrap_or_else(|| crate::unified_sqlite::UnifiedLexicon {document:v.document.clone(), relations:vec![]});
+        Ok(Some(UnifiedSnapshot { snapshot: Snapshot {revision:state.revision, checksum:state.pointer.active.checksum, document:v.document, enabled:state.pointer.enabled}, value, recovered:v.recovered }))
+    }
+
+    #[cfg(feature="unified-sqlite")]
+    pub fn prepare_unified(&self, mut value: crate::unified_sqlite::UnifiedLexicon, expected: Option<&str>, source_checksum: &str) -> Result<PreparedImport> {
+        if !valid_hash(source_checksum) { return Err(StoreError::InvalidDocument); }
+        value.validate().map_err(|_| StoreError::InvalidDocument)?;
+        let state = self.read_pointer()?;
+        check_revision(state.as_ref(), expected)?;
+        if let Some(state) = &state { self.read_version(&state.pointer.active, &self.read_identity()?)?; }
+        for e in &mut value.document.entries {
+            e.usage = None;
+            e.review.status = shared_lexicon::ReviewStatus::Approved;
+            e.review.user_confirmed = true;
+        }
+        value.document.document_type = "approved".into();
+        value.relations.sort_by(|a,b| (&a.source_id,&a.target_id,&a.kind).cmp(&(&b.source_id,&b.target_id,&b.kind)));
+        value.document.dictionary_version = "snapshot-content".into();
+        let content = serde_json::to_vec(&value).map_err(|_| StoreError::InvalidDocument)?;
+        value.document.dictionary_version = format!("snapshot-{}", digest(&content));
+        let bytes = shared_lexicon::encode(&value.document).map_err(|_| StoreError::InvalidDocument)?;
+        let fallback = serde_json::to_vec(&value).map_err(|_| StoreError::InvalidDocument)?;
+        if fallback.len() > 24 * 1024 * 1024 { return Err(StoreError::Capacity); }
+        // Validate that this exact approved value fits the portable SQLite container.
+        crate::unified_sqlite::encode(&value).map_err(|_| StoreError::InvalidDocument)?;
+        let prepared = PreparedImport {root:self.root.clone(), revision:expected.map(str::to_owned), source_checksum:source_checksum.into(), checksum:digest(&fallback), bytes, document:value.document.clone(), unified:Some(value)};
+        self.check_version_name(&prepared)?;
+        Ok(prepared)
     }
 
     pub fn rollback(&self, expected_revision: Option<&str>) -> Result<Snapshot> {
@@ -304,18 +380,52 @@ impl SharedStore {
     fn verify_version_directory(&self, directory: &Path, reference: &VersionInfo, identity: &Identity) -> Result<VerifiedVersion> {
         check_directory(directory)?;
         let receipt: Receipt = metadata(&bounded_read(&directory.join("receipt.json"), META_LIMIT)?)?;
-        if receipt.format_version != FORMAT_VERSION || receipt.store_id != identity.store_id
+        if !matches!(receipt.format_version, 1 | 2) || receipt.store_id != identity.store_id
             || receipt.checksum != reference.checksum || receipt.dictionary_version != reference.dictionary_version
-            || receipt.source_checksum != receipt.checksum || !valid_hash(&receipt.approval_id) || receipt.approved_at_unix_ms == 0 {
+            || !valid_hash(&receipt.source_checksum) || !valid_hash(&receipt.approval_id) || receipt.approved_at_unix_ms == 0 {
+            return Err(StoreError::InvalidStore);
+        }
+        if receipt.format_version == 2 {
+            #[cfg(feature="unified-sqlite")]
+            {
+                let projection_hash = receipt.projection_checksum.as_ref().filter(|h| valid_hash(h)).ok_or(StoreError::InvalidStore)?;
+                let sqlite_hash = receipt.sqlite_checksum.as_ref().filter(|h| valid_hash(h)).ok_or(StoreError::InvalidStore)?;
+                let read_primary = || -> Result<crate::unified_sqlite::UnifiedLexicon> {
+                    let bytes = bounded_read(&directory.join("lexicon.sqlite"), crate::unified_sqlite::MAX_BYTES)?;
+                    if digest(&bytes) != *sqlite_hash { return Err(StoreError::InvalidStore); }
+                    let value = crate::unified_sqlite::decode(&bytes).map_err(|_| StoreError::InvalidStore)?;
+                    if digest(&serde_json::to_vec(&value).map_err(|_| StoreError::InvalidStore)?) != reference.checksum { return Err(StoreError::InvalidStore); }
+                    Ok(value)
+                };
+                let (value, recovered) = match read_primary() {
+                    Ok(v) => (v, false),
+                    Err(_) => {
+                        let bytes = bounded_read(&directory.join("unified.json"), 24 * 1024 * 1024)?;
+                        if digest(&bytes) != reference.checksum { return Err(StoreError::InvalidStore); }
+                        let value: crate::unified_sqlite::UnifiedLexicon = serde_json::from_slice(&bytes).map_err(|_| StoreError::InvalidStore)?;
+                        value.validate().map_err(|_| StoreError::InvalidStore)?;
+                        (value, true)
+                    }
+                };
+                let projection = shared_lexicon::encode(&value.document).map_err(|_| StoreError::InvalidStore)?;
+                if digest(&projection) != *projection_hash || value.document.dictionary_version != reference.dictionary_version {
+                    return Err(StoreError::InvalidStore);
+                }
+                return Ok(VerifiedVersion { document: value.document.clone(), unified: Some(value), recovered });
+            }
+            #[cfg(not(feature="unified-sqlite"))]
+            return Err(StoreError::InvalidStore);
+        }
+        if receipt.source_checksum != receipt.checksum || receipt.sqlite_checksum.is_some() || receipt.projection_checksum.is_some() {
             return Err(StoreError::InvalidStore);
         }
         let bytes = bounded_read(&directory.join("lexicon.json"), shared_lexicon::MAX_BYTES)?;
         if digest(&bytes) != reference.checksum { return Err(StoreError::InvalidStore); }
         let document = shared_lexicon::parse(&bytes).map_err(|_| StoreError::InvalidStore)?;
-        if document.dictionary_version != reference.dictionary_version {
-            return Err(StoreError::InvalidStore);
-        }
-        Ok(VerifiedVersion { document })
+        if document.dictionary_version != reference.dictionary_version { return Err(StoreError::InvalidStore); }
+        Ok(VerifiedVersion { document,
+            #[cfg(feature="unified-sqlite")] unified: None,
+            #[cfg(feature="unified-sqlite")] recovered: false })
     }
     fn check_version_name(&self, prepared: &PreparedImport) -> Result<()> {
         let versions = self.root.join("versions");
@@ -333,7 +443,8 @@ impl SharedStore {
             check_directory(&entry.path())?;
             let receipt: Receipt = metadata(&bounded_read(&entry.path().join("receipt.json"), META_LIMIT)?)?;
             if receipt.store_id != identity.store_id || receipt.checksum != checksum
-                || receipt.source_checksum != checksum || receipt.format_version != FORMAT_VERSION {
+                || !valid_hash(&receipt.source_checksum) || !matches!(receipt.format_version, 1 | 2)
+                || (receipt.format_version == 1 && receipt.source_checksum != checksum) {
                 return Err(StoreError::InvalidStore);
             }
             if receipt.dictionary_version == prepared.document.dictionary_version {
