@@ -34,6 +34,7 @@ $payload['preferences-REUSE.toml'] = Join-Path $PreferencesDirectory 'REUSE.toml
 $payload['chewing.ico'] = Join-Path $NativeDirectory 'tip\rc\im.chewing.Chewing.ico'
 $payload['libchewing-data-CC-BY-4.0.txt'] = Join-Path $PSScriptRoot 'licenses\libchewing-data-CC-BY-4.0.txt'
 $payload['libchewing-data-NOTICE.txt'] = Join-Path $PSScriptRoot 'licenses\libchewing-data-NOTICE.txt'
+$payload['rusqlite-MIT.txt'] = Join-Path $PSScriptRoot 'licenses\rusqlite-MIT.txt'
 $payload['COPYING.txt'] = Join-Path $NativeDirectory 'COPYING.txt'
 $payload['AI-Bopomofo-LICENSE.txt'] = Join-Path $sourceRoot 'policy-core\resources\AI-Bopomofo-LICENSE.txt'
 # Only the named public distribution dictionaries are eligible; never copy a
