@@ -8,6 +8,7 @@ pub mod double_shift;
 pub mod f_hold;
 pub mod grammar_corrector;
 pub mod shift_letter;
+pub mod initial_letter_hold;
 pub mod technical_lexicon;
 pub mod user_engineering;
 pub mod text_assistance;

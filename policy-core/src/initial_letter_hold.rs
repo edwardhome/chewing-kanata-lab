@@ -29,7 +29,7 @@ pub const MAX_HOLD_DELAY_MS: u64 = 1000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Idle,
-    /// 正在等待長按門檻，首字母大寫已被送出或暫存
+    /// 正在等待長按門檻，首字母大寫仍保留在未送出組字
     Pending,
     /// 已超過門檻並成功轉換為小寫
     Triggered,
@@ -41,7 +41,7 @@ pub enum Effect {
     None,
     /// 吞噬此按鍵重複，不讓作業系統產生重複大寫字元
     ConsumeRepeat,
-    /// 長按時間到達，觸發將首字母轉為小寫（需替換/退格前一個大寫字元並輸入小寫字元）
+    /// 長按時間到達，觸發將首字母轉為小寫（僅改未送出組字，不合成退格或更改已送出文字）
     TransformToLowercase { uppercase: char, lowercase: char },
     /// 手勢被取消，若有計時器應取消
     CancelTimer,

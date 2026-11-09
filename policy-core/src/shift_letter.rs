@@ -3,6 +3,7 @@
 //! 移植自 edwardhome/AI-Bopomofo (ShiftLetterSession.swift & ASCIIComposition.swift)
 
 use crate::technical_lexicon::TechnicalLexicon;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ASCIIComposition {
@@ -212,6 +213,7 @@ pub enum ShiftMode {
 pub struct ShiftLetterSession {
     pub composition: ASCIIComposition,
     pub mode: ShiftMode,
+    initial_timing: Option<(char, Instant, Duration)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,17 +229,23 @@ pub enum SessionResult {
 
 impl ShiftLetterSession {
     pub fn new(composition: ASCIIComposition, mode: ShiftMode) -> Self {
-        Self { composition, mode }
+        Self { composition, mode, initial_timing: None }
     }
 
     /// 從首個大寫字母建立 Session (如 Shift+S)
     pub fn start_with_letter(letter: char, lexicon: &TechnicalLexicon) -> Self {
-        let comp = ASCIIComposition::new(&letter.to_string(), None, 0, lexicon);
-        Self {
-            composition: comp,
-            mode: ShiftMode::Initial,
-        }
+        Self::start_with_letter_delay(letter, lexicon, Duration::from_millis(250), Instant::now())
     }
+
+    pub fn start_with_letter_delay(letter: char, lexicon: &TechnicalLexicon, delay: Duration, now: Instant) -> Self {
+        let delay=delay.clamp(Duration::from_millis(100),Duration::from_millis(1000));
+        Self { composition: ASCIIComposition::new(&letter.to_string(), None, 0, lexicon),
+            mode: ShiftMode::Initial,
+            initial_timing: (letter.is_ascii_uppercase() && letter!='F').then_some((letter,now,delay)) }
+    }
+
+    pub fn cancel_initial_timing(&mut self) { self.initial_timing=None; }
+    pub fn initial_letter_key(&self) -> Option<u16> { self.initial_timing.map(|(letter,_,_)|letter as u16) }
 
     /// 釋放 Shift 鍵時的狀態轉移
     pub fn releasing_shift(&self) -> SessionResult {
@@ -245,6 +253,7 @@ impl ShiftLetterSession {
             ShiftMode::Initial => SessionResult::Updated(Self {
                 composition: self.composition.clone(),
                 mode: ShiftMode::Word,
+                initial_timing: self.initial_timing,
             }),
             ShiftMode::Word => SessionResult::Updated(self.clone()),
             ShiftMode::Uppercase => SessionResult::Commit(self.composition.display().to_string()),
@@ -258,6 +267,27 @@ impl ShiftLetterSession {
         repeating: bool,
         lexicon: &TechnicalLexicon,
     ) -> SessionResult {
+        self.applying_at(action, shift_held, repeating, lexicon, Instant::now())
+    }
+
+    pub fn applying_at(&self, action: CompositionAction, shift_held: bool, repeating: bool,
+        lexicon: &TechnicalLexicon, now: Instant) -> SessionResult {
+        // Independent fallback: a missing outer timer must not disable elapsed-time handling.
+        if repeating && matches!(self.mode, ShiftMode::Initial | ShiftMode::Word) {
+            if let (Some((letter,start,delay)),CompositionAction::Insert(text))=(self.initial_timing,&action) {
+                let lower=letter.to_ascii_lowercase().to_string();
+                let upper=letter.to_string();
+                if (text==&upper || text==&lower) && (self.composition.raw==upper || self.composition.raw==lower)
+                    && self.composition.cursor==1 && self.composition.selected_index==0 {
+                    let mut next=self.clone();
+                    if now.saturating_duration_since(start)>=delay {
+                        next.composition=ASCIIComposition::new(&lower,None,0,lexicon);
+                        next.mode=ShiftMode::Word;
+                    }
+                    return SessionResult::Updated(next);
+                }
+            }
+        }
         if action == CompositionAction::Escape && self.composition.selected_index == 0 {
             return SessionResult::Cancel;
         }
@@ -278,6 +308,7 @@ impl ShiftLetterSession {
                         Self {
                             composition: ASCIIComposition::default(),
                             mode: ShiftMode::Uppercase,
+                            initial_timing: None,
                         },
                     );
                 }
@@ -297,6 +328,7 @@ impl ShiftLetterSession {
                             Self {
                                 composition: ASCIIComposition::default(),
                                 mode: ShiftMode::Uppercase,
+                            initial_timing: None,
                             },
                         );
                     }
@@ -321,6 +353,7 @@ impl ShiftLetterSession {
             CompositionResult::Updated(edited) => SessionResult::Updated(Self {
                 composition: edited,
                 mode: next_mode,
+                initial_timing: None,
             }),
             CompositionResult::Commit(text) => SessionResult::Commit(text),
             CompositionResult::PassThrough(text) => SessionResult::PassThrough(text),
@@ -333,6 +366,38 @@ impl ShiftLetterSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_repeat_fallback_survives_missing_outer_timer() {
+        let lexicon=TechnicalLexicon::default();let start=Instant::now();
+        let session=ShiftLetterSession::start_with_letter_delay('S',&lexicon,Duration::from_millis(250),start);
+        let mut outer=crate::initial_letter_hold::InitialLetterHoldGesture::default();
+        outer.start(0x53,'S',start);outer.cancel();
+        let SessionResult::Updated(early)=session.applying_at(CompositionAction::Insert("S".into()),true,true,&lexicon,start+Duration::from_millis(249)) else {panic!("repeat");};
+        assert_eq!(early.composition.raw,"S");
+        let SessionResult::Updated(released)=early.releasing_shift() else {panic!("shift");};
+        let SessionResult::Updated(lowered)=released.applying_at(CompositionAction::Insert("s".into()),false,true,&lexicon,start+Duration::from_millis(250)) else {panic!("repeat");};
+        assert_eq!(lowered.composition.raw,"s");
+        let SessionResult::Updated(repeated)=lowered.applying_at(CompositionAction::Insert("s".into()),false,true,&lexicon,start+Duration::from_millis(900)) else {panic!("repeat");};
+        assert_eq!(repeated.composition.raw,"s");
+    }
+    #[test]
+    fn editing_or_f_layer_cancels_inner_initial_hold() {
+        let lexicon=TechnicalLexicon::default();let session=ShiftLetterSession::start_with_letter('S',&lexicon);
+        let SessionResult::Updated(edited)=session.applying(CompositionAction::Left,false,false,&lexicon) else {panic!("edit");};
+        assert_eq!(edited.initial_letter_key(),None);
+        let buffer=FCompositionBuffer::new(Some(session.clone()),&lexicon);
+        assert_eq!(buffer.base.unwrap().initial_letter_key(),None);
+        let mut cancelled=session;cancelled.cancel_initial_timing();assert_eq!(cancelled.initial_letter_key(),None);
+    }
+    #[test]
+    fn first_letter_delay_is_captured_and_f_keeps_priority() {
+        let lexicon=TechnicalLexicon::default();let start=Instant::now();
+        let session=ShiftLetterSession::start_with_letter_delay('S',&lexicon,Duration::from_millis(1000),start);
+        let SessionResult::Updated(still_upper)=session.applying_at(CompositionAction::Insert("S".into()),true,true,&lexicon,start+Duration::from_millis(999)) else {panic!("repeat");};
+        assert_eq!(still_upper.composition.raw,"S");
+        assert_eq!(ShiftLetterSession::start_with_letter('F',&lexicon).initial_letter_key(),None);
+    }
 
     #[test]
     fn test_single_word_flow() {
@@ -462,6 +527,7 @@ pub struct FCompositionBuffer {
 impl FCompositionBuffer {
     pub fn new(mut base: Option<ShiftLetterSession>, lexicon: &TechnicalLexicon) -> Self {
         if let Some(session) = &mut base {
+            session.cancel_initial_timing();
             session.composition = ASCIIComposition::accepted(session.composition.raw.clone(),
                 Some(session.composition.cursor), 0, lexicon);
         }
