@@ -22,3 +22,7 @@
 ## 獨立審查更新
 
 AGY native 修復 6c68e74、外層 246b9d1 已查收；Windows 隔離測試 96 項通過，34 份補丁重播來源樹一致。尚有提示元件生命週期與讀取狀態失敗被當成關閉等阻擋問題，未接受發布。Word 實機仍 NOT_RUN。詳見 [獨立審查](../verification/runs/RUN-20261109-WORD-REVIEW.md)。
+
+## Codex 修正完成
+
+Codex 已修訂 native 56a9321、外層 437ad79：狀態未知不再停用中文，提示替換與失焦／終止會清理，測試使用正式轉換函式。98 項測試通過，35 份補丁重播 tree 一致。Windows 外層已回到乾淨 main；成果留在 fix/word-openclose-and-shift-ux。未追蹤報告已備份並核對至 `C:\Users\Defu\Documents\AI-Chewing\workspace-handoff-20261109T232120`。未安裝／重啟，Word 實機仍 NOT_RUN。詳見 [修復複驗](../verification/runs/RUN-20261109-WORD-FIX.md)。
