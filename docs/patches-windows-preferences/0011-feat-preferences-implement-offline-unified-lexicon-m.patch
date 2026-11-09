@@ -1,0 +1,1182 @@
+From f5240ad3da59ad10f6c3753404e3a020056e9b44 Mon Sep 17 00:00:00 2001
+From: AGY <antigravity@local>
+Date: Mon, 9 Nov 2026 23:56:08 +0800
+Subject: [PATCH 11/14] feat(preferences): implement offline unified lexicon
+ manager UI (Task UNIFIED-UI-1109)
+
+---
+ src/UnifiedLexicon.tsx | 1162 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 1162 insertions(+)
+ create mode 100644 src/UnifiedLexicon.tsx
+
+diff --git a/src/UnifiedLexicon.tsx b/src/UnifiedLexicon.tsx
+new file mode 100644
+index 0000000..42fd705
+--- /dev/null
++++ b/src/UnifiedLexicon.tsx
+@@ -0,0 +1,1162 @@
++// SPDX-FileCopyrightText: 2026 AI Chewing contributors
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++/**
++ * Task UNIFIED-UI-1109
++ * 台灣繁體中文 (Taiwan Traditional Chinese) 離線統一詞彙管理介面
++ * 
++ * 核心契約核對 (Backend Contract Reference):
++ * - unified_lexicon_status -> { revision, enabled, recovered, value, previous }
++ * - unified_lexicon_read({ path }) -> UnifiedLexicon
++ * - unified_lexicon_preview({ value, expected, replace, selected, incomingConflicts }) -> Preview
++ * - unified_lexicon_edit({ entry, oldId, deleteIds, expected }) -> Preview
++ * - unified_lexicon_approve({ token, confirmed: true }) -> Status
++ * - unified_lexicon_cancel({ token }) -> void
++ * - unified_lexicon_export({ path, selected, expected, json }) -> void
++ * - unified_lexicon_rollback({ expected, confirmed: true }) -> Status
++ * - unified_lexicon_enabled({ expected, enabled }) -> Status
++ */
++
++import { useEffect, useMemo, useState } from "react";
++import {
++  Badge,
++  Button,
++  Card,
++  Checkbox,
++  Dialog,
++  DialogActions,
++  DialogBody,
++  DialogContent,
++  DialogSurface,
++  DialogTitle,
++  DialogTrigger,
++  Field,
++  Input,
++  Select,
++  Text,
++  Textarea,
++  Tooltip,
++} from "@fluentui/react-components";
++import { invoke } from "@tauri-apps/api/core";
++import { ask, open, save } from "@tauri-apps/plugin-dialog";
++
++export interface Entry {
++  entry_id: string;
++  term_type: string;
++  reading: string;
++  text: string;
++  annotation?: string;
++  alias?: string;
++  alias_reading?: string;
++  category?: string;
++  source?: string;
++  review?: {
++    status: string;
++    user_confirmed: boolean;
++  };
++  usage?: unknown;
++  model_suggestion?: unknown;
++  sources?: string[];
++  policy?: string;
++}
++
++export interface Relation {
++  source_id: string;
++  target_id: string;
++  kind: "equivalent" | string;
++}
++
++export interface LexiconDocument {
++  dictionary_version?: string;
++  entries: Entry[];
++  [key: string]: unknown;
++}
++
++export interface UnifiedLexicon {
++  document: LexiconDocument;
++  relations: Relation[];
++}
++
++export interface Status {
++  revision: string | null;
++  enabled: boolean;
++  recovered: boolean;
++  value: UnifiedLexicon;
++  previous: boolean;
++}
++
++export interface Conflict {
++  existing: Entry;
++  incoming: Entry;
++}
++
++export interface Preview {
++  token: string;
++  value: UnifiedLexicon;
++  conflicts: Conflict[];
++  replace: boolean;
++  expandedCount: number;
++}
++
++export interface EditEntryInput {
++  term_type: string;
++  reading: string;
++  text: string;
++  annotation?: string;
++  alias?: string;
++  alias_reading?: string;
++}
++
++const PAGE_SIZE = 50;
++
++export default function UnifiedLexiconManager() {
++  // 核心狀態
++  const [status, setStatus] = useState<Status | null>(null);
++  const [preview, setPreview] = useState<Preview | null>(null);
++  const [previewSource, setPreviewSource] = useState<UnifiedLexicon | null>(null);
++  const [previewSelectedIds, setPreviewSelectedIds] = useState<string[] | null>(null);
++  const [incomingConflicts, setIncomingConflicts] = useState<string[]>([]);
++
++  // 匯入來源選取狀態 (在產生 preview 之前)
++  const [importedCandidate, setImportedCandidate] = useState<UnifiedLexicon | null>(null);
++  const [importCandidateSelectedIds, setImportCandidateSelectedIds] = useState<Set<string>>(new Set());
++  const [isImportSelectorOpen, setIsImportSelectorOpen] = useState(false);
++  const [importPath, setImportPath] = useState<string>("");
++
++  // CRUD 表單狀態
++  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
++  const [editingOldId, setEditingOldId] = useState<string | null>(null);
++  const [formTermType, setFormTermType] = useState<string>("phrase");
++  const [formReading, setFormReading] = useState<string>("");
++  const [formText, setFormText] = useState<string>("");
++  const [formAnnotation, setFormAnnotation] = useState<string>("");
++  const [formAlias, setFormAlias] = useState<string>("");
++  const [formAliasReading, setFormAliasReading] = useState<string>("");
++
++  // 表格與分頁狀態
++  const [query, setQuery] = useState("");
++  const [typeFilter, setTypeFilter] = useState("all");
++  const [page, setPage] = useState(0);
++  const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
++
++  // 系統訊息與忙碌狀態
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState("");
++  const [message, setMessage] = useState("");
++
++  // 統一非同步包裝器
++  async function act(work: () => Promise<void>) {
++    setBusy(true);
++    setError("");
++    try {
++      await work();
++    } catch (e) {
++      setError(String(e));
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  // 讀取目前詞庫狀態
++  async function refresh(invalidateExistingPreview = false) {
++    await act(async () => {
++      if (invalidateExistingPreview && preview) {
++        try {
++          await invoke("unified_lexicon_cancel", { token: preview.token });
++        } catch {
++          // 忽略清理時的次要錯誤
++        }
++        setPreview(null);
++        setPreviewSource(null);
++        setPreviewSelectedIds(null);
++        setIncomingConflicts([]);
++      }
++      const data = await invoke<Status>("unified_lexicon_status");
++      setStatus(data);
++      setSelectedRowIds(new Set());
++    });
++  }
++
++  // 初始載入
++  useEffect(() => {
++    void refresh(false);
++  }, []);
++
++  // 啟用 / 停用切換
++  async function handleToggleEnabled(nextEnabled: boolean) {
++    if (!status) return;
++    await act(async () => {
++      const nextStatus = await invoke<Status>("unified_lexicon_enabled", {
++        expected: status.revision,
++        enabled: nextEnabled,
++      });
++      setStatus(nextStatus);
++      setMessage(nextEnabled ? "統一詞庫已啟用。" : "統一詞庫已停用。");
++    });
++  }
++
++  // 回復上一版
++  async function handleRollback() {
++    if (!status || !status.previous) return;
++    const ok = await ask(
++      "確定要回復到上一版統一詞庫快照嗎？目前的未儲存自訂變更將被回復。",
++      { title: "回復上一版詞庫", kind: "warning" }
++    );
++    if (!ok) return;
++
++    await act(async () => {
++      if (preview) {
++        try {
++          await invoke("unified_lexicon_cancel", { token: preview.token });
++        } catch {
++          // 忽略清理錯誤
++        }
++        setPreview(null);
++      }
++      const nextStatus = await invoke<Status>("unified_lexicon_rollback", {
++        expected: status.revision,
++        confirmed: true,
++      });
++      setStatus(nextStatus);
++      setMessage("已成功回復至上一版本快照。");
++    });
++  }
++
++  // 開啟新增表單
++  function handleOpenCreateModal() {
++    setEditingOldId(null);
++    setFormTermType("phrase");
++    setFormReading("");
++    setFormText("");
++    setFormAnnotation("");
++    setFormAlias("");
++    setFormAliasReading("");
++    setIsEditModalOpen(true);
++  }
++
++  // 開啟編輯表單
++  function handleOpenEditModal(entry: Entry) {
++    setEditingOldId(entry.entry_id);
++    setFormTermType(entry.term_type || "phrase");
++    setFormReading(entry.reading || "");
++    setFormText(entry.text || "");
++    setFormAnnotation(entry.annotation || "");
++    setFormAlias(entry.alias || "");
++    setFormAliasReading(entry.alias_reading || "");
++    setIsEditModalOpen(true);
++  }
++
++  // 提交 CRUD 變更 (進入預覽狀態，經核准後才正式生效)
++  async function handleSubmitEdit() {
++    if (!status) return;
++    const textTrimmed = formText.trim();
++    const readingTrimmed = formReading.trim();
++    if (!textTrimmed || !readingTrimmed) {
++      setError("詞條文字與注音讀音為必填項目。");
++      return;
++    }
++
++    const aliasTrimmed = formAlias.trim();
++    const aliasReadingTrimmed = formAliasReading.trim();
++    if (aliasTrimmed && !aliasReadingTrimmed) {
++      setError("若提供中文別名，必須同時填寫經確認之驗證讀音（系統不猜測讀音）。");
++      return;
++    }
++
++    const entryInput: EditEntryInput = {
++      term_type: formTermType.trim() || "phrase",
++      reading: readingTrimmed,
++      text: textTrimmed,
++      annotation: formAnnotation.trim() || undefined,
++      alias: aliasTrimmed || undefined,
++      alias_reading: aliasReadingTrimmed || undefined,
++    };
++
++    await act(async () => {
++      if (preview) {
++        try {
++          await invoke("unified_lexicon_cancel", { token: preview.token });
++        } catch {}
++      }
++      const p = await invoke<Preview>("unified_lexicon_edit", {
++        entry: entryInput,
++        oldId: editingOldId,
++        deleteIds: [],
++        expected: status.revision,
++      });
++      setPreview(p);
++      setPreviewSource(null);
++      setPreviewSelectedIds(null);
++      setIncomingConflicts([]);
++      setIsEditModalOpen(false);
++      setMessage("詞條異動已進入待核准預覽。請檢查預覽項目並點選「核准套用變更」正式寫入詞庫。");
++    });
++  }
++
++  // 刪除選定項目 (進入預覽狀態，提醒僅刪除管理副本)
++  async function handleDeleteEntries(idsToDelete: string[]) {
++    if (!status || idsToDelete.length === 0) return;
++    const ok = await ask(
++      `確定要刪除選定的 ${idsToDelete.length} 筆詞條嗎？\n\n【重要提示】此動作僅刪除統一詞庫管理副本，原始或系統新酷音詞庫仍可能提供同字之候選字。`,
++      { title: "刪除管理詞條確認", kind: "warning" }
++    );
++    if (!ok) return;
++
++    await act(async () => {
++      if (preview) {
++        try {
++          await invoke("unified_lexicon_cancel", { token: preview.token });
++        } catch {}
++      }
++      const p = await invoke<Preview>("unified_lexicon_edit", {
++        entry: null,
++        oldId: null,
++        deleteIds: idsToDelete,
++        expected: status.revision,
++      });
++      setPreview(p);
++      setPreviewSource(null);
++      setPreviewSelectedIds(null);
++      setIncomingConflicts([]);
++      setMessage(`已建立刪除 ${idsToDelete.length} 筆詞條之待核准預覽，請確認核准後正式生效。`);
++    });
++  }
++
++  // 匯入檔案 (SQLite 或 JSON)
++  async function handleImportFile() {
++    await act(async () => {
++      const path = await open({
++        multiple: false,
++        directory: false,
++        filters: [
++          { name: "統一詞庫 (SQLite / JSON)", extensions: ["sqlite", "db", "json"] },
++        ],
++      });
++      if (!path || typeof path !== "string") return;
++
++      setImportPath(path);
++      const incoming = await invoke<UnifiedLexicon>("unified_lexicon_read", { path });
++      setImportedCandidate(incoming);
++      // 預設全選
++      const allIds = new Set(incoming.document.entries.map((e) => e.entry_id));
++      setImportCandidateSelectedIds(allIds);
++      setIsImportSelectorOpen(true);
++      setMessage(`已讀取 ${path}，共 ${incoming.document.entries.length} 筆詞條。請勾選欲匯入之項目。`);
++    });
++  }
++
++  // 產生匯入預覽
++  async function handleGenerateImportPreview() {
++    if (!status || !importedCandidate) return;
++    const isAll = importCandidateSelectedIds.size === importedCandidate.document.entries.length;
++    const selectedArray = isAll ? null : Array.from(importCandidateSelectedIds);
++
++    await act(async () => {
++      if (preview) {
++        try {
++          await invoke("unified_lexicon_cancel", { token: preview.token });
++        } catch {}
++      }
++      const p = await invoke<Preview>("unified_lexicon_preview", {
++        value: importedCandidate,
++        expected: status.revision,
++        replace: false,
++        selected: selectedArray,
++        incomingConflicts: [],
++      });
++      setPreview(p);
++      setPreviewSource(importedCandidate);
++      setPreviewSelectedIds(selectedArray);
++      setIncomingConflicts([]);
++      setIsImportSelectorOpen(false);
++      setMessage(
++        `匯入預覽已產生（包含關聯閉包共 ${p.expandedCount} 筆相關項目）。請核對衝突項目並確認核准。`
++      );
++    });
++  }
++
++  // 全量覆蓋回復 (Full Restore，明確區隔並提供嚴肅警告)
++  async function handleFullRestore() {
++    if (!status) return;
++    const okFirst = await ask(
++      "【嚴正警告：全量覆蓋回復 (Full Restore)】\n\n此操作將以選定備份檔完整「取代並替換」目前的統一詞庫，既有的詞條與關聯將全數被清空覆蓋！\n\n確定要選擇備份檔案進行全量回復預覽嗎？",
++      { title: "全量覆蓋回復警告", kind: "error" }
++    );
++    if (!okFirst) return;
++
++    await act(async () => {
++      const path = await open({
++        multiple: false,
++        directory: false,
++        filters: [
++          { name: "統一詞庫備份 (SQLite / JSON)", extensions: ["sqlite", "db", "json"] },
++        ],
++      });
++      if (!path || typeof path !== "string") return;
++
++      const incoming = await invoke<UnifiedLexicon>("unified_lexicon_read", { path });
++      if (preview) {
++        try {
++          await invoke("unified_lexicon_cancel", { token: preview.token });
++        } catch {}
++      }
++
++      const p = await invoke<Preview>("unified_lexicon_preview", {
++        value: incoming,
++        expected: status.revision,
++        replace: true,
++        selected: null,
++        incomingConflicts: [],
++      });
++
++      setPreview(p);
++      setPreviewSource(incoming);
++      setPreviewSelectedIds(null);
++      setIncomingConflicts([]);
++      setMessage("【全量覆蓋回復預覽】已就緒。此預覽將完整替換現有詞庫，請審慎核准。");
++    });
++  }
++
++  // 重新計算衝突預覽 (當使用者切換 incomingConflicts 選擇時)
++  async function handleRepreviewConflicts(newConflicts: string[]) {
++    if (!status || !preview) return;
++    const sourceToUse = previewSource ?? preview.value;
++    await act(async () => {
++      const p = await invoke<Preview>("unified_lexicon_preview", {
++        value: sourceToUse,
++        expected: status.revision,
++        replace: preview.replace,
++        selected: previewSelectedIds,
++        incomingConflicts: newConflicts,
++      });
++      setPreview(p);
++      setIncomingConflicts(newConflicts);
++      setMessage(`已更新衝突採用設定（目前選取採用匯入衝突：${newConflicts.length} 筆）。`);
++    });
++  }
++
++  // 核准並正式寫入詞庫
++  async function handleApprovePreview() {
++    if (!preview) return;
++    const actionText = preview.replace
++      ? "全量覆蓋回復現有統一詞庫"
++      : `寫入並套用 ${preview.value.document.entries.length} 筆詞條`;
++
++    const ok = await ask(
++      `確定要核准預覽並正式${actionText}嗎？本操作完成後將更新本機管理詞庫版本。`,
++      { title: "確認核准並寫入", kind: "warning" }
++    );
++    if (!ok) return;
++
++    const token = preview.token;
++    await act(async () => {
++      try {
++        const nextStatus = await invoke<Status>("unified_lexicon_approve", {
++          token,
++          confirmed: true,
++        });
++        setStatus(nextStatus);
++        setMessage("變更已成功核准並寫入統一詞庫。");
++      } finally {
++        setPreview(null);
++        setPreviewSource(null);
++        setPreviewSelectedIds(null);
++        setIncomingConflicts([]);
++      }
++    });
++  }
++
++  // 取消預覽
++  async function handleCancelPreview() {
++    if (!preview) return;
++    const token = preview.token;
++    await act(async () => {
++      try {
++        await invoke("unified_lexicon_cancel", { token });
++      } finally {
++        setPreview(null);
++        setPreviewSource(null);
++        setPreviewSelectedIds(null);
++        setIncomingConflicts([]);
++        setMessage("已取消預覽，詞庫未作任何變更。");
++      }
++    });
++  }
++
++  // 匯出 SQLite
++  async function handleExportSqlite() {
++    if (!status) return;
++    const isSelected = selectedRowIds.size > 0;
++    const defaultName = `unified-lexicon-${new Date().toISOString().slice(0, 10)}.sqlite`;
++
++    await act(async () => {
++      const path = await save({
++        defaultPath: defaultName,
++        filters: [{ name: "SQLite 資料庫", extensions: ["sqlite", "db"] }],
++      });
++      if (!path || typeof path !== "string") return;
++
++      const selected = isSelected ? Array.from(selectedRowIds) : null;
++      await invoke("unified_lexicon_export", {
++        path,
++        selected,
++        expected: status.revision,
++        json: false,
++      });
++      setMessage(
++        `已成功匯出 ${isSelected ? `選定的 ${selectedRowIds.size} 筆` : "全量"} SQLite 詞庫至 ${path}。`
++      );
++    });
++  }
++
++  // 匯出舊版相容 JSON (僅在後端契約允許時成功)
++  async function handleExportJson() {
++    if (!status) return;
++    const isSelected = selectedRowIds.size > 0;
++    const defaultName = `unified-lexicon-${new Date().toISOString().slice(0, 10)}.json`;
++
++    await act(async () => {
++      const path = await save({
++        defaultPath: defaultName,
++        filters: [{ name: "舊版相容 JSON 詞庫", extensions: ["json"] }],
++      });
++      if (!path || typeof path !== "string") return;
++
++      const selected = isSelected ? Array.from(selectedRowIds) : null;
++      await invoke("unified_lexicon_export", {
++        path,
++        selected,
++        expected: status.revision,
++        json: true,
++      });
++      setMessage(
++        `已匯出舊版相容 JSON 至 ${path}。若存在無法表示之別名或關聯欄位，後端已依規則處理。`
++      );
++    });
++  }
++
++  // 列表過濾與分頁計算
++  const currentEntries = status?.value?.document?.entries ?? [];
++  const currentRelations = status?.value?.relations ?? [];
++
++  const relationsMap = useMemo(() => {
++    const map = new Map<string, string[]>();
++    for (const r of currentRelations) {
++      const listA = map.get(r.source_id) ?? [];
++      listA.push(r.target_id);
++      map.set(r.source_id, listA);
++
++      const listB = map.get(r.target_id) ?? [];
++      listB.push(r.source_id);
++      map.set(r.target_id, listB);
++    }
++    return map;
++  }, [currentRelations]);
++
++  const filteredRows = useMemo(() => {
++    const q = query.trim().toLowerCase();
++    return currentEntries.filter((entry) => {
++      if (typeFilter !== "all" && entry.term_type !== typeFilter) {
++        return false;
++      }
++      if (!q) return true;
++      const matchText = (entry.text || "").toLowerCase().includes(q);
++      const matchReading = (entry.reading || "").toLowerCase().includes(q);
++      const matchAnnotation = (entry.annotation || "").toLowerCase().includes(q);
++      const matchAlias = (entry.alias || "").toLowerCase().includes(q);
++      const matchAliasReading = (entry.alias_reading || "").toLowerCase().includes(q);
++      return matchText || matchReading || matchAnnotation || matchAlias || matchAliasReading;
++    });
++  }, [currentEntries, query, typeFilter]);
++
++  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
++  const currentPageRows = filteredRows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
++
++  // 選取切換
++  function toggleRowSelection(id: string) {
++    setSelectedRowIds((prev) => {
++      const next = new Set(prev);
++      if (next.has(id)) next.delete(id);
++      else next.add(id);
++      return next;
++    });
++  }
++
++  function toggleSelectAllCurrentPage() {
++    const allPageSelected = currentPageRows.every((r) => selectedRowIds.has(r.entry_id));
++    setSelectedRowIds((prev) => {
++      const next = new Set(prev);
++      if (allPageSelected) {
++        for (const r of currentPageRows) next.delete(r.entry_id);
++      } else {
++        for (const r of currentPageRows) next.add(r.entry_id);
++      }
++      return next;
++    });
++  }
++
++  return (
++    <section
++      aria-label="統一詞庫管理"
++      style={{
++        padding: "16px 20px",
++        display: "flex",
++        flexDirection: "column",
++        gap: 16,
++        overflowY: "auto",
++        maxWidth: 1200,
++      }}
++    >
++      {/* 標題與核心狀態面板 */}
++      <Card style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
++        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
++          <div>
++            <Text weight="bold" size={500} style={{ display: "block" }}>
++              離線統一詞彙管理 (Unified Lexicon Manager)
++            </Text>
++            <Text size={200} style={{ color: "#666" }}>
++              跨平台繁體中文統一詞庫・離線優先・支援中文別名與驗證讀音・無雲端依賴
++            </Text>
++          </div>
++          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
++            {status?.recovered && (
++              <Badge appearance="tint" color="warning">
++                已自動自毀損回復
++              </Badge>
++            )}
++            <Badge appearance="filled" color={status?.enabled ? "success" : "danger"}>
++              {status?.enabled ? "狀態：已啟用" : "狀態：已停用"}
++            </Badge>
++          </div>
++        </div>
++
++        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
++          <Text>
++            當前版本雜湊：
++            <Text weight="semibold" style={{ fontFamily: "monospace" }}>
++              {status?.revision ? status.revision.slice(0, 12) : "尚未建立 (未初始化)"}
++            </Text>
++          </Text>
++          <Text>
++            總詞條數：
++            <Text weight="semibold">{currentEntries.length}</Text> 筆
++          </Text>
++          <Text>
++            關聯組數：
++            <Text weight="semibold">{currentRelations.length}</Text> 組
++          </Text>
++          <Checkbox
++            label="啟用統一詞庫候選字"
++            checked={status?.enabled ?? false}
++            disabled={busy || !status}
++            onChange={(_e, d) => void handleToggleEnabled(d.checked === true)}
++          />
++        </div>
++
++        {/* 頂層操作工具列 */}
++        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
++          <Button appearance="primary" disabled={busy} onClick={handleOpenCreateModal}>
++            新增詞條
++          </Button>
++          <Button disabled={busy} onClick={() => void handleImportFile()}>
++            匯入詞庫 (SQLite / JSON)
++          </Button>
++          <Button disabled={busy || currentEntries.length === 0} onClick={() => void handleExportSqlite()}>
++            匯出 SQLite {selectedRowIds.size > 0 ? `(${selectedRowIds.size} 筆)` : "(全量)"}
++          </Button>
++          <Button disabled={busy || currentEntries.length === 0} onClick={() => void handleExportJson()}>
++            匯出舊版 JSON {selectedRowIds.size > 0 ? `(${selectedRowIds.size} 筆)` : ""}
++          </Button>
++          <Button disabled={busy} onClick={() => void refresh(true)}>
++            重新整理
++          </Button>
++          <Button
++            disabled={busy || !status?.previous}
++            onClick={() => void handleRollback()}
++            title={status?.previous ? "回復至上一次成功核准的快照版本" : "目前無上一版本可供回復"}
++          >
++            回復上一版
++          </Button>
++          <Button
++            appearance="subtle"
++            style={{ color: "#d13438", marginLeft: "auto" }}
++            disabled={busy}
++            onClick={() => void handleFullRestore()}
++          >
++            全量覆蓋回復 (Full Restore)
++          </Button>
++        </div>
++      </Card>
++
++      {/* 訊息與錯誤顯示 (嚴格渲染為純文字) */}
++      {message && (
++        <Card style={{ backgroundColor: "#f3f9f1", borderColor: "#107c41", padding: 10 }}>
++          <Text aria-live="polite" style={{ color: "#107c41" }}>
++            {message}
++          </Text>
++        </Card>
++      )}
++      {error && (
++        <Card style={{ backgroundColor: "#fdf3f2", borderColor: "#d13438", padding: 10 }}>
++          <Text role="alert" style={{ color: "#d13438", fontWeight: "bold" }}>
++            {error}
++          </Text>
++        </Card>
++      )}
++
++      {/* 待核准預覽區域 (Preview Area) */}
++      {preview && (
++        <Card
++          style={{
++            borderColor: preview.replace ? "#d13438" : "#0078d4",
++            borderWidth: 2,
++            backgroundColor: preview.replace ? "#fff9f9" : "#f8faff",
++            padding: 16,
++            display: "flex",
++            flexDirection: "column",
++            gap: 12,
++          }}
++        >
++          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
++            <Text weight="bold" size={400} style={{ color: preview.replace ? "#d13438" : "#0078d4" }}>
++              {preview.replace ? "【全量覆蓋回復預覽 (Full Restore)】" : "【待核准變更預覽 (Pending Preview)】"}
++            </Text>
++            <Badge appearance="filled" color={preview.replace ? "danger" : "informative"}>
++              Token: {preview.token.slice(0, 8)}...
++            </Badge>
++          </div>
++
++          <Text>
++            {preview.replace
++              ? `注意：此操作將全量覆蓋現有詞庫，新快照共 ${preview.value.document.entries.length} 筆詞條。`
++              : `預覽異動後總筆數：${preview.value.document.entries.length} 筆（包含關聯閉包共有 ${preview.expandedCount} 筆項目受影響）。`}
++          </Text>
++
++          {/* 衝突項目清單與裁決 */}
++          {preview.conflicts.length > 0 && (
++            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
++              <Text weight="semibold" style={{ color: "#a80000" }}>
++                偵測到 {preview.conflicts.length} 筆衝突項目（預設保留本機內容；勾選則採用匯入內容覆蓋）：
++              </Text>
++              {preview.conflicts.map((c) => {
++                const isAdopted = incomingConflicts.includes(c.incoming.entry_id);
++                return (
++                  <div
++                    key={c.incoming.entry_id}
++                    style={{
++                      border: "1px solid #ccc",
++                      padding: "8px 12px",
++                      borderRadius: 4,
++                      backgroundColor: isAdopted ? "#f3f9f1" : "#fff",
++                    }}
++                  >
++                    <Checkbox
++                      label={`【${c.incoming.text}】(讀音: ${c.incoming.reading}) - 採用匯入項目覆蓋本機 (勾選採用匯入，未勾選保留本機)`}
++                      checked={isAdopted}
++                      disabled={busy}
++                      onChange={(_e, d) => {
++                        const next = d.checked === true
++                          ? [...incomingConflicts, c.incoming.entry_id]
++                          : incomingConflicts.filter((id) => id !== c.incoming.entry_id);
++                        void handleRepreviewConflicts(next);
++                      }}
++                    />
++                    <div style={{ fontSize: 12, color: "#555", marginLeft: 26, marginTop: 4 }}>
++                      <div>
++                        本機現有：{c.existing.text} [{c.existing.reading}] (類型: {c.existing.term_type}
++                        {c.existing.annotation ? `，註解: ${c.existing.annotation}` : ""}
++                        {c.existing.alias ? `，別名: ${c.existing.alias}` : ""})
++                      </div>
++                      <div>
++                        匯入內容：{c.incoming.text} [{c.incoming.reading}] (類型: {c.incoming.term_type}
++                        {c.incoming.annotation ? `，註解: ${c.incoming.annotation}` : ""}
++                        {c.incoming.alias ? `，別名: ${c.incoming.alias}` : ""})
++                      </div>
++                    </div>
++                  </div>
++                );
++              })}
++            </div>
++          )}
++
++          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
++            <Button
++              appearance="primary"
++              style={{ backgroundColor: preview.replace ? "#d13438" : "#0078d4" }}
++              disabled={busy}
++              onClick={() => void handleApprovePreview()}
++            >
++              {preview.replace ? "確認覆蓋回復詞庫" : "核准並正式套用變更"}
++            </Button>
++            <Button disabled={busy} onClick={() => void handleCancelPreview()}>
++              取消預覽 (不作變更)
++            </Button>
++          </div>
++        </Card>
++      )}
++
++      {/* 搜尋與過濾列 */}
++      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
++        <Input
++          placeholder="搜尋讀音、文字、註解或中文別名..."
++          value={query}
++          disabled={busy}
++          onChange={(_e, d) => {
++            setQuery(d.value);
++            setPage(0);
++          }}
++          style={{ minWidth: 280 }}
++        />
++        <Field label="類型篩選">
++          <Select
++            value={typeFilter}
++            disabled={busy}
++            onChange={(_e, d) => {
++              setTypeFilter(d.value);
++              setPage(0);
++            }}
++          >
++            <option value="all">全部類型</option>
++            <option value="phrase">標準詞彙 (phrase)</option>
++            <option value="engineering">工程詞 (engineering)</option>
++            <option value="name">專有名詞 (name)</option>
++            <option value="symbol">符號映射 (symbol)</option>
++          </Select>
++        </Field>
++        {selectedRowIds.size > 0 && (
++          <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: "auto" }}>
++            <Text weight="semibold">已選取 {selectedRowIds.size} 筆</Text>
++            <Button
++              size="small"
++              appearance="subtle"
++              style={{ color: "#d13438" }}
++              disabled={busy}
++              onClick={() => void handleDeleteEntries(Array.from(selectedRowIds))}
++            >
++              批次刪除選定項目
++            </Button>
++            <Button size="small" disabled={busy} onClick={() => setSelectedRowIds(new Set())}>
++              清除選取
++            </Button>
++          </div>
++        )}
++      </div>
++
++      {/* 詞庫主表格 (50 筆/頁) */}
++      <div style={{ border: "1px solid #e0e0e0", borderRadius: 4, overflowX: "auto" }}>
++        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, textAlign: "left" }}>
++          <thead>
++            <tr style={{ backgroundColor: "#f5f5f5", borderBottom: "2px solid #ccc" }}>
++              <th style={{ padding: "8px 12px", width: 40 }}>
++                <Checkbox
++                  checked={
++                    currentPageRows.length > 0 && currentPageRows.every((r) => selectedRowIds.has(r.entry_id))
++                  }
++                  onChange={toggleSelectAllCurrentPage}
++                  disabled={busy || currentPageRows.length === 0}
++                />
++              </th>
++              <th style={{ padding: "8px 12px" }}>讀音 (注音)</th>
++              <th style={{ padding: "8px 12px" }}>詞條文字</th>
++              <th style={{ padding: "8px 12px" }}>類型</th>
++              <th style={{ padding: "8px 12px" }}>中文別名 (Alias)</th>
++              <th style={{ padding: "8px 12px" }}>別名驗證讀音</th>
++              <th style={{ padding: "8px 12px" }}>註解</th>
++              <th style={{ padding: "8px 12px" }}>關聯數</th>
++              <th style={{ padding: "8px 12px", width: 120 }}>操作</th>
++            </tr>
++          </thead>
++          <tbody>
++            {currentPageRows.length === 0 ? (
++              <tr>
++                <td colSpan={9} style={{ padding: 24, textAlign: "center", color: "#888" }}>
++                  {query || typeFilter !== "all" ? "沒有符合篩選條件的詞條" : "目前統一詞庫中尚無詞條"}
++                </td>
++              </tr>
++            ) : (
++              currentPageRows.map((entry) => {
++                const isSelected = selectedRowIds.has(entry.entry_id);
++                const relCount = relationsMap.get(entry.entry_id)?.length ?? 0;
++                return (
++                  <tr
++                    key={entry.entry_id}
++                    style={{
++                      borderBottom: "1px solid #eee",
++                      backgroundColor: isSelected ? "#f0f7ff" : "transparent",
++                    }}
++                  >
++                    <td style={{ padding: "8px 12px" }}>
++                      <Checkbox
++                        checked={isSelected}
++                        onChange={() => toggleRowSelection(entry.entry_id)}
++                        disabled={busy}
++                      />
++                    </td>
++                    <td style={{ padding: "8px 12px", fontFamily: "monospace" }}>{entry.reading}</td>
++                    <td style={{ padding: "8px 12px", fontWeight: "bold" }}>{entry.text}</td>
++                    <td style={{ padding: "8px 12px" }}>
++                      <Badge size="small" appearance="outline">
++                        {entry.term_type || "phrase"}
++                      </Badge>
++                    </td>
++                    <td style={{ padding: "8px 12px" }}>{entry.alias || "-"}</td>
++                    <td style={{ padding: "8px 12px", fontFamily: "monospace" }}>{entry.alias_reading || "-"}</td>
++                    <td style={{ padding: "8px 12px", color: "#666" }}>{entry.annotation || "-"}</td>
++                    <td style={{ padding: "8px 12px" }}>
++                      {relCount > 0 ? (
++                        <Tooltip content={`共有 ${relCount} 個等價或關聯詞條`} relationship="description">
++                          <Badge size="small" appearance="tint" color="brand">
++                            {relCount} 筆關聯
++                          </Badge>
++                        </Tooltip>
++                      ) : (
++                        <span style={{ color: "#bbb" }}>無</span>
++                      )}
++                    </td>
++                    <td style={{ padding: "8px 12px" }}>
++                      <div style={{ display: "flex", gap: 4 }}>
++                        <Button
++                          size="small"
++                          appearance="subtle"
++                          disabled={busy}
++                          onClick={() => handleOpenEditModal(entry)}
++                        >
++                          編輯
++                        </Button>
++                        <Button
++                          size="small"
++                          appearance="subtle"
++                          style={{ color: "#d13438" }}
++                          disabled={busy}
++                          onClick={() => void handleDeleteEntries([entry.entry_id])}
++                        >
++                          刪除
++                        </Button>
++                      </div>
++                    </td>
++                  </tr>
++                );
++              })
++            )}
++          </tbody>
++        </table>
++      </div>
++
++      {/* 分頁控制列 */}
++      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
++        <Text size={200} style={{ color: "#666" }}>
++          第 {page + 1} 頁／共 {totalPages} 頁（符合條件共 {filteredRows.length} 筆，每頁 {PAGE_SIZE} 筆）
++        </Text>
++        <div style={{ display: "flex", gap: 8 }}>
++          <Button size="small" disabled={page === 0 || busy} onClick={() => setPage((p) => Math.max(0, p - 1))}>
++            上一頁
++          </Button>
++          <Button
++            size="small"
++            disabled={page + 1 >= totalPages || busy}
++            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
++          >
++            下一頁
++          </Button>
++        </div>
++      </div>
++
++      {/* CRUD 新增 / 編輯對話框 */}
++      <Dialog open={isEditModalOpen} onOpenChange={(_e, data) => setIsEditModalOpen(data.open)}>
++        <DialogSurface style={{ maxWidth: 540 }}>
++          <DialogBody>
++            <DialogTitle>{editingOldId ? "編輯統一詞條" : "新增統一詞條"}</DialogTitle>
++            <DialogContent style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
++              <Field label="詞條類型" required>
++                <Select
++                  value={formTermType}
++                  onChange={(_e, d) => setFormTermType(d.value)}
++                  disabled={busy}
++                >
++                  <option value="phrase">標準詞彙 (phrase)</option>
++                  <option value="engineering">工程詞 (engineering)</option>
++                  <option value="name">專有名詞 (name)</option>
++                  <option value="symbol">符號映射 (symbol)</option>
++                </Select>
++              </Field>
++
++              <Field label="詞條文字 (Text)" required>
++                <Input
++                  value={formText}
++                  placeholder="例如：人工智慧、水、H₂O"
++                  disabled={busy}
++                  onChange={(_e, d) => setFormText(d.value)}
++                />
++              </Field>
++
++              <Field
++                label="注音讀音 (Reading)"
++                required
++                hint="請填寫標準完整注音讀音，例如：ㄖㄣˊ ㄍㄨㄥ ㄓˋ ㄏㄨㄟˋ"
++              >
++                <Input
++                  value={formReading}
++                  placeholder="例如：ㄕㄨㄟˇ"
++                  disabled={busy}
++                  onChange={(_e, d) => setFormReading(d.value)}
++                />
++              </Field>
++
++              <Field label="註解 (Annotation，可選)">
++                <Textarea
++                  value={formAnnotation}
++                  placeholder="備註或用途說明"
++                  disabled={busy}
++                  onChange={(_e, d) => setFormAnnotation(d.value)}
++                  rows={2}
++                />
++              </Field>
++
++              <Field
++                label="中文別名 (Chinese Alias，可選)"
++                hint="例如：水（當輸入碼或觸發文字需綁定別名時填寫）"
++              >
++                <Input
++                  value={formAlias}
++                  placeholder="可選別名"
++                  disabled={busy}
++                  onChange={(_e, d) => setFormAlias(d.value)}
++                />
++              </Field>
++
++              <Field
++                label="別名驗證讀音 (Alias Verified Reading，若有別名則必填)"
++                hint="經核驗讀音；嚴格禁止系統自動猜測讀音，請確實填寫正確注音。"
++              >
++                <Input
++                  value={formAliasReading}
++                  placeholder="例如：ㄕㄨㄟˇ"
++                  disabled={busy}
++                  onChange={(_e, d) => setFormAliasReading(d.value)}
++                />
++              </Field>
++
++              <Text size={200} style={{ color: "#666", marginTop: 4 }}>
++                【提醒】新增或編輯將建立「待核准預覽」，需在主畫面點選「核准並正式套用變更」後才會正式寫入詞庫。
++              </Text>
++            </DialogContent>
++            <DialogActions style={{ marginTop: 16 }}>
++              <Button appearance="primary" disabled={busy} onClick={() => void handleSubmitEdit()}>
++                產生異動預覽
++              </Button>
++              <Button appearance="secondary" disabled={busy} onClick={() => setIsEditModalOpen(false)}>
++                取消
++              </Button>
++            </DialogActions>
++          </DialogBody>
++        </DialogSurface>
++      </Dialog>
++
++      {/* 匯入項目篩選對話框 (Import Selector) */}
++      <Dialog
++        open={isImportSelectorOpen}
++        onOpenChange={(_e, data) => setIsImportSelectorOpen(data.open)}
++      >
++        <DialogSurface style={{ maxWidth: 800, maxHeight: "85vh" }}>
++          <DialogBody>
++            <DialogTitle>選取欲匯入之詞條項目</DialogTitle>
++            <DialogContent style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 8 }}>
++              <Text size={200} style={{ color: "#444" }}>
++                檔案來源：{importPath}（共 {importedCandidate?.document?.entries?.length ?? 0} 筆詞條）
++              </Text>
++
++              <Card style={{ backgroundColor: "#eef6ff", borderColor: "#0078d4", padding: 10 }}>
++                <Text weight="semibold" style={{ color: "#0078d4" }}>
++                  【關聯閉包說明 (Related Closure Notice)】
++                </Text>
++                <Text size={200} style={{ color: "#333", marginTop: 4 }}>
++                  若您選取的詞條包含等價或關聯項目（例如工程詞與其對應之中文別名），系統在產生預覽時將依關聯閉包自動擴展納入相關詞條，確保詞庫資料模型之完整性。
++                </Text>
++              </Card>
++
++              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
++                <Text weight="semibold">
++                  已勾選 {importCandidateSelectedIds.size} / {importedCandidate?.document?.entries?.length ?? 0} 筆
++                </Text>
++                <div style={{ display: "flex", gap: 8 }}>
++                  <Button
++                    size="small"
++                    onClick={() => {
++                      if (!importedCandidate) return;
++                      setImportCandidateSelectedIds(new Set(importedCandidate.document.entries.map((e) => e.entry_id)));
++                    }}
++                  >
++                    全選
++                  </Button>
++                  <Button size="small" onClick={() => setImportCandidateSelectedIds(new Set())}>
++                    全不選
++                  </Button>
++                </div>
++              </div>
++
++              <div style={{ maxHeight: 360, overflowY: "auto", border: "1px solid #ddd", borderRadius: 4 }}>
++                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}>
++                  <thead>
++                    <tr style={{ backgroundColor: "#f5f5f5", borderBottom: "1px solid #ccc", position: "sticky", top: 0 }}>
++                      <th style={{ padding: 6, width: 36 }}>選取</th>
++                      <th style={{ padding: 6 }}>讀音</th>
++                      <th style={{ padding: 6 }}>文字</th>
++                      <th style={{ padding: 6 }}>類型</th>
++                      <th style={{ padding: 6 }}>別名</th>
++                      <th style={{ padding: 6 }}>註解</th>
++                    </tr>
++                  </thead>
++                  <tbody>
++                    {(importedCandidate?.document?.entries ?? []).map((e) => {
++                      const checked = importCandidateSelectedIds.has(e.entry_id);
++                      return (
++                        <tr
++                          key={e.entry_id}
++                          style={{
++                            borderBottom: "1px solid #eee",
++                            backgroundColor: checked ? "#f4faff" : "transparent",
++                          }}
++                        >
++                          <td style={{ padding: 6 }}>
++                            <Checkbox
++                              checked={checked}
++                              onChange={() => {
++                                setImportCandidateSelectedIds((prev) => {
++                                  const next = new Set(prev);
++                                  if (next.has(e.entry_id)) next.delete(e.entry_id);
++                                  else next.add(e.entry_id);
++                                  return next;
++                                });
++                              }}
++                            />
++                          </td>
++                          <td style={{ padding: 6, fontFamily: "monospace" }}>{e.reading}</td>
++                          <td style={{ padding: 6, fontWeight: "bold" }}>{e.text}</td>
++                          <td style={{ padding: 6 }}>{e.term_type || "phrase"}</td>
++                          <td style={{ padding: 6 }}>{e.alias || "-"}</td>
++                          <td style={{ padding: 6, color: "#666" }}>{e.annotation || "-"}</td>
++                        </tr>
++                      );
++                    })}
++                  </tbody>
++                </table>
++              </div>
++            </DialogContent>
++            <DialogActions style={{ marginTop: 12 }}>
++              <Button
++                appearance="primary"
++                disabled={busy || importCandidateSelectedIds.size === 0}
++                onClick={() => void handleGenerateImportPreview()}
++              >
++                產生匯入預覽
++              </Button>
++              <Button appearance="secondary" disabled={busy} onClick={() => setIsImportSelectorOpen(false)}>
++                取消
++              </Button>
++            </DialogActions>
++          </DialogBody>
++        </DialogSurface>
++      </Dialog>
++    </section>
++  );
++}
+-- 
+2.54.0 (Apple Git-157)
+

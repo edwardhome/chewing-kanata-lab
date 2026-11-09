@@ -1,0 +1,636 @@
+From 64d0325237b84f68e8ce9e353bbceac9e817860e Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Tue, 10 Nov 2026 00:37:51 +0800
+Subject: [PATCH 14/14] feat(preferences): integrate reviewed offline manager
+ and hold settings for 1.1.2
+
+---
+ package-lock.json                |   4 +-
+ package.json                     |   2 +-
+ src-tauri/Cargo.lock             |  98 ++++++++++++++++++++-
+ src-tauri/Cargo.toml             |   4 +-
+ src-tauri/src/config.rs          |  16 +++-
+ src-tauri/src/lib.rs             |  11 +++
+ src-tauri/src/unified_lexicon.rs | 143 +++++++++++++++++++++++++++++++
+ src-tauri/tauri.conf.json        |   2 +-
+ src/App.tsx                      |  11 ++-
+ src/SharedLexicon.tsx            |   2 +-
+ src/UnifiedLexicon.tsx           |  40 +++++----
+ src/config.tsx                   |   1 +
+ 12 files changed, 306 insertions(+), 28 deletions(-)
+ create mode 100644 src-tauri/src/unified_lexicon.rs
+
+diff --git a/package-lock.json b/package-lock.json
+index de0341e..5be1a76 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "chewing-preferences",
+-  "version": "1.1.1",
++  "version": "1.1.2",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "chewing-preferences",
+-      "version": "1.1.1",
++      "version": "1.1.2",
+       "dependencies": {
+         "@fluentui/react-components": "^9.70.0",
+         "@fluentui/react-icons": "^2.0.323",
+diff --git a/package.json b/package.json
+index 1654b1f..bad1767 100644
+--- a/package.json
++++ b/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "chewing-preferences",
+   "private": true,
+-  "version": "1.1.1",
++  "version": "1.1.2",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index 82ae584..b9bbaa5 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -8,6 +8,18 @@ version = "2.0.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+ 
++[[package]]
++name = "ahash"
++version = "0.8.12"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
++dependencies = [
++ "cfg-if",
++ "once_cell",
++ "version_check",
++ "zerocopy",
++]
++
+ [[package]]
+ name = "aho-corasick"
+ version = "1.1.4"
+@@ -492,6 +504,7 @@ name = "chewing-policy-core"
+ version = "0.1.0"
+ dependencies = [
+  "fs2",
++ "rusqlite",
+  "serde",
+  "serde_json",
+  "sha2",
+@@ -501,7 +514,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing-preferences"
+-version = "1.1.1"
++version = "1.1.2"
+ dependencies = [
+  "chewing-policy-core",
+  "chewing_tip_core",
+@@ -525,7 +538,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.1.1"
++version = "1.1.2"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+@@ -1036,6 +1049,18 @@ dependencies = [
+  "pin-project-lite",
+ ]
+ 
++[[package]]
++name = "fallible-iterator"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
++
++[[package]]
++name = "fallible-streaming-iterator"
++version = "0.1.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
++
+ [[package]]
+ name = "fastrand"
+ version = "2.4.1"
+@@ -1524,6 +1549,15 @@ version = "0.12.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
+ 
++[[package]]
++name = "hashbrown"
++version = "0.14.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
++dependencies = [
++ "ahash",
++]
++
+ [[package]]
+ name = "hashbrown"
+ version = "0.15.5"
+@@ -1539,6 +1573,15 @@ version = "0.17.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+ 
++[[package]]
++name = "hashlink"
++version = "0.9.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6ba4ff7128dee98c7dc9794b6a411377e1404dba1c97deb8d1a55297bd25d8af"
++dependencies = [
++ "hashbrown 0.14.5",
++]
++
+ [[package]]
+ name = "heck"
+ version = "0.4.1"
+@@ -2086,6 +2129,17 @@ dependencies = [
+  "libc",
+ ]
+ 
++[[package]]
++name = "libsqlite3-sys"
++version = "0.30.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
++dependencies = [
++ "cc",
++ "pkg-config",
++ "vcpkg",
++]
++
+ [[package]]
+ name = "linux-raw-sys"
+ version = "0.12.1"
+@@ -2970,6 +3024,20 @@ dependencies = [
+  "memchr",
+ ]
+ 
++[[package]]
++name = "rusqlite"
++version = "0.32.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7753b721174eb8ff87a9a0e799e2d7bc3749323e773db92e0984debb00019d6e"
++dependencies = [
++ "bitflags 2.13.0",
++ "fallible-iterator",
++ "fallible-streaming-iterator",
++ "hashlink",
++ "libsqlite3-sys",
++ "smallvec",
++]
++
+ [[package]]
+ name = "rustc-hash"
+ version = "2.1.2"
+@@ -4510,6 +4578,12 @@ dependencies = [
+  "wasm-bindgen",
+ ]
+ 
++[[package]]
++name = "vcpkg"
++version = "0.2.15"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
++
+ [[package]]
+ name = "version-compare"
+ version = "0.2.1"
+@@ -5592,6 +5666,26 @@ dependencies = [
+  "zvariant",
+ ]
+ 
++[[package]]
++name = "zerocopy"
++version = "0.8.63"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8"
++dependencies = [
++ "zerocopy-derive",
++]
++
++[[package]]
++name = "zerocopy-derive"
++version = "0.8.63"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.117",
++]
++
+ [[package]]
+ name = "zerofrom"
+ version = "0.1.8"
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+index 740d2d7..47ee593 100644
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -4,7 +4,7 @@
+ 
+ [package]
+ name = "chewing-preferences"
+-version = "1.1.1"
++version = "1.1.2"
+ edition = "2024"
+ license = "GPL-3.0-or-later"
+ 
+@@ -26,7 +26,7 @@ log = "0.4"
+ scoped-error = "0.1.4"
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+-chewing-policy-core = { path = "../../../policy-core" }
++chewing-policy-core = { path = "../../../policy-core", features = ["unified-sqlite"] }
+ fs2 = "0.4"
+ tempfile = "3"
+ semver = "1"
+diff --git a/src-tauri/src/config.rs b/src-tauri/src/config.rs
+index 96a93fd..18a652e 100644
+--- a/src-tauri/src/config.rs
++++ b/src-tauri/src/config.rs
+@@ -129,7 +129,7 @@ fn validate_config(config: &Config) -> Result<(), String> {
+     if !(1..=256).contains(&c.font_size) {
+         return Err("字體大小必須介於 1 到 256。".into());
+     }
+-    if !(100..=1000).contains(&c.f_hold_delay_ms) || !(100..=1000).contains(&c.shift_key_sensitivity) {
++    if !(100..=1000).contains(&c.f_hold_delay_ms) || !(100..=1000).contains(&c.shift_key_sensitivity) || !(100..=1000).contains(&c.initial_letter_hold_delay_ms) {
+         return Err("按鍵延遲必須介於 100 到 1000 ms。".into());
+     }
+     Ok(())
+@@ -149,6 +149,20 @@ mod tests {
+         assert!(validate_config(&cfg).is_err());
+     }
+     #[test]
++    fn initial_letter_delay_is_bounded_and_independent_of_f() {
++        let mut cfg = Config::default();
++        assert_eq!(cfg.chewing_tsf.initial_letter_hold_delay_ms, 250);
++        for value in [100, 250, 1000] {
++            cfg.chewing_tsf.initial_letter_hold_delay_ms = value;
++            assert!(validate_config(&cfg).is_ok());
++            assert_eq!(cfg.chewing_tsf.f_hold_delay_ms, 150);
++        }
++        for value in [99, 1001] {
++            cfg.chewing_tsf.initial_letter_hold_delay_ms = value;
++            assert!(validate_config(&cfg).is_err());
++        }
++    }
++    #[test]
+     fn restoring_default_symbols_removes_only_the_override() {
+         let root = std::env::temp_dir().join(format!("ckai-prefs-test-{}", std::process::id()));
+         fs::create_dir_all(&root).unwrap();
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index 967f82b..3779b05 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -19,11 +19,13 @@ mod updates;
+ mod recovery;
+ mod engineering;
+ mod shared_lexicon;
++mod unified_lexicon;
+ 
+ #[cfg_attr(mobile, tauri::mobile_entry_point)]
+ pub fn run() {
+     tauri::Builder::default()
+         .manage(shared_lexicon::SharedState::default())
++        .manage(unified_lexicon::UnifiedState::default())
+         .plugin(tauri_plugin_dialog::init())
+         .plugin(tauri_plugin_process::init())
+         .plugin(tauri_plugin_opener::init())
+@@ -81,6 +83,15 @@ pub fn run() {
+             get_system_fonts,
+             chewing_version,
+             updates::check_for_updates,
++            unified_lexicon::unified_lexicon_status,
++            unified_lexicon::unified_lexicon_read,
++            unified_lexicon::unified_lexicon_preview,
++            unified_lexicon::unified_lexicon_edit,
++            unified_lexicon::unified_lexicon_cancel,
++            unified_lexicon::unified_lexicon_approve,
++            unified_lexicon::unified_lexicon_export,
++            unified_lexicon::unified_lexicon_rollback,
++            unified_lexicon::unified_lexicon_enabled,
+             shared_lexicon::shared_lexicon_status,
+             shared_lexicon::preview_shared_lexicon,
+             shared_lexicon::cancel_shared_lexicon,
+diff --git a/src-tauri/src/unified_lexicon.rs b/src-tauri/src/unified_lexicon.rs
+new file mode 100644
+index 0000000..97b119a
+--- /dev/null
++++ b/src-tauri/src/unified_lexicon.rs
+@@ -0,0 +1,143 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Copyright (c) 2026 AI-Chewing contributors
++use chewing_policy_core::{shared_lexicon as lex, unified_sqlite as sql, unified_management as manage};
++use chewing_policy_core::shared_lexicon_store::{SharedStore,PreparedImport};
++use serde::Serialize;
++use std::{fs,io::{Read,Write},path::{Path,PathBuf},sync::{Mutex,atomic::{AtomicU64,Ordering}}};
++#[derive(Default)]
++pub struct UnifiedState { pending:Mutex<Option<Pending>> }
++struct Pending {token:String,owner:String,prepared:PreparedImport}
++static NEXT:AtomicU64=AtomicU64::new(1);
++fn cancel_pending(state:&UnifiedState,token:&str,owner:&str)->Result<(),String>{
++    let mut pending=state.pending.lock().map_err(|_|"預覽鎖定失敗。")?;
++    if pending.as_ref().is_some_and(|p|p.token==token&&p.owner==owner){*pending=None;}
++    Ok(())
++}
++fn take_pending(state:&UnifiedState,token:&str,owner:&str)->Result<Pending,String>{
++    let mut guard=state.pending.lock().map_err(|_|"預覽鎖定失敗。")?;
++    if !guard.as_ref().is_some_and(|p|p.token==token&&p.owner==owner){return Err("預覽已失效。".into());}
++    guard.take().ok_or_else(||"預覽已失效。".into())
++}
++
++#[derive(Serialize)]
++pub struct Status {revision:Option<String>,enabled:bool,recovered:bool,value:sql::UnifiedLexicon,previous:bool}
++#[derive(Serialize)]
++pub struct Preview {token:String,value:sql::UnifiedLexicon,conflicts:Vec<lex::EntryConflict>,replace:bool,#[serde(rename="expandedCount")]expanded_count:usize}
++fn error(e:impl std::fmt::Display)->String {format!("詞庫操作未完成：{e}；原有詞庫未被覆寫。")}
++fn store()->Result<SharedStore,String>{Ok(SharedStore::new(chewing_tip_core::shell::user_dir().map_err(error)?.join("SharedLexicon")))}
++fn status()->Result<Status,String>{
++    let store=store()?;let loaded=store.load_unified().map_err(error)?;let info=store.status().map_err(error)?;
++    if loaded.as_ref().map(|s|s.snapshot.revision.as_str())!=info.revision.as_deref(){return Err("詞庫已變更，請重新載入。".into());}
++    Ok(match loaded {
++        Some(s)=>Status{revision:Some(s.snapshot.revision),enabled:s.snapshot.enabled,recovered:s.recovered,value:s.value,previous:info.previous.is_some()},
++        None=>Status{revision:None,enabled:false,recovered:false,value:manage::empty(),previous:false},
++    })
++}
++fn check(expected:&Option<String>)->Result<Status,String>{let current=status()?;if &current.revision!=expected{return Err("詞庫已由其他操作變更，請重新載入並預覽。".into());}Ok(current)}
++fn read(path:&Path)->Result<sql::UnifiedLexicon,String>{
++    let m=fs::symlink_metadata(path).map_err(error)?;
++    #[cfg(windows)]
++    let link={use std::os::windows::fs::MetadataExt;m.file_attributes()&0x400!=0};
++    #[cfg(not(windows))]
++    let link=m.file_type().is_symlink();
++    if !m.is_file()||link||m.len()>sql::MAX_BYTES as u64{return Err("請選取不超過 16 MiB 的一般 SQLite／JSON 檔案。".into());}
++    let mut bytes=Vec::new();fs::File::open(path).map_err(error)?.take(sql::MAX_BYTES as u64+1).read_to_end(&mut bytes).map_err(error)?;
++    if bytes.starts_with(b"SQLite format 3\0"){sql::decode(&bytes).map_err(error)}else{Ok(sql::UnifiedLexicon{document:lex::parse(&bytes).map_err(error)?,relations:vec![]})}
++}
++fn save_pending(state:&UnifiedState,owner:&str,prepared:PreparedImport,conflicts:Vec<lex::EntryConflict>,replace:bool,expanded_count:usize)->Result<Preview,String>{
++    let token=NEXT.fetch_add(1,Ordering::Relaxed).to_string();
++    let value=prepared.unified_value().ok_or("預覽格式不完整。")?.clone();
++    *state.pending.lock().map_err(|_|"預覽鎖定失敗。")?=Some(Pending{token:token.clone(),owner:owner.into(),prepared});
++    Ok(Preview{token,value,conflicts,replace,expanded_count})
++}
++#[tauri::command]
++pub async fn unified_lexicon_status()->Result<Status,String>{tauri::async_runtime::spawn_blocking(status).await.map_err(error)?}
++#[tauri::command]
++pub async fn unified_lexicon_read(path:String)->Result<sql::UnifiedLexicon,String>{tauri::async_runtime::spawn_blocking(move||read(Path::new(&path))).await.map_err(error)?}
++#[tauri::command]
++pub async fn unified_lexicon_preview(value:sql::UnifiedLexicon,expected:Option<String>,replace:bool,selected:Option<Vec<String>>,incoming_conflicts:Vec<String>,window:tauri::Window,state:tauri::State<'_,UnifiedState>)->Result<Preview,String>{
++    let (prepared,conflicts,count)=tauri::async_runtime::spawn_blocking(move||{
++        let source=manage::digest(&value).map_err(error)?;
++        let incoming=manage::selected(&value,selected.as_deref()).map_err(error)?;
++        let count=incoming.document.entries.len();
++        let current=check(&expected)?;
++        let (result,conflicts)=if replace {if !incoming_conflicts.is_empty(){return Err("完整替換不使用合併衝突選項。".into());}(incoming,vec![])}else{manage::merge(&current.value,&incoming,&incoming_conflicts).map_err(error)?};
++        let prepared=store()?.prepare_unified(result,expected.as_deref(),&source).map_err(error)?;
++        Ok::<_,String>((prepared,conflicts,count))
++    }).await.map_err(error)??;
++    save_pending(&state,window.label(),prepared,conflicts,replace,count)
++}
++#[tauri::command]
++pub async fn unified_lexicon_edit(entry:Option<manage::Edit>,old_id:Option<String>,delete_ids:Vec<String>,expected:Option<String>,window:tauri::Window,state:tauri::State<'_,UnifiedState>)->Result<Preview,String>{
++    let prepared=tauri::async_runtime::spawn_blocking(move||{
++        let current=check(&expected)?;
++        let value=manage::edit(&current.value,entry,old_id.as_deref(),&delete_ids).map_err(error)?;
++        let source=manage::digest(&value).map_err(error)?;
++        store()?.prepare_unified(value,expected.as_deref(),&source).map_err(error)
++    }).await.map_err(error)??;
++    let count=prepared.document().entries.len();
++    save_pending(&state,window.label(),prepared,vec![],true,count)
++}
++#[tauri::command]
++pub fn unified_lexicon_cancel(token:String,window:tauri::Window,state:tauri::State<'_,UnifiedState>)->Result<(),String>{
++    cancel_pending(&state,&token,window.label())
++}
++#[tauri::command]
++pub async fn unified_lexicon_approve(token:String,confirmed:bool,window:tauri::Window,state:tauri::State<'_,UnifiedState>)->Result<Status,String>{
++    if !confirmed{return Err("請先確認預覽內容。".into());}
++    let pending=take_pending(&state,&token,window.label())?;
++    tauri::async_runtime::spawn_blocking(move||{store()?.approve(pending.prepared).map_err(error)?;status()}).await.map_err(error)?
++}
++#[tauri::command]
++pub async fn unified_lexicon_export(path:String,selected:Option<Vec<String>>,expected:Option<String>,json:bool)->Result<(),String>{
++    tauri::async_runtime::spawn_blocking(move||{
++        let current=check(&expected)?;
++        let value=manage::export_snapshot(&current.value,selected.as_deref()).map_err(error)?;
++        let bytes=if json {if !value.relations.is_empty(){return Err("所選詞條含中文關聯；請使用 SQLite，以保留完整內容。".into());}lex::encode(&value.document).map_err(error)?}else{sql::encode(&value).map_err(error)?};
++        let path=PathBuf::from(path);let parent=path.parent().ok_or("匯出位置不合法。")?;
++        let mut file=tempfile::NamedTempFile::new_in(parent).map_err(error)?;
++        file.write_all(&bytes).and_then(|_|file.as_file().sync_all()).map_err(error)?;
++        file.persist_noclobber(path).map_err(|_|"請使用尚未存在的新檔名；未覆寫既有檔案。")?;Ok(())
++    }).await.map_err(error)?
++}
++#[tauri::command]
++pub async fn unified_lexicon_rollback(expected:Option<String>,confirmed:bool)->Result<Status,String>{
++    if !confirmed{return Err("請先確認回復上一版。".into());}
++    tauri::async_runtime::spawn_blocking(move||{store()?.rollback(expected.as_deref()).map_err(error)?;status()}).await.map_err(error)?
++}
++#[tauri::command]
++pub async fn unified_lexicon_enabled(expected:Option<String>,enabled:bool)->Result<Status,String>{
++    tauri::async_runtime::spawn_blocking(move||{store()?.set_enabled(enabled,expected.as_deref()).map_err(error)?;status()}).await.map_err(error)?
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn pending(state:&UnifiedState,root:&Path)->Preview {
++        let store=SharedStore::new(root.join("managed"));
++        let value=manage::empty();let source=manage::digest(&value).unwrap();
++        save_pending(state,"owner",store.prepare_unified(value,None,&source).unwrap(),vec![],false,0).unwrap()
++    }
++    #[test]fn preview_is_owner_bound_and_single_use(){
++        let t=tempfile::tempdir().unwrap();let state=UnifiedState::default();let preview=pending(&state,t.path());
++        assert!(take_pending(&state,&preview.token,"other").is_err());
++        assert!(take_pending(&state,"wrong","owner").is_err());
++        assert!(take_pending(&state,&preview.token,"owner").is_ok());
++        assert!(take_pending(&state,&preview.token,"owner").is_err());
++        assert!(!t.path().join("managed").exists());
++    }
++    #[test]fn cancellation_cannot_cancel_another_window_or_write_files(){
++        let t=tempfile::tempdir().unwrap();let state=UnifiedState::default();let preview=pending(&state,t.path());
++        cancel_pending(&state,&preview.token,"other").unwrap();assert!(state.pending.lock().unwrap().is_some());
++        cancel_pending(&state,&preview.token,"owner").unwrap();assert!(state.pending.lock().unwrap().is_none());
++        assert!(!t.path().join("managed").exists());
++    }
++    #[test]fn replacing_preview_invalidates_prior_token(){
++        let t=tempfile::tempdir().unwrap();let state=UnifiedState::default();let first=pending(&state,t.path());let next=pending(&state,t.path());
++        assert!(take_pending(&state,&first.token,"owner").is_err());assert!(take_pending(&state,&next.token,"owner").is_ok());
++    }
++    #[test]fn reader_rejects_directory_and_invalid_sqlite(){
++        let t=tempfile::tempdir().unwrap();assert!(read(t.path()).is_err());let p=t.path().join("broken.sqlite");
++        fs::write(&p,b"SQLite format 3\0broken").unwrap();assert!(read(&p).is_err());assert_eq!(fs::read(&p).unwrap(),b"SQLite format 3\0broken");
++    }
++}
+diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+index 53d2f7a..fd2d880 100644
+--- a/src-tauri/tauri.conf.json
++++ b/src-tauri/tauri.conf.json
+@@ -1,7 +1,7 @@
+ {
+   "$schema": "https://schema.tauri.app/config/2",
+   "productName": "AI新酷音設定",
+-  "version": "1.1.1",
++  "version": "1.1.2",
+   "identifier": "org.aichewing.preferences",
+   "build": {
+     "beforeDevCommand": "npm run dev",
+diff --git a/src/App.tsx b/src/App.tsx
+index 73b4fc1..d494bfc 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -39,7 +39,7 @@ import KeybindingTab from "./KeybindingTab";
+ import Updates from "./Updates";
+ import Recovery from "./Recovery";
+ import EngineeringTerms from "./EngineeringTerms";
+-import SharedLexicon from "./SharedLexicon";
++import UnifiedLexicon from "./UnifiedLexicon";
+ 
+ type FontFamilyName = {
+   name: string;
+@@ -333,7 +333,7 @@ function App() {
+         <Tab value="4">特殊符號</Tab>
+         <Tab value="5">快捷符號</Tab>
+         <Tab value="engineering">自訂工程詞彙</Tab>
+-        <Tab value="shared">共用詞庫</Tab>
++        <Tab value="shared">使用者與工程詞庫</Tab>
+         <Tab value="6">其他設定</Tab>
+       </TabList>
+       {selectedTab === "1" && config && (
+@@ -383,7 +383,7 @@ function App() {
+       {selectedTab === "keybind" && config && (
+         <KeybindingTab keybind={config.keybind} setKeybind={setKeybind} />
+       )}
+-      <div hidden={selectedTab !== "shared"}><SharedLexicon /></div>
++      <div hidden={selectedTab !== "shared"}><UnifiedLexicon /></div>
+       <div hidden={selectedTab !== "engineering"}><EngineeringTerms onDirtyChange={setEngineeringDirty} /></div>
+       <div className={styles.action}>
+         <Button
+@@ -996,6 +996,11 @@ const Others = ({ config, styles, setConfig }) => (
+         <Slider value={config?.f_hold_delay_ms ?? 150} min={100} max={1000} step={10}
+           onChange={(_ev, data) => setConfig({ ...config, f_hold_delay_ms: data.value } as ChewingTsfConfig)} />
+       </Field>
++      <Field label={`首字母長按轉小寫：${config?.initial_letter_hold_delay_ms ?? 250} ms`}>
++        <Slider value={config?.initial_letter_hold_delay_ms ?? 250} min={100} max={1000} step={10}
++          onChange={(_ev, data) => setConfig({ ...config, initial_letter_hold_delay_ms: data.value } as ChewingTsfConfig)} />
++      </Field>
++      <Text>短按 Shift＋字母保留大寫；持續按住首字母到設定時間後轉為小寫。此時間與 F 分層獨立。</Text>
+       <Text>設定會在按下「套用」或「確定」後儲存。AI 建議目前停用。</Text>
+       <Recovery />
+       <Updates />
+diff --git a/src/SharedLexicon.tsx b/src/SharedLexicon.tsx
+index 9ab86b6..f994b23 100644
+--- a/src/SharedLexicon.tsx
++++ b/src/SharedLexicon.tsx
+@@ -91,7 +91,7 @@ const unsupportedReason:Record<string,string> = {
+   annotation_exceeds_utf16_limit:"註解超過共用格式的長度上限；不會自動截斷。",
+   incompatible_v1_fields:"欄位不符合共用格式 1.0.0，請回工程詞設定調整。",
+ };
+-function EngineeringSharedExport({folder}:{folder?:string}) {
++export function EngineeringSharedExport({folder}:{folder?:string}) {
+   const [source,setSource]=useState<EngineeringSource|null>(null);
+   const [selected,setSelected]=useState<number[]>([]);
+   const [version,setVersion]=useState("");
+diff --git a/src/UnifiedLexicon.tsx b/src/UnifiedLexicon.tsx
+index 9b90f5e..0302f9a 100644
+--- a/src/UnifiedLexicon.tsx
++++ b/src/UnifiedLexicon.tsx
+@@ -34,6 +34,7 @@ import {
+ } from "@fluentui/react-components";
+ import { invoke } from "@tauri-apps/api/core";
+ import { ask, open, save } from "@tauri-apps/plugin-dialog";
++import { EngineeringSharedExport } from "./SharedLexicon";
+ 
+ export type TermType =
+   | "zh_phrase"
+@@ -126,6 +127,19 @@ export default function UnifiedLexiconManager() {
+   const [previewSelectedIds, setPreviewSelectedIds] = useState<string[] | null>(null);
+   const [incomingConflicts, setIncomingConflicts] = useState<string[]>([]);
+ 
++  const previewRelated = useMemo(() => {
++    const labels = new Map<string, string[]>();
++    if (!preview) return labels;
++    const entries = new Map(preview.value.document.entries.map(e => [e.entry_id, e]));
++    for (const relation of preview.value.relations) {
++      for (const [id, other] of [[relation.source_id, relation.target_id], [relation.target_id, relation.source_id]]) {
++        const e = entries.get(other);
++        if (e) labels.set(id, [...(labels.get(id) ?? []), `${e.text}（${e.reading}）`]);
++      }
++    }
++    return labels;
++  }, [preview]);
++
+   // 匯入來源選取狀態 (在產生 preview 之前)
+   const [importedCandidate, setImportedCandidate] = useState<UnifiedLexicon | null>(null);
+   const [importCandidateSelectedIds, setImportCandidateSelectedIds] = useState<Set<string>>(new Set());
+@@ -766,6 +780,11 @@ export default function UnifiedLexiconManager() {
+         </div>
+       </Card>
+ 
++      <details>
++        <summary>從原有自訂工程詞彙匯出舊版交換檔</summary>
++        <Text>保留原有選取匯出功能。產生的 JSON 可由上方匯入；含中文名稱但尚未確認讀音時，不會自動猜測或直接遷移。</Text>
++        <EngineeringSharedExport />
++      </details>
+       {/* 訊息與錯誤顯示 (嚴格渲染為純文字) */}
+       {message && (
+         <Card style={{ backgroundColor: "#f3f9f1", borderColor: "#107c41", padding: 10 }}>
+@@ -811,9 +830,9 @@ export default function UnifiedLexiconManager() {
+           <Text>請核對核准後的內容；取消不會寫入。刪除管理副本不會刪除原始詞庫或原生學習資料。</Text>
+           <div style={{ overflowX: "auto", maxHeight: 340, overflowY: "auto" }}>
+             <table style={{ width: "100%", borderCollapse: "collapse" }}>
+-              <thead><tr><th>文字</th><th>讀音／輸入碼</th><th>類型</th><th>註解</th></tr></thead>
++              <thead><tr><th>文字</th><th>讀音／輸入碼</th><th>類型</th><th>註解</th><th>相關詞條</th></tr></thead>
+               <tbody>{preview.value.document.entries.slice(previewPage * PAGE_SIZE, (previewPage + 1) * PAGE_SIZE).map(entry =>
+-                <tr key={entry.entry_id}><td>{entry.text}</td><td>{entry.reading}</td><td>{TERM_TYPE_LABELS[entry.term_type]}</td><td>{entry.annotation ?? ""}</td></tr>
++                <tr key={entry.entry_id}><td>{entry.text}</td><td>{entry.reading}</td><td>{TERM_TYPE_LABELS[entry.term_type]}</td><td>{entry.annotation ?? ""}</td><td>{previewRelated.get(entry.entry_id)?.join("；") ?? ""}</td></tr>
+               )}</tbody>
+             </table>
+           </div>
+@@ -1109,19 +1128,10 @@ export default function UnifiedLexiconManager() {
+                   <Text size={200} weight="semibold" style={{ color: "#333", display: "block" }}>
+                     既有關聯中文名稱：
+                   </Text>
+-                  {derivedAliasMap.get(editingOldId)?.length ? (
+-                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
+-                      {derivedAliasMap.get(editingOldId)!.map((item, idx) => (
+-                        <div key={idx} style={{ fontSize: 12, color: "#555" }}>
+-                          • <Text weight="semibold">{item.aliasText}</Text>（讀音：<span style={{ fontFamily: "monospace" }}>{item.aliasReading}</span>）
+-                        </div>
+-                      ))}
+-                    </div>
+-                  ) : (
+-                    <Text size={200} style={{ color: "#888" }}>
+-                      尚無關聯中文名稱
+-                    </Text>
+-                  )}
++                  <Text size={200}>
++                    {derivedAliasMap.get(editingOldId)?.aliasText ?? "尚無關聯中文名稱"}
++                    {derivedAliasMap.get(editingOldId)?.aliasReading ? `（${derivedAliasMap.get(editingOldId)?.aliasReading}）` : ""}
++                  </Text>
+                   <Text size={100} style={{ color: "#777", display: "block", marginTop: 4 }}>
+                     ※ 系統於編輯詞條時將完整保留既有關聯；若需新增中文關聯，請於下方填寫。
+                   </Text>
+diff --git a/src/config.tsx b/src/config.tsx
+index 7a527c5..88ad9d1 100644
+--- a/src/config.tsx
++++ b/src/config.tsx
+@@ -4,6 +4,7 @@
+ 
+ export type ChewingTsfConfig = {
+   f_hold_delay_ms: number;
++  initial_letter_hold_delay_ms: number;
+   enable_ai: boolean;
+   switch_lang_with_shift: boolean;
+   shift_key_sensitivity: number;
+-- 
+2.54.0 (Apple Git-157)
+

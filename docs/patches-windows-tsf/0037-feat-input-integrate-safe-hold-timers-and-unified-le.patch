@@ -1,0 +1,861 @@
+From a9ed4e693e7426b87dff8f20d8ecc5774b6e8e56 Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Tue, 10 Nov 2026 00:37:51 +0800
+Subject: [PATCH 37/37] feat(input): integrate safe hold timers and unified
+ lexicon for 1.1.2
+
+---
+ Cargo.lock                                 |  90 ++++++++++-
+ Cargo.toml                                 |   2 +-
+ tip/Cargo.toml                             |   2 +-
+ tip/rc/ChewingTextService.rc               |  14 ++
+ tip/rc/version.rc                          |  14 +-
+ tip/src/text_service/chewing.rs            | 177 ++++++++++++++++++++-
+ tip/src/text_service/initial_hold_timer.rs |  84 ++++++++++
+ tip/src/text_service/mod.rs                |  11 +-
+ tip/src/text_service/shared_lexicon.rs     |  45 ++++--
+ 9 files changed, 408 insertions(+), 31 deletions(-)
+ create mode 100644 tip/src/text_service/initial_hold_timer.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 00b4c49..7295da4 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -53,6 +53,18 @@ dependencies = [
+  "aes",
+ ]
+ 
++[[package]]
++name = "ahash"
++version = "0.8.12"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
++dependencies = [
++ "cfg-if",
++ "once_cell",
++ "version_check",
++ "zerocopy",
++]
++
+ [[package]]
+ name = "aho-corasick"
+ version = "1.1.5"
+@@ -306,6 +318,7 @@ name = "chewing-policy-core"
+ version = "0.1.0"
+ dependencies = [
+  "fs2",
++ "rusqlite",
+  "serde",
+  "serde_json",
+  "sha2",
+@@ -315,7 +328,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip"
+-version = "1.1.1"
++version = "1.1.2"
+ dependencies = [
+  "anyhow",
+  "cc",
+@@ -338,7 +351,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.1.1"
++version = "1.1.2"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+@@ -359,7 +372,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_host"
+-version = "1.1.1"
++version = "1.1.2"
+ dependencies = [
+  "anyhow",
+  "chewing",
+@@ -898,6 +911,18 @@ dependencies = [
+  "windows-sys 0.61.2",
+ ]
+ 
++[[package]]
++name = "fallible-iterator"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
++
++[[package]]
++name = "fallible-streaming-iterator"
++version = "0.1.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
++
+ [[package]]
+ name = "fastrand"
+ version = "2.5.0"
+@@ -1038,12 +1063,30 @@ dependencies = [
+  "subtle",
+ ]
+ 
++[[package]]
++name = "hashbrown"
++version = "0.14.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
++dependencies = [
++ "ahash",
++]
++
+ [[package]]
+ name = "hashbrown"
+ version = "0.17.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+ 
++[[package]]
++name = "hashlink"
++version = "0.9.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6ba4ff7128dee98c7dc9794b6a411377e1404dba1c97deb8d1a55297bd25d8af"
++dependencies = [
++ "hashbrown 0.14.5",
++]
++
+ [[package]]
+ name = "heck"
+ version = "0.5.0"
+@@ -1142,7 +1185,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
+ dependencies = [
+  "equivalent",
+- "hashbrown",
++ "hashbrown 0.17.1",
+ ]
+ 
+ [[package]]
+@@ -1349,6 +1392,17 @@ version = "0.2.16"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+ 
++[[package]]
++name = "libsqlite3-sys"
++version = "0.30.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
++dependencies = [
++ "cc",
++ "pkg-config",
++ "vcpkg",
++]
++
+ [[package]]
+ name = "linux-raw-sys"
+ version = "0.12.1"
+@@ -1756,6 +1810,12 @@ dependencies = [
+  "spki",
+ ]
+ 
++[[package]]
++name = "pkg-config"
++version = "0.3.34"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
++
+ [[package]]
+ name = "polyval"
+ version = "0.6.2"
+@@ -2012,6 +2072,20 @@ dependencies = [
+  "zeroize",
+ ]
+ 
++[[package]]
++name = "rusqlite"
++version = "0.32.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7753b721174eb8ff87a9a0e799e2d7bc3749323e773db92e0984debb00019d6e"
++dependencies = [
++ "bitflags 2.13.2",
++ "fallible-iterator",
++ "fallible-streaming-iterator",
++ "hashlink",
++ "libsqlite3-sys",
++ "smallvec",
++]
++
+ [[package]]
+ name = "rustc_version"
+ version = "0.4.1"
+@@ -2718,7 +2792,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
+ 
+ [[package]]
+ name = "tsfreg"
+-version = "1.1.1"
++version = "1.1.2"
+ dependencies = [
+  "chewing_tip_core",
+  "scoped-error",
+@@ -2878,6 +2952,12 @@ dependencies = [
+  "sval_serde",
+ ]
+ 
++[[package]]
++name = "vcpkg"
++version = "0.2.15"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
++
+ [[package]]
+ name = "vergen"
+ version = "8.3.2"
+diff --git a/Cargo.toml b/Cargo.toml
+index 5b90d80..fa33069 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -9,7 +9,7 @@ members = [
+ ]
+ 
+ [workspace.package]
+-version = "1.1.1"
++version = "1.1.2"
+ 
+ [workspace.dependencies]
+ anyhow = "1"
+diff --git a/tip/Cargo.toml b/tip/Cargo.toml
+index b30a0cd..58ea8a8 100644
+--- a/tip/Cargo.toml
++++ b/tip/Cargo.toml
+@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
+ anyhow = "1.0.95"
+ chewing = { workspace = true }
+ chewing_tip_core = { path = "../crates/chewing_tip_core" }
+-chewing-policy-core = { path = "../../../policy-core" }
++chewing-policy-core = { path = "../../../policy-core", features = ["unified-sqlite"] }
+ getrandom = ">= 0.3.0, < 0.5.0"
+ interprocess = { workspace = true }
+ log = { version = "0.4.0", features = ["kv"] }
+diff --git a/tip/rc/ChewingTextService.rc b/tip/rc/ChewingTextService.rc
+index bee9bd7..b17850b 100644
+--- a/tip/rc/ChewingTextService.rc
++++ b/tip/rc/ChewingTextService.rc
+@@ -130,6 +130,20 @@ BEGIN
+         MENUITEM "編輯使用者詞庫 (&E)",                 ID_HASHED
+         MENUITEM "AI新酷音設定(&C)",                    ID_CONFIG
+         MENUITEM "Restart：恢復中文輸入(&R)",             ID_RECOVER_INPUT
++        POPUP "首字母長按轉小寫時間"
++        BEGIN
++            MENUITEM "100 ms", 41100
++            MENUITEM "200 ms", 41200
++            MENUITEM "250 ms（預設）", 41250
++            MENUITEM "300 ms", 41300
++            MENUITEM "400 ms", 41400
++            MENUITEM "500 ms", 41500
++            MENUITEM "600 ms", 41600
++            MENUITEM "700 ms", 41700
++            MENUITEM "800 ms", 41800
++            MENUITEM "900 ms", 41900
++            MENUITEM "1000 ms", 42000
++        END
+         MENUITEM SEPARATOR
+         POPUP "網路辭典 (&D)"
+         BEGIN
+diff --git a/tip/rc/version.rc b/tip/rc/version.rc
+index f07446c..16d8f5b 100644
+--- a/tip/rc/version.rc
++++ b/tip/rc/version.rc
+@@ -1,8 +1,8 @@
+-#define VER_FILEVERSION             1,1,1,0
+-#define VER_FILEVERSION_STR         "1.1.1.0\0"
+-#define VER_PRODUCTVERSION          1,1,1,0
+-#define VER_PRODUCTVERSION_STR      "1.1.1.0\0"
+-#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.1.1.0)\0"
+-#define ABOUT_VERSION_STR           "版本：1.1.1.0\0"
++#define VER_FILEVERSION             1,1,2,0
++#define VER_FILEVERSION_STR         "1.1.2.0\0"
++#define VER_PRODUCTVERSION          1,1,2,0
++#define VER_PRODUCTVERSION_STR      "1.1.2.0\0"
++#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.1.2.0)\0"
++#define ABOUT_VERSION_STR           "版本：1.1.2.0\0"
+ #define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 11 月 07 日\0"
+-#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.1.1.0)\0"
++#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.1.2.0)\0"
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 223ae7a..8bfa4a4 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -53,6 +53,8 @@ use windows_core::{ComObject, ComObjectInner, GUID, HSTRING, IUnknown, Interface
+ use zhconv::{Variant, zhconv};
+ 
+ use super::CommandType;
++use super::initial_hold_timer::HoldTimer;
++use chewing_policy_core::initial_letter_hold::{InitialLetterHoldGesture, Effect as HoldEffect};
+ use super::pending_transition::PendingTransitionQueue;
+ use super::recovery::RecoveryGate;
+ use super::shared_lexicon::{SharedLexicon, full_composition_reading};
+@@ -214,6 +216,10 @@ pub(super) struct ChewingTextService {
+     output_simp_chinese: bool,
+     shift_key_state: ShiftKeyState,
+     shift_session: Option<ShiftLetterSession>,
++    initial_hold: InitialLetterHoldGesture,
++    initial_timer: Option<HoldTimer>,
++    initial_target: Option<Rc<CompositionSession>>,
++    initial_invalidated: Cell<bool>,
+     lexicon: TechnicalLexicon,
+     shared_lexicon: SharedLexicon,
+     f_key_state: kanata_layer::FKeyState,
+@@ -351,6 +357,10 @@ impl ChewingTextService {
+             output_simp_chinese: Default::default(),
+             shift_key_state: ShiftKeyState::Up,
+             shift_session: None,
++            initial_hold: InitialLetterHoldGesture::default(),
++            initial_timer: None,
++            initial_target: None,
++            initial_invalidated: Cell::new(false),
+             lexicon: TechnicalLexicon::load_from_file_or_default(),
+             shared_lexicon: SharedLexicon::new(),
+             f_key_state: kanata_layer::FKeyState::Up,
+@@ -401,6 +411,7 @@ impl ChewingTextService {
+     }
+ 
+     pub(super) fn deactivate(mut self) -> ITfThreadMgr {
++        self.cancel_initial_hold();
+         self.hide_message();
+         if let Ok(lang_bar_item_mgr) = self.thread_mgr.cast::<ITfLangBarItemMgr>() {
+             for button in self.lang_bar_buttons.drain(0..) {
+@@ -446,6 +457,8 @@ impl ChewingTextService {
+     }
+ 
+     pub(super) fn reset_shift_gesture(&mut self) {
++        self.cancel_initial_hold();
++        if let Some(session)=self.shift_session.as_mut() {session.cancel_initial_timing();}
+         self.shift_key_state = ShiftKeyState::Up;
+         self.double_shift.reset();
+     }
+@@ -588,6 +601,13 @@ impl ChewingTextService {
+             || evt.is_state_on(KeyState::Alt)
+             || evt.is_state_on(KeyState::Super);
+ 
++        if self.initial_hold.current_vk().is_some() && (other_modifiers ||
++            (ev.vk != 0x10 && ev.vk != 0xA0 && ev.vk != 0xA1 &&
++             !(ev.repeating && self.initial_hold.current_vk() == Some(ev.vk)))) {
++            self.cancel_initial_hold();
++            if let Some(session)=self.shift_session.as_mut() {session.cancel_initial_timing();}
++        }
++
+         // Determine shift key state here, this might be our last chance seeing this key.
+         if evt.ksym != SYM_LEFTSHIFT
+             && evt.ksym != SYM_RIGHTSHIFT
+@@ -846,6 +866,17 @@ impl ChewingTextService {
+             self.f_key_state = kanata_layer::FKeyState::Cancelled;
+         }
+ 
++        if ev.repeating && self.initial_hold.current_vk() == Some(ev.vk) {
++            if self.initial_target_valid(context) {
++                let effect = self.initial_hold.handle_key_press(ev.vk, true, Instant::now());
++                self.apply_initial_effect(context, effect)?;
++                return Ok(true);
++            } else { self.cancel_initial_hold(); }
++        }
++        if self.initial_invalidated.get() {
++            if let Some(session)=self.shift_session.as_mut() {session.cancel_initial_timing();}
++        }
++
+         if let Some(session) = self.shift_session.take() {
+             let shortcut = evt.is_state_on(KeyState::Control) || evt.is_state_on(KeyState::Alt) || evt.is_state_on(KeyState::Super);
+             let action = if shortcut { Some(CompositionAction::Shortcut) } else {
+@@ -909,6 +940,8 @@ impl ChewingTextService {
+ 
+         // [ShiftLetterSession] 在中文模式下，若使用者按住 Shift 輸入 A-Z，開啟英文組字狀態
+         if self.shift_session.is_none()
++            && !ev.repeating
++            && !evt.is_state_on(KeyState::Super)
+             && self.lang_mode.get() == TsfLangMode::Chinese
+             && shift_held
+             && (0x41..=0x5A).contains(&ev.vk)
+@@ -925,7 +958,8 @@ impl ChewingTextService {
+                 }
+             }
+             let initial_char = (ev.vk as u8) as char;
+-            let session = ShiftLetterSession::start_with_letter(initial_char, &self.lexicon);
++            let session = ShiftLetterSession::start_with_letter_delay(initial_char, &self.lexicon,
++                Duration::from_millis(self.cfg.chewing_tsf.initial_letter_hold_delay_ms.clamp(100,1000) as u64), Instant::now());
+             self.shift_session = Some(session);
+ 
+             let composition = self.shift_session.as_ref().unwrap().composition.clone();
+@@ -933,6 +967,7 @@ impl ChewingTextService {
+             let cursor = text.chars().take(composition.display_cursor()).map(char::len_utf16).sum();
+             self.set_composition_string(context, &resolved_chinese, text, vec![(0, text.encode_utf16().count())], cursor)?;
+ 
++            self.start_initial_hold(ev.vk);
+             if composition.candidates.len() < 2 {
+                 self.hide_candidates();
+             } else {
+@@ -1180,11 +1215,27 @@ impl ChewingTextService {
+         ev: SystemKeyboardEvent,
+     ) -> Result<bool> {
+         if !self.has_focus || !self.is_context_mutable(context)? {
++            self.cancel_initial_hold();
+             self.f_key_state = kanata_layer::FKeyState::Up;
+             self.f_event = None; self.f_buffer = None; self.shift_session = None;
+             self.double_shift.reset();
+             return Ok(false);
+         }
++        if self.shift_session.as_ref().and_then(|s|s.initial_letter_key()) == Some(ev.vk) {
++            if !self.initial_invalidated.get() && self.lang_mode.get()==TsfLangMode::Chinese
++                && self.pending_state.as_ref().is_some_and(|s|s.same_context(context)&&s.is_active()&&!s.is_failed()&&!s.is_ending()) {
++                if let Some(session)=self.shift_session.as_ref() {
++                    let result=session.applying_at(CompositionAction::Insert((ev.vk as u8 as char).to_string()),false,true,&self.lexicon,Instant::now());
++                    if let SessionResult::Updated(next)=result {
++                        let changed=next.composition!=session.composition;
++                        self.shift_session=Some(next);
++                        if changed {self.render_ascii(context)?;}
++                    }
++                }
++            }
++            if let Some(session)=self.shift_session.as_mut() {session.cancel_initial_timing();}
++            self.cancel_initial_hold();
++        }
+         if ev.vk == 0x46 {
+             let previous = self.f_key_state;
+             let delay = Duration::from_millis(self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64);
+@@ -1210,6 +1261,7 @@ impl ChewingTextService {
+             return Ok(false);
+         }
+         if last_is_shift {
++            self.initial_hold.handle_shift_release();
+             let time = self.start_time.elapsed();
+             let _ = self.shift_key_state.release();
+             let other_modifiers = evt.is_state_on(KeyState::Control)
+@@ -1293,6 +1345,7 @@ impl ChewingTextService {
+         }
+         let is_current = self.pending_state.as_ref().is_some_and(|state| state.owns_composition(terminated));
+         if !is_current { return Ok(matched); }
++        self.cancel_initial_hold();
+         self.hide_message();
+         if let Some(state) = &self.pending_state { state.invalidate(); }
+         debug!(has_focus=self.has_focus; "on_composition_terminated_tail");
+@@ -1316,6 +1369,7 @@ impl ChewingTextService {
+     }
+ 
+     pub(super) fn on_compartment_change_ro(&self, guid: &GUID) -> Result<()> {
++        let before = self.lang_mode.get();
+         debug!(has_focus=self.has_focus; "on_compartment_change_ro");
+         if guid == &GUID_COMPARTMENT_KEYBOARD_OPENCLOSE
+             && !self.pending_lang_mode_change.take()
+@@ -1324,10 +1378,12 @@ impl ChewingTextService {
+             if !self.handle_keyboard_openclose_change() { return Ok(()); }
+             self.sync_lang_mode(false)?;
+         }
++        if self.lang_mode.get() != before { self.initial_invalidated.set(true); }
+         Ok(())
+     }
+ 
+     pub(super) fn on_compartment_change(&mut self, guid: &GUID) -> Result<()> {
++        let before = self.lang_mode.get();
+         debug!(has_focus=self.has_focus; "on_compartment_change");
+         if guid == &GUID_COMPARTMENT_KEYBOARD_OPENCLOSE
+             && !self.pending_lang_mode_change.take()
+@@ -1354,10 +1410,13 @@ impl ChewingTextService {
+                 debug!("commit string ok");
+             }
+         }
++        if self.lang_mode.get() != before { self.initial_invalidated.set(true); }
+         Ok(())
+     }
+ 
+     pub(super) fn on_command(&mut self, id: u32, cmd_type: CommandType) {
++        self.cancel_initial_hold();
++        if let Some(session)=self.shift_session.as_mut() {session.cancel_initial_timing();}
+         if matches!(cmd_type, CommandType::RightClick) {
+             if id == ID_MODE_ICON {
+                 let mut pos = POINT::default();
+@@ -1402,6 +1461,19 @@ impl ChewingTextService {
+             }
+         } else {
+             match id {
++                41100 | 41200 | 41250 | 41300 | 41400 | 41500 | 41600 | 41700 | 41800 | 41900 | 42000 => {
++                    let delay=(id-41000) as i32;
++                    let save=(|| -> Result<()> {
++                        let mut config=Config::from_reg()?;
++                        config.chewing_tsf.initial_letter_hold_delay_ms=delay;
++                        config.try_save_reg()?;
++                        Ok(())
++                    })();
++                    match save {
++                        Ok(()) => {self.cfg.chewing_tsf.initial_letter_hold_delay_ms=delay;let _=self.update_lang_buttons();}
++                        Err(error) => error!("Unable to save initial-letter delay: {error:#}"),
++                    }
++                }
+                 ID_SWITCH_LANG => {
+                     if let Err(error) = self.toggle_lang_mode() {
+                         error!("unable to toggle lang mode: {error}");
+@@ -1488,7 +1560,69 @@ impl ChewingTextService {
+         }
+     }
+ 
++    fn cancel_initial_hold(&mut self) {
++        self.initial_hold.cancel();
++        self.initial_timer = None;
++        self.initial_target = None;
++    }
++
++    fn start_initial_hold(&mut self, vk: u16) {
++        self.cancel_initial_hold();
++        if !(0x41..=0x5A).contains(&vk) || vk == 0x46 { return; }
++        let Some(target) = self.pending_state.clone().filter(|s| s.is_active() && !s.is_failed()) else { return; };
++        let delay = self.cfg.chewing_tsf.initial_letter_hold_delay_ms.clamp(100, 1000) as u32;
++        self.initial_hold.set_delay(Duration::from_millis(delay as u64));
++        self.initial_hold.start(vk, vk as u8 as char, Instant::now());
++        self.initial_invalidated.set(false);
++        self.initial_target = Some(target);
++        // A failed timer allocation leaves the event-driven elapsed-time fallback available.
++        if let Ok(command) = self.composition_sink.cast::<super::IFnRunCommand>() {
++            self.initial_timer = HoldTimer::start(command, delay);
++        }
++    }
++
++    fn initial_target_valid(&self, context: &ITfContext) -> bool {
++        !self.initial_invalidated.get() && self.has_focus && self.lang_mode.get() == TsfLangMode::Chinese
++            && self.f_buffer.is_none() && self.is_context_mutable(context).unwrap_or(false)
++            && self.initial_target.as_ref().zip(self.pending_state.as_ref()).is_some_and(|(a,b)|
++                Rc::ptr_eq(a,b) && a.same_context(context) && a.is_active() && !a.is_failed() && !a.is_ending())
++            && self.shift_session.as_ref().is_some_and(|s|
++                matches!(s.mode, ShiftMode::Initial | ShiftMode::Word) && s.composition.raw.len() == 1
++                && s.composition.cursor == 1 && s.composition.selected_index == 0)
++    }
++
++    fn apply_initial_effect(&mut self, context: &ITfContext, effect: HoldEffect) -> Result<()> {
++        if let HoldEffect::TransformToLowercase { uppercase, lowercase } = effect {
++            if !self.initial_target_valid(context) { self.cancel_initial_hold(); return Ok(()); }
++            let next = self.shift_session.as_ref().and_then(|session|
++                lowered_initial_session(session, uppercase, lowercase, &self.lexicon));
++            let Some(next) = next else { self.cancel_initial_hold(); return Ok(()); };
++            self.shift_session = Some(next);
++            self.render_ascii(context)?;
++        }
++        Ok(())
++    }
++
++    pub(super) fn on_initial_hold_tick(&mut self, generation: u32) -> Result<()> {
++        if !self.initial_timer.as_ref().is_some_and(|timer| timer.generation == generation) { return Ok(()); }
++        self.initial_timer = None;
++        let Some(vk) = self.initial_hold.current_vk() else { return Ok(()); };
++        let context = match unsafe { self.thread_mgr.GetFocus().and_then(|doc| doc.GetTop()) } {
++            Ok(context) => context,
++            Err(_) => { self.cancel_initial_hold(); return Ok(()); }
++        };
++        if !self.initial_target_valid(&context) { self.cancel_initial_hold(); return Ok(()); }
++        // A false/uncertain global query does not erase the event-confirmed gesture.
++        // A real repeat/key-up may settle it later; no timer retry or busy polling.
++        let mut keys = [0u8; 256];
++        if unsafe { GetKeyboardState(&mut keys) }.is_err() || keys[vk as usize] & 0x80 == 0 { return Ok(()); }
++        if [0x11, 0x12, 0x5B, 0x5C].iter().any(|&k| keys[k] & 0x80 != 0) { self.cancel_initial_hold(); return Ok(()); }
++        let effect = self.initial_hold.tick(self.initial_hold.generation(), Instant::now());
++        self.apply_initial_effect(&context, effect)
++    }
++
+     fn cancel_custom_input(&mut self, context: &ITfContext) -> Result<()> {
++        self.cancel_initial_hold();
+         let active = self.f_buffer.is_some() || self.shift_session.is_some();
+         let had_shift = self.shift_session.is_some();
+         let base = self.f_buffer.take().and_then(|b| b.base).or_else(|| self.shift_session.take());
+@@ -2309,6 +2443,10 @@ impl ChewingTextService {
+         self.switch_shape_button.set_icon(icon)?;
+ 
+         unsafe {
++            for delay in [100,200,250,300,400,500,600,700,800,900,1000] {
++                CheckMenuItem(self.popup_menu,41000+delay as u32,
++                    if self.cfg.chewing_tsf.initial_letter_hold_delay_ms==delay {MF_CHECKED.0} else {MF_UNCHECKED.0});
++            }
+             CheckMenuItem(
+                 self.popup_menu,
+                 ID_SWITCH_SHAPE,
+@@ -2417,6 +2555,19 @@ impl<'a> ReentrantOps<'a> {
+     }
+ }
+ 
++// Used by the real timer/event path; never rewrites committed text or a selected candidate.
++fn lowered_initial_session(session: &ShiftLetterSession, uppercase: char, lowercase: char,
++    lexicon: &TechnicalLexicon) -> Option<ShiftLetterSession> {
++    if !matches!(session.mode, ShiftMode::Initial | ShiftMode::Word)
++        || session.composition.raw != uppercase.to_string() || session.composition.cursor != 1
++        || session.composition.selected_index != 0 || !uppercase.is_ascii_uppercase()
++        || lowercase != uppercase.to_ascii_lowercase() { return None; }
++    let mut next=session.clone();
++    next.composition=ASCIIComposition::new(&lowercase.to_string(),None,0,lexicon);
++    next.mode=ShiftMode::Word;
++    Some(next)
++}
++
+ // Handoff only resolved text; an unfinished syllable remains owned by the engine.
+ // These guards are shared by interception, execution, and real-Editor tests.
+ fn can_handoff_to_ascii(editor: &Editor) -> bool {
+@@ -2499,6 +2650,30 @@ mod f_and_shift_handoff_tests {
+     use super::*;
+     use chewing_policy_core::shift_letter::{CompositionAction, SessionResult, ShiftLetterSession, ShiftMode};
+ 
++    #[test]
++    fn initial_hold_lowers_only_untouched_current_letter() {
++        let lexicon=TechnicalLexicon::default();
++        let session=ShiftLetterSession::start_with_letter('S', &lexicon);
++        assert_eq!(lowered_initial_session(&session,'S','s',&lexicon).unwrap().composition.raw,"s");
++        let mut released=session.clone();released.mode=ShiftMode::Word;
++        assert_eq!(lowered_initial_session(&released,'S','s',&lexicon).unwrap().mode,ShiftMode::Word);
++        released.composition.cursor=0;assert!(lowered_initial_session(&released,'S','s',&lexicon).is_none());
++        released=session.clone();released.composition.selected_index=1;
++        assert!(lowered_initial_session(&released,'S','s',&lexicon).is_none());
++        released=session.clone();released.composition.raw="SS".into();
++        assert!(lowered_initial_session(&released,'S','s',&lexicon).is_none());
++        assert!(lowered_initial_session(&session,'A','a',&lexicon).is_none());
++    }
++    #[test]
++    fn initial_hold_elapsed_keyup_fallback_is_single_conversion() {
++        let start=Instant::now();let mut hold=InitialLetterHoldGesture::default();
++        let generation=hold.start(0x53,'S',start);hold.handle_shift_release();
++        assert_eq!(hold.handle_key_press(0x53,true,start+Duration::from_millis(100)),HoldEffect::ConsumeRepeat);
++        let effect=hold.tick(generation,start+Duration::from_millis(250));
++        assert!(matches!(effect,HoldEffect::TransformToLowercase{uppercase:'S',lowercase:'s'}));
++        hold.handle_key_up(0x53,start+Duration::from_millis(250));
++        assert_eq!(hold.tick(generation,start+Duration::from_millis(500)),HoldEffect::None);
++    }
+     #[test]
+     fn test_f_gesture_state_lifecycle() {
+         let mut f_state = kanata_layer::FKeyState::Up;
+diff --git a/tip/src/text_service/initial_hold_timer.rs b/tip/src/text_service/initial_hold_timer.rs
+new file mode 100644
+index 0000000..7976f44
+--- /dev/null
++++ b/tip/src/text_service/initial_hold_timer.rs
+@@ -0,0 +1,84 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++//! One-shot timers owned by the activating TSF thread. No cross-thread COM calls.
++use std::{cell::RefCell, collections::HashMap, sync::atomic::{AtomicU32, Ordering}, marker::PhantomData, rc::Rc};
++use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::{KillTimer, SetTimer}};
++use super::{CommandType, IFnRunCommand};
++
++struct Target { command: IFnRunCommand, generation: u32 }
++thread_local! { static TARGETS: RefCell<HashMap<usize, Target>> = RefCell::new(HashMap::new()); }
++static NEXT: AtomicU32 = AtomicU32::new(1);
++
++pub(super) struct HoldTimer { id: usize, pub generation: u32, _thread: PhantomData<Rc<()>> }
++impl HoldTimer {
++    pub fn start(command: IFnRunCommand, delay_ms: u32) -> Option<Self> {
++        let generation = NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1)).ok()?;
++        let id = unsafe { SetTimer(None, 0, delay_ms.clamp(100, 1000), Some(tick)) };
++        if id == 0 { return None; }
++        TARGETS.with(|targets| targets.borrow_mut().insert(id, Target {command, generation}));
++        Some(Self {id, generation, _thread: PhantomData})
++    }
++}
++impl Drop for HoldTimer {
++    fn drop(&mut self) {
++        let removed = TARGETS.with(|targets| {
++            let mut targets = targets.borrow_mut();
++            if targets.get(&self.id).is_some_and(|target| target.generation == self.generation) {
++                targets.remove(&self.id)
++            } else { None }
++        });
++        if removed.is_some() { let _ = unsafe { KillTimer(None, self.id) }; }
++        // Release COM references outside the map borrow; release may reenter TSF.
++        drop(removed);
++    }
++}
++unsafe extern "system" fn tick(_: HWND, _: u32, id: usize, _: u32) {
++    let _ = unsafe { KillTimer(None, id) };
++    let target = TARGETS.with(|targets| targets.borrow_mut().remove(&id));
++    if let Some(target) = target {
++        unsafe { target.command.on_command(target.generation, CommandType::InitialHoldTick); }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::{cell::Cell, time::{Duration, Instant}};
++    use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW};
++    use windows_core::{ComObject, implement};
++    use crate::text_service::IFnRunCommand_Impl;
++    #[implement(IFnRunCommand)]
++    struct Probe { calls: Rc<Cell<u32>>, generation: Rc<Cell<u32>> }
++    impl IFnRunCommand_Impl for Probe_Impl {
++        unsafe fn on_command(&self, id: u32, _: CommandType) {
++            self.calls.set(self.calls.get()+1);
++            self.generation.set(id);
++        }
++    }
++    fn pump(duration: Duration) {
++        let until=Instant::now()+duration;
++        while Instant::now()<until {
++            let mut msg=MSG::default();
++            while unsafe { PeekMessageW(&mut msg,None,0,0,PM_REMOVE) }.as_bool() {
++                unsafe { DispatchMessageW(&msg); }
++            }
++            std::thread::sleep(Duration::from_millis(5));
++        }
++    }
++    #[test]
++    fn actual_thread_timer_delivers_once_with_generation() {
++        let calls=Rc::new(Cell::new(0));let generation=Rc::new(Cell::new(0));
++        let probe=ComObject::new(Probe {calls:calls.clone(),generation:generation.clone()});
++        let timer=HoldTimer::start(probe.into_interface(),100).unwrap();
++        pump(Duration::from_millis(350));
++        assert_eq!(calls.get(),1);assert_eq!(generation.get(),timer.generation);
++        drop(timer);assert!(TARGETS.with(|t|t.borrow().is_empty()));
++    }
++    #[test]
++    fn cancelled_thread_timer_never_delivers() {
++        let calls=Rc::new(Cell::new(0));let generation=Rc::new(Cell::new(0));
++        let probe=ComObject::new(Probe {calls:calls.clone(),generation});
++        let timer=HoldTimer::start(probe.into_interface(),100).unwrap();drop(timer);
++        pump(Duration::from_millis(200));assert_eq!(calls.get(),0);
++        assert!(TARGETS.with(|t|t.borrow().is_empty()));
++    }
++}
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index 65a1e24..33944d2 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -34,6 +34,7 @@ mod composition_session;
+ mod display_attribute;
+ mod edit_session;
+ mod icons;
++mod initial_hold_timer;
+ mod kanata_layer;
+ mod key_event;
+ mod lang_bar;
+@@ -58,6 +59,7 @@ pub(super) enum CommandType {
+     LeftClick,
+     RightClick,
+     Menu,
++    InitialHoldTick,
+ }
+ 
+ #[interface("f320f835-b95d-4d3f-89d5-fd4ab7b9d7bb")]
+@@ -153,10 +155,13 @@ impl ITfFunctionProvider_Impl for TextService_Impl {
+ 
+ impl IFnRunCommand_Impl for TextService_Impl {
+     unsafe fn on_command(&self, id: u32, cmd_type: CommandType) {
+-        let mut borrowed_ts = self.inner.borrow_mut();
+-        let Some(ts) = borrowed_ts.as_mut() else {
++        let _fp = FpGuard::enter();
++        let Ok(mut borrowed_ts) = self.inner.try_borrow_mut() else { return; };
++        let Some(ts) = borrowed_ts.as_mut() else { return; };
++        if matches!(cmd_type, CommandType::InitialHoldTick) {
++            if let Err(error) = ts.on_initial_hold_tick(id) { error!("Initial letter timer failed: {error:#}"); }
+             return;
+-        };
++        }
+         ts.on_command(id, cmd_type);
+         let reentrant_ops = ReentrantOps::from_mut(&self.inner, borrowed_ts);
+         if let Err(error) = reentrant_ops.sync_keyboard_openclose(false) {
+diff --git a/tip/src/text_service/shared_lexicon.rs b/tip/src/text_service/shared_lexicon.rs
+index 5b3ce50..6d4d8b4 100644
+--- a/tip/src/text_service/shared_lexicon.rs
++++ b/tip/src/text_service/shared_lexicon.rs
+@@ -27,23 +27,27 @@ struct Loaded {
+     index: Option<Arc<LexiconIndex>>,
+ }
+ 
+-struct Request { reply: SyncSender<Loaded> }
++struct Request { reply: SyncSender<Result<Loaded, ()>> }
+ 
+ static WORKER: OnceLock<Option<SyncSender<Request>>> = OnceLock::new();
+ 
+-fn load() -> Loaded {
++fn load() -> Result<Loaded, ()> {
+     let result = (|| -> anyhow::Result<Loaded> {
+         let path = chewing_tip_core::shell::user_dir()?.join("SharedLexicon");
+-        let Some(snapshot) = SharedStore::new(path).load()? else { return Ok(Loaded::default()); };
++        let store = SharedStore::new(path);
++        if let Some(revision) = store.disabled_revision()? {
++            return Ok(Loaded { identity: Some((revision, String::new(), false)), index: None });
++        }
++        let Some(snapshot) = store.load()? else { return Ok(Loaded::default()); };
+         let index = if snapshot.enabled {
+             Some(Arc::new(LexiconIndex::new(&snapshot.document)?))
+         } else { None };
+         Ok(Loaded { identity: Some((snapshot.revision, snapshot.checksum, snapshot.enabled)), index })
+     })();
+-    result.unwrap_or_else(|_| {
++    result.map_err(|_| {
+         // Do not log document contents, private paths, or parser excerpts.
+-        log::warn!("shared lexicon unavailable; native candidates remain active");
+-        Loaded::default()
++        log::warn!("shared lexicon unavailable; retaining last approved index");
++        ()
+     })
+ }
+ 
+@@ -86,8 +90,8 @@ impl<T> IdleGate<T> {
+ 
+ pub(super) struct SharedLexicon {
+     requests: Option<SyncSender<Request>>,
+-    reply: SyncSender<Loaded>,
+-    incoming: Receiver<Loaded>,
++    reply: SyncSender<Result<Loaded, ()>>,
++    incoming: Receiver<Result<Loaded, ()>>,
+     in_flight: bool,
+     last_request: Option<Instant>,
+     pending: IdleGate<Loaded>,
+@@ -119,7 +123,7 @@ impl SharedLexicon {
+     pub(super) fn poll(&mut self, idle: bool) -> bool {
+         if let Ok(loaded) = self.incoming.try_recv() {
+             self.in_flight = false;
+-            self.pending.receive(loaded);
++            if let Ok(loaded) = loaded { self.pending.receive(loaded); }
+         }
+         let Some(loaded) = self.pending.take_if_idle(idle) else { return false; };
+         if loaded.identity == self.active.identity { return false; }
+@@ -208,22 +212,37 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn received_snapshot_and_failure_wait_until_next_idle_boundary() {
++    fn received_snapshot_and_removal_wait_until_next_idle_boundary() {
+         let mut client = client();
+         client.in_flight = true;
+-        assert!(client.reply.try_send(Loaded { identity: Some(("revision-1".into(), "checksum".into(), true)), index: None }).is_ok());
++        assert!(client.reply.try_send(Ok(Loaded { identity: Some(("revision-1".into(), "checksum".into(), true)), index: None })).is_ok());
+         assert!(!client.poll(false));
+         assert!(client.active.identity.is_none());
+         assert!(!client.in_flight);
+         assert!(client.poll(true));
+         assert_eq!(client.active.identity.as_ref().unwrap().0, "revision-1");
+-        assert!(client.reply.try_send(Loaded::default()).is_ok());
++        assert!(client.reply.try_send(Ok(Loaded::default())).is_ok());
+         assert!(!client.poll(false));
+         assert!(client.active.identity.is_some());
+         assert!(client.poll(true));
+         assert!(client.active.identity.is_none());
+     }
+ 
++    #[test]
++    fn failed_refresh_retains_approved_index_but_disable_still_applies() {
++        let mut client = client();
++        client.active.identity = Some(("approved".into(), "hash".into(), true));
++        client.in_flight = true;
++        assert!(client.reply.try_send(Err(())).is_ok());
++        assert!(!client.poll(true));
++        assert!(!client.in_flight);
++        assert_eq!(client.active.identity.as_ref().unwrap().0, "approved");
++        assert!(client.reply.try_send(Ok(Loaded {identity:Some(("disabled".into(), String::new(), false)),index:None})).is_ok());
++        assert!(!client.poll(false));
++        assert!(client.poll(true));
++        assert!(!client.active.identity.as_ref().unwrap().2);
++    }
++
+     #[test]
+     fn requests_are_bounded_and_never_duplicated_in_flight() {
+         let mut client = client();
+@@ -233,7 +252,7 @@ mod tests {
+         client.request_refresh();
+         let request = incoming.try_recv().unwrap();
+         assert!(incoming.try_recv().is_err());
+-        assert!(request.reply.try_send(Loaded::default()).is_ok());
++        assert!(request.reply.try_send(Ok(Loaded::default())).is_ok());
+         assert!(!client.poll(true));
+         client.request_refresh();
+         assert!(incoming.try_recv().is_err());
+-- 
+2.54.0 (Apple Git-157)
+

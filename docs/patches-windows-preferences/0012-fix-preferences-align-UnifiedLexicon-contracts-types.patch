@@ -1,0 +1,658 @@
+From d6fef2b551ce605d9ae7962b5a9f22a376d3450e Mon Sep 17 00:00:00 2001
+From: AGY <antigravity@local>
+Date: Tue, 10 Nov 2026 00:08:40 +0800
+Subject: [PATCH 12/14] fix(preferences): align UnifiedLexicon contracts,
+ types, revision locking, and alias derivation (Task UNIFIED-UI-REVIEW-1110)
+
+---
+ src/UnifiedLexicon.tsx | 267 ++++++++++++++++++++++++++---------------
+ 1 file changed, 169 insertions(+), 98 deletions(-)
+
+diff --git a/src/UnifiedLexicon.tsx b/src/UnifiedLexicon.tsx
+index 42fd705..68711b6 100644
+--- a/src/UnifiedLexicon.tsx
++++ b/src/UnifiedLexicon.tsx
+@@ -2,19 +2,15 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ /**
+- * Task UNIFIED-UI-1109
++ * Task UNIFIED-UI-REVIEW-1110
+  * 台灣繁體中文 (Taiwan Traditional Chinese) 離線統一詞彙管理介面
+  * 
+- * 核心契約核對 (Backend Contract Reference):
+- * - unified_lexicon_status -> { revision, enabled, recovered, value, previous }
+- * - unified_lexicon_read({ path }) -> UnifiedLexicon
+- * - unified_lexicon_preview({ value, expected, replace, selected, incomingConflicts }) -> Preview
+- * - unified_lexicon_edit({ entry, oldId, deleteIds, expected }) -> Preview
+- * - unified_lexicon_approve({ token, confirmed: true }) -> Status
+- * - unified_lexicon_cancel({ token }) -> void
+- * - unified_lexicon_export({ path, selected, expected, json }) -> void
+- * - unified_lexicon_rollback({ expected, confirmed: true }) -> Status
+- * - unified_lexicon_enabled({ expected, enabled }) -> Status
++ * 核心契約與後端型別對齊 (Backend Schema Alignment):
++ * - term_type: "zh_phrase" | "english_term" | "technical_alias" | "unicode_mapping"
++ * - Edit payload: { term_type, reading, text, annotation, alias, alias_reading } (皆為 string，不傳 undefined)
++ * - 關聯與別名：LexiconEntry 不存 alias 欄位，別名透過 relations (kind: "equivalent") 關聯至等價之 zh_phrase 詞條
++ * - 樂觀鎖版號鎖定：開啟編輯/匯入對話框時鎖定 captured revision，防止背景或重新整理後以過期版本提交
++ * - 呼叫防護：完整 busy 與 repreview guards
+  */
+ 
+ import { useEffect, useMemo, useState } from "react";
+@@ -29,7 +25,6 @@ import {
+   DialogContent,
+   DialogSurface,
+   DialogTitle,
+-  DialogTrigger,
+   Field,
+   Input,
+   Select,
+@@ -40,14 +35,18 @@ import {
+ import { invoke } from "@tauri-apps/api/core";
+ import { ask, open, save } from "@tauri-apps/plugin-dialog";
+ 
++export type TermType =
++  | "zh_phrase"
++  | "english_term"
++  | "technical_alias"
++  | "unicode_mapping";
++
+ export interface Entry {
+   entry_id: string;
+-  term_type: string;
++  term_type: TermType;
+   reading: string;
+   text: string;
+   annotation?: string;
+-  alias?: string;
+-  alias_reading?: string;
+   category?: string;
+   source?: string;
+   review?: {
+@@ -67,6 +66,9 @@ export interface Relation {
+ }
+ 
+ export interface LexiconDocument {
++  format?: string;
++  schema_version?: string;
++  document_type?: string;
+   dictionary_version?: string;
+   entries: Entry[];
+   [key: string]: unknown;
+@@ -98,17 +100,24 @@ export interface Preview {
+   expandedCount: number;
+ }
+ 
+-export interface EditEntryInput {
+-  term_type: string;
++export interface EditPayload {
++  term_type: TermType;
+   reading: string;
+   text: string;
+-  annotation?: string;
+-  alias?: string;
+-  alias_reading?: string;
++  annotation: string;
++  alias: string;
++  alias_reading: string;
+ }
+ 
+ const PAGE_SIZE = 50;
+ 
++const TERM_TYPE_LABELS: Record<TermType, string> = {
++  zh_phrase: "中文詞彙 (zh_phrase)",
++  english_term: "英文術語 (english_term)",
++  technical_alias: "技術別名 (technical_alias)",
++  unicode_mapping: "Unicode 映射 (unicode_mapping)",
++};
++
+ export default function UnifiedLexiconManager() {
+   // 核心狀態
+   const [status, setStatus] = useState<Status | null>(null);
+@@ -122,11 +131,13 @@ export default function UnifiedLexiconManager() {
+   const [importCandidateSelectedIds, setImportCandidateSelectedIds] = useState<Set<string>>(new Set());
+   const [isImportSelectorOpen, setIsImportSelectorOpen] = useState(false);
+   const [importPath, setImportPath] = useState<string>("");
++  const [importCapturedRevision, setImportCapturedRevision] = useState<string | null>(null);
+ 
+   // CRUD 表單狀態
+   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+   const [editingOldId, setEditingOldId] = useState<string | null>(null);
+-  const [formTermType, setFormTermType] = useState<string>("phrase");
++  const [editCapturedRevision, setEditCapturedRevision] = useState<string | null>(null);
++  const [formTermType, setFormTermType] = useState<TermType>("zh_phrase");
+   const [formReading, setFormReading] = useState<string>("");
+   const [formText, setFormText] = useState<string>("");
+   const [formAnnotation, setFormAnnotation] = useState<string>("");
+@@ -135,7 +146,7 @@ export default function UnifiedLexiconManager() {
+ 
+   // 表格與分頁狀態
+   const [query, setQuery] = useState("");
+-  const [typeFilter, setTypeFilter] = useState("all");
++  const [typeFilter, setTypeFilter] = useState<string>("all");
+   const [page, setPage] = useState(0);
+   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
+ 
+@@ -146,6 +157,7 @@ export default function UnifiedLexiconManager() {
+ 
+   // 統一非同步包裝器
+   async function act(work: () => Promise<void>) {
++    if (busy) return;
+     setBusy(true);
+     setError("");
+     try {
+@@ -184,7 +196,7 @@ export default function UnifiedLexiconManager() {
+ 
+   // 啟用 / 停用切換
+   async function handleToggleEnabled(nextEnabled: boolean) {
+-    if (!status) return;
++    if (!status || busy) return;
+     await act(async () => {
+       const nextStatus = await invoke<Status>("unified_lexicon_enabled", {
+         expected: status.revision,
+@@ -197,7 +209,7 @@ export default function UnifiedLexiconManager() {
+ 
+   // 回復上一版
+   async function handleRollback() {
+-    if (!status || !status.previous) return;
++    if (!status || !status.previous || busy) return;
+     const ok = await ask(
+       "確定要回復到上一版統一詞庫快照嗎？目前的未儲存自訂變更將被回復。",
+       { title: "回復上一版詞庫", kind: "warning" }
+@@ -222,10 +234,55 @@ export default function UnifiedLexiconManager() {
+     });
+   }
+ 
++  // 計算目前的關聯快照與等價中文別名對照表 (由 relations 衍生)
++  const currentEntries = status?.value?.document?.entries ?? [];
++  const currentRelations = status?.value?.relations ?? [];
++
++  const entryMap = useMemo(() => {
++    const map = new Map<string, Entry>();
++    for (const entry of currentEntries) {
++      map.set(entry.entry_id, entry);
++    }
++    return map;
++  }, [currentEntries]);
++
++  // 關聯映射：包含所有相鄰 ID
++  const relationsMap = useMemo(() => {
++    const map = new Map<string, string[]>();
++    for (const r of currentRelations) {
++      const listA = map.get(r.source_id) ?? [];
++      listA.push(r.target_id);
++      map.set(r.source_id, listA);
++
++      const listB = map.get(r.target_id) ?? [];
++      listB.push(r.source_id);
++      map.set(r.target_id, listB);
++    }
++    return map;
++  }, [currentRelations]);
++
++  // 別名衍生：若此條目為 target，且有 source 為 zh_phrase 且 kind=="equivalent"，即為其中文別名
++  const derivedAliasMap = useMemo(() => {
++    const map = new Map<string, { aliasText: string; aliasReading: string }>();
++    for (const r of currentRelations) {
++      if (r.kind === "equivalent") {
++        const sourceEntry = entryMap.get(r.source_id);
++        if (sourceEntry && sourceEntry.term_type === "zh_phrase") {
++          map.set(r.target_id, {
++            aliasText: sourceEntry.text,
++            aliasReading: sourceEntry.reading,
++          });
++        }
++      }
++    }
++    return map;
++  }, [currentRelations, entryMap]);
++
+   // 開啟新增表單
+   function handleOpenCreateModal() {
+     setEditingOldId(null);
+-    setFormTermType("phrase");
++    setEditCapturedRevision(status?.revision ?? null);
++    setFormTermType("zh_phrase");
+     setFormReading("");
+     setFormText("");
+     setFormAnnotation("");
+@@ -237,18 +294,27 @@ export default function UnifiedLexiconManager() {
+   // 開啟編輯表單
+   function handleOpenEditModal(entry: Entry) {
+     setEditingOldId(entry.entry_id);
+-    setFormTermType(entry.term_type || "phrase");
++    setEditCapturedRevision(status?.revision ?? null);
++    setFormTermType(entry.term_type || "zh_phrase");
+     setFormReading(entry.reading || "");
+     setFormText(entry.text || "");
+     setFormAnnotation(entry.annotation || "");
+-    setFormAlias(entry.alias || "");
+-    setFormAliasReading(entry.alias_reading || "");
++
++    const aliasInfo = derivedAliasMap.get(entry.entry_id);
++    setFormAlias(aliasInfo?.aliasText || "");
++    setFormAliasReading(aliasInfo?.aliasReading || "");
+     setIsEditModalOpen(true);
+   }
+ 
+   // 提交 CRUD 變更 (進入預覽狀態，經核准後才正式生效)
+   async function handleSubmitEdit() {
+-    if (!status) return;
++    if (!status || busy) return;
++
++    if (editCapturedRevision !== status.revision) {
++      setError("詞庫版本已在背景變更，請重新整理詞庫並重新開啟編輯對話框。");
++      return;
++    }
++
+     const textTrimmed = formText.trim();
+     const readingTrimmed = formReading.trim();
+     if (!textTrimmed || !readingTrimmed) {
+@@ -262,14 +328,23 @@ export default function UnifiedLexiconManager() {
+       setError("若提供中文別名，必須同時填寫經確認之驗證讀音（系統不猜測讀音）。");
+       return;
+     }
++    if (!aliasTrimmed && aliasReadingTrimmed) {
++      setError("填寫別名讀音時必須同時填寫中文別名。");
++      return;
++    }
+ 
+-    const entryInput: EditEntryInput = {
+-      term_type: formTermType.trim() || "phrase",
++    if (formTermType === "zh_phrase" && aliasTrimmed) {
++      setError("中文詞彙 (zh_phrase) 不能作為別名關聯目標；請將主要條目設為英文術語或技術別名，中文作為其別名。");
++      return;
++    }
++
++    const entryInput: EditPayload = {
++      term_type: formTermType,
+       reading: readingTrimmed,
+       text: textTrimmed,
+-      annotation: formAnnotation.trim() || undefined,
+-      alias: aliasTrimmed || undefined,
+-      alias_reading: aliasReadingTrimmed || undefined,
++      annotation: formAnnotation.trim(),
++      alias: aliasTrimmed,
++      alias_reading: aliasReadingTrimmed,
+     };
+ 
+     await act(async () => {
+@@ -282,7 +357,7 @@ export default function UnifiedLexiconManager() {
+         entry: entryInput,
+         oldId: editingOldId,
+         deleteIds: [],
+-        expected: status.revision,
++        expected: editCapturedRevision,
+       });
+       setPreview(p);
+       setPreviewSource(null);
+@@ -295,7 +370,8 @@ export default function UnifiedLexiconManager() {
+ 
+   // 刪除選定項目 (進入預覽狀態，提醒僅刪除管理副本)
+   async function handleDeleteEntries(idsToDelete: string[]) {
+-    if (!status || idsToDelete.length === 0) return;
++    if (!status || idsToDelete.length === 0 || busy) return;
++    const capturedRevision = status.revision;
+     const ok = await ask(
+       `確定要刪除選定的 ${idsToDelete.length} 筆詞條嗎？\n\n【重要提示】此動作僅刪除統一詞庫管理副本，原始或系統新酷音詞庫仍可能提供同字之候選字。`,
+       { title: "刪除管理詞條確認", kind: "warning" }
+@@ -312,7 +388,7 @@ export default function UnifiedLexiconManager() {
+         entry: null,
+         oldId: null,
+         deleteIds: idsToDelete,
+-        expected: status.revision,
++        expected: capturedRevision,
+       });
+       setPreview(p);
+       setPreviewSource(null);
+@@ -324,6 +400,7 @@ export default function UnifiedLexiconManager() {
+ 
+   // 匯入檔案 (SQLite 或 JSON)
+   async function handleImportFile() {
++    if (busy) return;
+     await act(async () => {
+       const path = await open({
+         multiple: false,
+@@ -335,6 +412,7 @@ export default function UnifiedLexiconManager() {
+       if (!path || typeof path !== "string") return;
+ 
+       setImportPath(path);
++      setImportCapturedRevision(status?.revision ?? null);
+       const incoming = await invoke<UnifiedLexicon>("unified_lexicon_read", { path });
+       setImportedCandidate(incoming);
+       // 預設全選
+@@ -347,7 +425,13 @@ export default function UnifiedLexiconManager() {
+ 
+   // 產生匯入預覽
+   async function handleGenerateImportPreview() {
+-    if (!status || !importedCandidate) return;
++    if (!status || !importedCandidate || busy) return;
++
++    if (importCapturedRevision !== status.revision) {
++      setError("詞庫版本已在背景變更，請重新整理詞庫並重新選取匯入檔案。");
++      return;
++    }
++
+     const isAll = importCandidateSelectedIds.size === importedCandidate.document.entries.length;
+     const selectedArray = isAll ? null : Array.from(importCandidateSelectedIds);
+ 
+@@ -359,7 +443,7 @@ export default function UnifiedLexiconManager() {
+       }
+       const p = await invoke<Preview>("unified_lexicon_preview", {
+         value: importedCandidate,
+-        expected: status.revision,
++        expected: importCapturedRevision,
+         replace: false,
+         selected: selectedArray,
+         incomingConflicts: [],
+@@ -377,7 +461,7 @@ export default function UnifiedLexiconManager() {
+ 
+   // 全量覆蓋回復 (Full Restore，明確區隔並提供嚴肅警告)
+   async function handleFullRestore() {
+-    if (!status) return;
++    if (!status || busy) return;
+     const okFirst = await ask(
+       "【嚴正警告：全量覆蓋回復 (Full Restore)】\n\n此操作將以選定備份檔完整「取代並替換」目前的統一詞庫，既有的詞條與關聯將全數被清空覆蓋！\n\n確定要選擇備份檔案進行全量回復預覽嗎？",
+       { title: "全量覆蓋回復警告", kind: "error" }
+@@ -394,6 +478,7 @@ export default function UnifiedLexiconManager() {
+       });
+       if (!path || typeof path !== "string") return;
+ 
++      const capturedRevision = status.revision;
+       const incoming = await invoke<UnifiedLexicon>("unified_lexicon_read", { path });
+       if (preview) {
+         try {
+@@ -403,7 +488,7 @@ export default function UnifiedLexiconManager() {
+ 
+       const p = await invoke<Preview>("unified_lexicon_preview", {
+         value: incoming,
+-        expected: status.revision,
++        expected: capturedRevision,
+         replace: true,
+         selected: null,
+         incomingConflicts: [],
+@@ -419,12 +504,14 @@ export default function UnifiedLexiconManager() {
+ 
+   // 重新計算衝突預覽 (當使用者切換 incomingConflicts 選擇時)
+   async function handleRepreviewConflicts(newConflicts: string[]) {
+-    if (!status || !preview) return;
++    if (!status || !preview || busy) return;
+     const sourceToUse = previewSource ?? preview.value;
++    const currentExpected = status.revision;
++
+     await act(async () => {
+       const p = await invoke<Preview>("unified_lexicon_preview", {
+         value: sourceToUse,
+-        expected: status.revision,
++        expected: currentExpected,
+         replace: preview.replace,
+         selected: previewSelectedIds,
+         incomingConflicts: newConflicts,
+@@ -437,7 +524,7 @@ export default function UnifiedLexiconManager() {
+ 
+   // 核准並正式寫入詞庫
+   async function handleApprovePreview() {
+-    if (!preview) return;
++    if (!preview || busy) return;
+     const actionText = preview.replace
+       ? "全量覆蓋回復現有統一詞庫"
+       : `寫入並套用 ${preview.value.document.entries.length} 筆詞條`;
+@@ -468,7 +555,7 @@ export default function UnifiedLexiconManager() {
+ 
+   // 取消預覽
+   async function handleCancelPreview() {
+-    if (!preview) return;
++    if (!preview || busy) return;
+     const token = preview.token;
+     await act(async () => {
+       try {
+@@ -485,7 +572,7 @@ export default function UnifiedLexiconManager() {
+ 
+   // 匯出 SQLite
+   async function handleExportSqlite() {
+-    if (!status) return;
++    if (!status || busy) return;
+     const isSelected = selectedRowIds.size > 0;
+     const defaultName = `unified-lexicon-${new Date().toISOString().slice(0, 10)}.sqlite`;
+ 
+@@ -511,7 +598,7 @@ export default function UnifiedLexiconManager() {
+ 
+   // 匯出舊版相容 JSON (僅在後端契約允許時成功)
+   async function handleExportJson() {
+-    if (!status) return;
++    if (!status || busy) return;
+     const isSelected = selectedRowIds.size > 0;
+     const defaultName = `unified-lexicon-${new Date().toISOString().slice(0, 10)}.json`;
+ 
+@@ -536,23 +623,6 @@ export default function UnifiedLexiconManager() {
+   }
+ 
+   // 列表過濾與分頁計算
+-  const currentEntries = status?.value?.document?.entries ?? [];
+-  const currentRelations = status?.value?.relations ?? [];
+-
+-  const relationsMap = useMemo(() => {
+-    const map = new Map<string, string[]>();
+-    for (const r of currentRelations) {
+-      const listA = map.get(r.source_id) ?? [];
+-      listA.push(r.target_id);
+-      map.set(r.source_id, listA);
+-
+-      const listB = map.get(r.target_id) ?? [];
+-      listB.push(r.source_id);
+-      map.set(r.target_id, listB);
+-    }
+-    return map;
+-  }, [currentRelations]);
+-
+   const filteredRows = useMemo(() => {
+     const q = query.trim().toLowerCase();
+     return currentEntries.filter((entry) => {
+@@ -560,20 +630,22 @@ export default function UnifiedLexiconManager() {
+         return false;
+       }
+       if (!q) return true;
++      const aliasInfo = derivedAliasMap.get(entry.entry_id);
+       const matchText = (entry.text || "").toLowerCase().includes(q);
+       const matchReading = (entry.reading || "").toLowerCase().includes(q);
+       const matchAnnotation = (entry.annotation || "").toLowerCase().includes(q);
+-      const matchAlias = (entry.alias || "").toLowerCase().includes(q);
+-      const matchAliasReading = (entry.alias_reading || "").toLowerCase().includes(q);
++      const matchAlias = (aliasInfo?.aliasText || "").toLowerCase().includes(q);
++      const matchAliasReading = (aliasInfo?.aliasReading || "").toLowerCase().includes(q);
+       return matchText || matchReading || matchAnnotation || matchAlias || matchAliasReading;
+     });
+-  }, [currentEntries, query, typeFilter]);
++  }, [currentEntries, derivedAliasMap, query, typeFilter]);
+ 
+   const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+   const currentPageRows = filteredRows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+ 
+   // 選取切換
+   function toggleRowSelection(id: string) {
++    if (busy) return;
+     setSelectedRowIds((prev) => {
+       const next = new Set(prev);
+       if (next.has(id)) next.delete(id);
+@@ -583,6 +655,7 @@ export default function UnifiedLexiconManager() {
+   }
+ 
+   function toggleSelectAllCurrentPage() {
++    if (busy) return;
+     const allPageSelected = currentPageRows.every((r) => selectedRowIds.has(r.entry_id));
+     setSelectedRowIds((prev) => {
+       const next = new Set(prev);
+@@ -764,13 +837,11 @@ export default function UnifiedLexiconManager() {
+                     <div style={{ fontSize: 12, color: "#555", marginLeft: 26, marginTop: 4 }}>
+                       <div>
+                         本機現有：{c.existing.text} [{c.existing.reading}] (類型: {c.existing.term_type}
+-                        {c.existing.annotation ? `，註解: ${c.existing.annotation}` : ""}
+-                        {c.existing.alias ? `，別名: ${c.existing.alias}` : ""})
++                        {c.existing.annotation ? `，註解: ${c.existing.annotation}` : ""})
+                       </div>
+                       <div>
+                         匯入內容：{c.incoming.text} [{c.incoming.reading}] (類型: {c.incoming.term_type}
+-                        {c.incoming.annotation ? `，註解: ${c.incoming.annotation}` : ""}
+-                        {c.incoming.alias ? `，別名: ${c.incoming.alias}` : ""})
++                        {c.incoming.annotation ? `，註解: ${c.incoming.annotation}` : ""})
+                       </div>
+                     </div>
+                   </div>
+@@ -817,10 +888,10 @@ export default function UnifiedLexiconManager() {
+             }}
+           >
+             <option value="all">全部類型</option>
+-            <option value="phrase">標準詞彙 (phrase)</option>
+-            <option value="engineering">工程詞 (engineering)</option>
+-            <option value="name">專有名詞 (name)</option>
+-            <option value="symbol">符號映射 (symbol)</option>
++            <option value="zh_phrase">中文詞彙 (zh_phrase)</option>
++            <option value="english_term">英文術語 (english_term)</option>
++            <option value="technical_alias">技術別名 (technical_alias)</option>
++            <option value="unicode_mapping">Unicode 映射 (unicode_mapping)</option>
+           </Select>
+         </Field>
+         {selectedRowIds.size > 0 && (
+@@ -859,7 +930,7 @@ export default function UnifiedLexiconManager() {
+               <th style={{ padding: "8px 12px" }}>讀音 (注音)</th>
+               <th style={{ padding: "8px 12px" }}>詞條文字</th>
+               <th style={{ padding: "8px 12px" }}>類型</th>
+-              <th style={{ padding: "8px 12px" }}>中文別名 (Alias)</th>
++              <th style={{ padding: "8px 12px" }}>中文等價別名 (自關聯衍生)</th>
+               <th style={{ padding: "8px 12px" }}>別名驗證讀音</th>
+               <th style={{ padding: "8px 12px" }}>註解</th>
+               <th style={{ padding: "8px 12px" }}>關聯數</th>
+@@ -877,6 +948,8 @@ export default function UnifiedLexiconManager() {
+               currentPageRows.map((entry) => {
+                 const isSelected = selectedRowIds.has(entry.entry_id);
+                 const relCount = relationsMap.get(entry.entry_id)?.length ?? 0;
++                const aliasInfo = derivedAliasMap.get(entry.entry_id);
++
+                 return (
+                   <tr
+                     key={entry.entry_id}
+@@ -896,11 +969,11 @@ export default function UnifiedLexiconManager() {
+                     <td style={{ padding: "8px 12px", fontWeight: "bold" }}>{entry.text}</td>
+                     <td style={{ padding: "8px 12px" }}>
+                       <Badge size="small" appearance="outline">
+-                        {entry.term_type || "phrase"}
++                        {entry.term_type}
+                       </Badge>
+                     </td>
+-                    <td style={{ padding: "8px 12px" }}>{entry.alias || "-"}</td>
+-                    <td style={{ padding: "8px 12px", fontFamily: "monospace" }}>{entry.alias_reading || "-"}</td>
++                    <td style={{ padding: "8px 12px" }}>{aliasInfo?.aliasText || "-"}</td>
++                    <td style={{ padding: "8px 12px", fontFamily: "monospace" }}>{aliasInfo?.aliasReading || "-"}</td>
+                     <td style={{ padding: "8px 12px", color: "#666" }}>{entry.annotation || "-"}</td>
+                     <td style={{ padding: "8px 12px" }}>
+                       {relCount > 0 ? (
+@@ -970,20 +1043,20 @@ export default function UnifiedLexiconManager() {
+               <Field label="詞條類型" required>
+                 <Select
+                   value={formTermType}
+-                  onChange={(_e, d) => setFormTermType(d.value)}
++                  onChange={(_e, d) => setFormTermType(d.value as TermType)}
+                   disabled={busy}
+                 >
+-                  <option value="phrase">標準詞彙 (phrase)</option>
+-                  <option value="engineering">工程詞 (engineering)</option>
+-                  <option value="name">專有名詞 (name)</option>
+-                  <option value="symbol">符號映射 (symbol)</option>
++                  <option value="zh_phrase">{TERM_TYPE_LABELS.zh_phrase}</option>
++                  <option value="english_term">{TERM_TYPE_LABELS.english_term}</option>
++                  <option value="technical_alias">{TERM_TYPE_LABELS.technical_alias}</option>
++                  <option value="unicode_mapping">{TERM_TYPE_LABELS.unicode_mapping}</option>
+                 </Select>
+               </Field>
+ 
+               <Field label="詞條文字 (Text)" required>
+                 <Input
+                   value={formText}
+-                  placeholder="例如：人工智慧、水、H₂O"
++                  placeholder="例如：人工智慧、H₂O"
+                   disabled={busy}
+                   onChange={(_e, d) => setFormText(d.value)}
+                 />
+@@ -992,11 +1065,11 @@ export default function UnifiedLexiconManager() {
+               <Field
+                 label="注音讀音 (Reading)"
+                 required
+-                hint="請填寫標準完整注音讀音，例如：ㄖㄣˊ ㄍㄨㄥ ㄓˋ ㄏㄨㄟˋ"
++                hint="中文請填標準連字注音（如 ㄖㄣˊ-ㄍㄨㄥ-ㄓˋ-ㄏㄨㄟˋ）；英數符號請填 ASCII 觸發碼（如 H2O、ai）。"
+               >
+                 <Input
+                   value={formReading}
+-                  placeholder="例如：ㄕㄨㄟˇ"
++                  placeholder="例如：ㄖㄣˊ-ㄍㄨㄥ-ㄓˋ-ㄏㄨㄟˋ 或 h2o"
+                   disabled={busy}
+                   onChange={(_e, d) => setFormReading(d.value)}
+                 />
+@@ -1013,31 +1086,31 @@ export default function UnifiedLexiconManager() {
+               </Field>
+ 
+               <Field
+-                label="中文別名 (Chinese Alias，可選)"
+-                hint="例如：水（當輸入碼或觸發文字需綁定別名時填寫）"
++                label="等價中文別名 (Equivalent Chinese Alias，可選)"
++                hint="例如：水（當英數或技術詞條需綁定中文別名時填寫；主要詞條設為 zh_phrase 時請留空）"
+               >
+                 <Input
+                   value={formAlias}
+-                  placeholder="可選別名"
+-                  disabled={busy}
++                  placeholder="可選中文別名"
++                  disabled={busy || formTermType === "zh_phrase"}
+                   onChange={(_e, d) => setFormAlias(d.value)}
+                 />
+               </Field>
+ 
+               <Field
+                 label="別名驗證讀音 (Alias Verified Reading，若有別名則必填)"
+-                hint="經核驗讀音；嚴格禁止系統自動猜測讀音，請確實填寫正確注音。"
++                hint="經核驗讀音；嚴格禁止系統自動猜測讀音，請確實填寫正確中文連字注音（如 ㄕㄨㄟˇ）。"
+               >
+                 <Input
+                   value={formAliasReading}
+                   placeholder="例如：ㄕㄨㄟˇ"
+-                  disabled={busy}
++                  disabled={busy || formTermType === "zh_phrase"}
+                   onChange={(_e, d) => setFormAliasReading(d.value)}
+                 />
+               </Field>
+ 
+               <Text size={200} style={{ color: "#666", marginTop: 4 }}>
+-                【提醒】新增或編輯將建立「待核准預覽」，需在主畫面點選「核准並正式套用變更」後才會正式寫入詞庫。
++                【提醒】新增或編輯將建立「待核准預覽」，需在主畫面點選「核准套用變更」後才會正式寫入詞庫。若填寫別名，系統將建立等價中文關聯詞條。
+               </Text>
+             </DialogContent>
+             <DialogActions style={{ marginTop: 16 }}>
+@@ -1070,7 +1143,7 @@ export default function UnifiedLexiconManager() {
+                   【關聯閉包說明 (Related Closure Notice)】
+                 </Text>
+                 <Text size={200} style={{ color: "#333", marginTop: 4 }}>
+-                  若您選取的詞條包含等價或關聯項目（例如工程詞與其對應之中文別名），系統在產生預覽時將依關聯閉包自動擴展納入相關詞條，確保詞庫資料模型之完整性。
++                  若您選取的詞條包含等價或關聯項目（例如英文術語與其對應之中文別名），系統在產生預覽時將依關聯閉包自動擴展納入相關詞條，確保詞庫資料模型之完整性。
+                 </Text>
+               </Card>
+ 
+@@ -1102,7 +1175,6 @@ export default function UnifiedLexiconManager() {
+                       <th style={{ padding: 6 }}>讀音</th>
+                       <th style={{ padding: 6 }}>文字</th>
+                       <th style={{ padding: 6 }}>類型</th>
+-                      <th style={{ padding: 6 }}>別名</th>
+                       <th style={{ padding: 6 }}>註解</th>
+                     </tr>
+                   </thead>
+@@ -1132,8 +1204,7 @@ export default function UnifiedLexiconManager() {
+                           </td>
+                           <td style={{ padding: 6, fontFamily: "monospace" }}>{e.reading}</td>
+                           <td style={{ padding: 6, fontWeight: "bold" }}>{e.text}</td>
+-                          <td style={{ padding: 6 }}>{e.term_type || "phrase"}</td>
+-                          <td style={{ padding: 6 }}>{e.alias || "-"}</td>
++                          <td style={{ padding: 6 }}>{e.term_type}</td>
+                           <td style={{ padding: 6, color: "#666" }}>{e.annotation || "-"}</td>
+                         </tr>
+                       );
+-- 
+2.54.0 (Apple Git-157)
+

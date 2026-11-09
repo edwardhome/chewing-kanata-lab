@@ -1,0 +1,59 @@
+From d5010e7d97b3104433a4e4ff9ef687967b1bb7fd Mon Sep 17 00:00:00 2001
+From: AGY <antigravity@local>
+Date: Tue, 10 Nov 2026 00:26:28 +0800
+Subject: [PATCH 36/37] feat(config): add initial_letter_hold_delay_ms setting
+ with backward compatibility (INITIAL-HOLD-1110)
+
+---
+ crates/chewing_tip_core/src/config.rs | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/crates/chewing_tip_core/src/config.rs b/crates/chewing_tip_core/src/config.rs
+index f44f48d..0410144 100644
+--- a/crates/chewing_tip_core/src/config.rs
++++ b/crates/chewing_tip_core/src/config.rs
+@@ -91,6 +91,7 @@ pub struct ChewingTsfConfig {
+     pub last_update_check_time: u64,
+     pub modified_timestamp: u64,
+     pub f_hold_delay_ms: i32,
++    pub initial_letter_hold_delay_ms: i32,
+     pub enable_ai: bool,
+ }
+ 
+@@ -154,6 +155,7 @@ impl Default for ChewingTsfConfig {
+             last_update_check_time: 0,
+             modified_timestamp: 0,
+             f_hold_delay_ms: 150,
++            initial_letter_hold_delay_ms: 250,
+             enable_ai: false,
+         }
+     }
+@@ -255,6 +257,9 @@ impl Config {
+             if let Ok(value) = reg_get_i32(&key, "FHoldDelayMs") {
+                 cfg.f_hold_delay_ms = value.clamp(100, 1000);
+             }
++            if let Ok(value) = reg_get_i32(&key, "InitialLetterHoldDelayMs") {
++                cfg.initial_letter_hold_delay_ms = value.clamp(100, 1000);
++            }
+             if let Ok(value) = reg_get_bool(&key, "EnableAI") {
+                 cfg.enable_ai = value;
+             }
+@@ -415,6 +420,7 @@ impl Config {
+         )?;
+         reg_set_bool(&key, "AutoWrapCursor", chewing_tsf.auto_wrap_cursor)?;
+         reg_set_i32(&key, "FHoldDelayMs", chewing_tsf.f_hold_delay_ms)?;
++        reg_set_i32(&key, "InitialLetterHoldDelayMs", chewing_tsf.initial_letter_hold_delay_ms)?;
+         reg_set_bool(&key, "EnableAI", chewing_tsf.enable_ai)?;
+         reg_set_i32(&key, "DefFontSize", chewing_tsf.font_size)?;
+         key.set_string("DefFontFamily", &chewing_tsf.font_family)?;
+@@ -746,6 +752,7 @@ mod legacy_preferences_tests {
+         assert_eq!(cfg.font_size,24);
+         assert!(cfg.show_cand_with_space_key);
+         assert_eq!(cfg.f_hold_delay_ms,150);
++        assert_eq!(cfg.initial_letter_hold_delay_ms,250);
+         assert!(!cfg.enable_ai);
+     }
+ }
+-- 
+2.54.0 (Apple Git-157)
+

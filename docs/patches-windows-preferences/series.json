@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "c275f6f9b4feb2f9647b7d358d43d2d4ebee3235",
+  "tree": "e04b712c6e97a7579abac537ef4cb47e7dc84dcb",
   "preferences_commit": "cbc0cd3d6740c9d2b6e45fb7b6eedb915bffc044",
   "patches": [
     {
@@ -43,6 +43,22 @@
     {
       "file": "0010-chore-release-1.1.1.patch",
       "sha256": "0f2d1e864ef0ff0682afa12fcdc124c2671f3db017ef44c395b77312ba2203f7"
+    },
+    {
+      "file": "0011-feat-preferences-implement-offline-unified-lexicon-m.patch",
+      "sha256": "bc1fa4728fb03451b52bfbaf9799f5a05d85da08172ce037b802e80cd06dd295"
+    },
+    {
+      "file": "0012-fix-preferences-align-UnifiedLexicon-contracts-types.patch",
+      "sha256": "7828931d029f5fc87126a31ee1659e25415114ba25abfd7c43ba9ccccb0b2fbd"
+    },
+    {
+      "file": "0013-fix-preferences-show-existing-related-names-separate.patch",
+      "sha256": "f7e0d2d33ebde638aa473f2afe7e8003a34c264b40ae31e43d1135698edbfdd5"
+    },
+    {
+      "file": "0014-feat-preferences-integrate-reviewed-offline-manager-.patch",
+      "sha256": "614f0aa64d4d62affbd7c06e0445f161f28b24fa915cc39a8a491d4e817c9a21"
     }
   ]
 }

@@ -1,0 +1,215 @@
+From 3d4c60bbdc5f007e0d08b3bd1dd516366a8ff821 Mon Sep 17 00:00:00 2001
+From: AGY <antigravity@local>
+Date: Tue, 10 Nov 2026 00:13:19 +0800
+Subject: [PATCH 13/14] fix(preferences): show existing related names
+ separately and label add fields in edit modal
+
+---
+ src/UnifiedLexicon.tsx | 85 +++++++++++++++++++++++++++++++-----------
+ 1 file changed, 64 insertions(+), 21 deletions(-)
+
+diff --git a/src/UnifiedLexicon.tsx b/src/UnifiedLexicon.tsx
+index 68711b6..9b90f5e 100644
+--- a/src/UnifiedLexicon.tsx
++++ b/src/UnifiedLexicon.tsx
+@@ -13,7 +13,7 @@
+  * - 呼叫防護：完整 busy 與 repreview guards
+  */
+ 
+-import { useEffect, useMemo, useState } from "react";
++import { useEffect, useMemo, useRef, useState } from "react";
+ import {
+   Badge,
+   Button,
+@@ -152,12 +152,16 @@ export default function UnifiedLexiconManager() {
+ 
+   // 系統訊息與忙碌狀態
+   const [busy, setBusy] = useState(false);
++  const busyRef = useRef(false);
++  const [previewPage, setPreviewPage] = useState(0);
++  useEffect(() => setPreviewPage(0), [preview?.token]);
+   const [error, setError] = useState("");
+   const [message, setMessage] = useState("");
+ 
+   // 統一非同步包裝器
+   async function act(work: () => Promise<void>) {
+-    if (busy) return;
++    if (busyRef.current) return;
++    busyRef.current = true;
+     setBusy(true);
+     setError("");
+     try {
+@@ -165,6 +169,7 @@ export default function UnifiedLexiconManager() {
+     } catch (e) {
+       setError(String(e));
+     } finally {
++      busyRef.current = false;
+       setBusy(false);
+     }
+   }
+@@ -268,9 +273,10 @@ export default function UnifiedLexiconManager() {
+       if (r.kind === "equivalent") {
+         const sourceEntry = entryMap.get(r.source_id);
+         if (sourceEntry && sourceEntry.term_type === "zh_phrase") {
++          const previous = map.get(r.target_id);
+           map.set(r.target_id, {
+-            aliasText: sourceEntry.text,
+-            aliasReading: sourceEntry.reading,
++            aliasText: [previous?.aliasText, sourceEntry.text].filter(Boolean).join("、"),
++            aliasReading: [previous?.aliasReading, sourceEntry.reading].filter(Boolean).join("；"),
+           });
+         }
+       }
+@@ -300,9 +306,8 @@ export default function UnifiedLexiconManager() {
+     setFormText(entry.text || "");
+     setFormAnnotation(entry.annotation || "");
+ 
+-    const aliasInfo = derivedAliasMap.get(entry.entry_id);
+-    setFormAlias(aliasInfo?.aliasText || "");
+-    setFormAliasReading(aliasInfo?.aliasReading || "");
++    setFormAlias("");
++    setFormAliasReading("");
+     setIsEditModalOpen(true);
+   }
+ 
+@@ -526,7 +531,7 @@ export default function UnifiedLexiconManager() {
+   async function handleApprovePreview() {
+     if (!preview || busy) return;
+     const actionText = preview.replace
+-      ? "全量覆蓋回復現有統一詞庫"
++      ? "套用預覽中的完整詞庫內容"
+       : `寫入並套用 ${preview.value.document.entries.length} 筆詞條`;
+ 
+     const ok = await ask(
+@@ -617,7 +622,7 @@ export default function UnifiedLexiconManager() {
+         json: true,
+       });
+       setMessage(
+-        `已匯出舊版相容 JSON 至 ${path}。若存在無法表示之別名或關聯欄位，後端已依規則處理。`
++        `已匯出舊版相容 JSON 至 ${path}。本次內容可完整表示為舊版 JSON；含中文關聯的詞庫請改用 SQLite。`
+       );
+     });
+   }
+@@ -688,13 +693,13 @@ export default function UnifiedLexiconManager() {
+               離線統一詞彙管理 (Unified Lexicon Manager)
+             </Text>
+             <Text size={200} style={{ color: "#666" }}>
+-              跨平台繁體中文統一詞庫・離線優先・支援中文別名與驗證讀音・無雲端依賴
++              可與 Mac 交換 SQLite 詞庫。匯入只建立管理副本；原有工程詞彙與原生詞庫仍由原設定頁管理。
+             </Text>
+           </div>
+           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+             {status?.recovered && (
+               <Badge appearance="tint" color="warning">
+-                已自動自毀損回復
++                已使用完整備份讀取
+               </Badge>
+             )}
+             <Badge appearance="filled" color={status?.enabled ? "success" : "danger"}>
+@@ -792,11 +797,9 @@ export default function UnifiedLexiconManager() {
+         >
+           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+             <Text weight="bold" size={400} style={{ color: preview.replace ? "#d13438" : "#0078d4" }}>
+-              {preview.replace ? "【全量覆蓋回復預覽 (Full Restore)】" : "【待核准變更預覽 (Pending Preview)】"}
++              {preview.replace ? "【完整替換預覽】" : "【待核准變更預覽 (Pending Preview)】"}
+             </Text>
+-            <Badge appearance="filled" color={preview.replace ? "danger" : "informative"}>
+-              Token: {preview.token.slice(0, 8)}...
+-            </Badge>
++
+           </div>
+ 
+           <Text>
+@@ -805,6 +808,21 @@ export default function UnifiedLexiconManager() {
+               : `預覽異動後總筆數：${preview.value.document.entries.length} 筆（包含關聯閉包共有 ${preview.expandedCount} 筆項目受影響）。`}
+           </Text>
+ 
++          <Text>請核對核准後的內容；取消不會寫入。刪除管理副本不會刪除原始詞庫或原生學習資料。</Text>
++          <div style={{ overflowX: "auto", maxHeight: 340, overflowY: "auto" }}>
++            <table style={{ width: "100%", borderCollapse: "collapse" }}>
++              <thead><tr><th>文字</th><th>讀音／輸入碼</th><th>類型</th><th>註解</th></tr></thead>
++              <tbody>{preview.value.document.entries.slice(previewPage * PAGE_SIZE, (previewPage + 1) * PAGE_SIZE).map(entry =>
++                <tr key={entry.entry_id}><td>{entry.text}</td><td>{entry.reading}</td><td>{TERM_TYPE_LABELS[entry.term_type]}</td><td>{entry.annotation ?? ""}</td></tr>
++              )}</tbody>
++            </table>
++          </div>
++          <Text>完整版本包含 {preview.value.relations.length} 組中文關聯。</Text>
++          <div style={{ display: "flex", gap: 8 }}>
++            <Button disabled={busy || previewPage === 0} onClick={() => setPreviewPage(p => p - 1)}>上一頁</Button>
++            <Text>第 {previewPage + 1}／{Math.max(1, Math.ceil(preview.value.document.entries.length / PAGE_SIZE))} 頁</Text>
++            <Button disabled={busy || (previewPage + 1) * PAGE_SIZE >= preview.value.document.entries.length} onClick={() => setPreviewPage(p => p + 1)}>下一頁</Button>
++          </div>
+           {/* 衝突項目清單與裁決 */}
+           {preview.conflicts.length > 0 && (
+             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+@@ -857,7 +875,7 @@ export default function UnifiedLexiconManager() {
+               disabled={busy}
+               onClick={() => void handleApprovePreview()}
+             >
+-              {preview.replace ? "確認覆蓋回復詞庫" : "核准並正式套用變更"}
++              {preview.replace ? "核准此完整版本" : "核准並正式套用變更"}
+             </Button>
+             <Button disabled={busy} onClick={() => void handleCancelPreview()}>
+               取消預覽 (不作變更)
+@@ -1085,20 +1103,45 @@ export default function UnifiedLexiconManager() {
+                 />
+               </Field>
+ 
++              {/* 既有關聯中文名稱展示 (只讀) */}
++              {editingOldId && (
++                <div style={{ backgroundColor: "#f8f9fa", border: "1px solid #e0e0e0", borderRadius: 4, padding: "8px 12px" }}>
++                  <Text size={200} weight="semibold" style={{ color: "#333", display: "block" }}>
++                    既有關聯中文名稱：
++                  </Text>
++                  {derivedAliasMap.get(editingOldId)?.length ? (
++                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
++                      {derivedAliasMap.get(editingOldId)!.map((item, idx) => (
++                        <div key={idx} style={{ fontSize: 12, color: "#555" }}>
++                          • <Text weight="semibold">{item.aliasText}</Text>（讀音：<span style={{ fontFamily: "monospace" }}>{item.aliasReading}</span>）
++                        </div>
++                      ))}
++                    </div>
++                  ) : (
++                    <Text size={200} style={{ color: "#888" }}>
++                      尚無關聯中文名稱
++                    </Text>
++                  )}
++                  <Text size={100} style={{ color: "#777", display: "block", marginTop: 4 }}>
++                    ※ 系統於編輯詞條時將完整保留既有關聯；若需新增中文關聯，請於下方填寫。
++                  </Text>
++                </div>
++              )}
++
+               <Field
+-                label="等價中文別名 (Equivalent Chinese Alias，可選)"
+-                hint="例如：水（當英數或技術詞條需綁定中文別名時填寫；主要詞條設為 zh_phrase 時請留空）"
++                label="新增中文名稱 (Add Chinese name，可選)"
++                hint="例如：水（為此詞條新增一筆等價中文名稱關聯；主要詞條設為 zh_phrase 時請留空）"
+               >
+                 <Input
+                   value={formAlias}
+-                  placeholder="可選中文別名"
++                  placeholder="輸入欲新增之等價中文名稱"
+                   disabled={busy || formTermType === "zh_phrase"}
+                   onChange={(_e, d) => setFormAlias(d.value)}
+                 />
+               </Field>
+ 
+               <Field
+-                label="別名驗證讀音 (Alias Verified Reading，若有別名則必填)"
++                label="新增確認讀音 (confirmed reading，若有填寫中文名稱則必填)"
+                 hint="經核驗讀音；嚴格禁止系統自動猜測讀音，請確實填寫正確中文連字注音（如 ㄕㄨㄟˇ）。"
+               >
+                 <Input
+@@ -1110,7 +1153,7 @@ export default function UnifiedLexiconManager() {
+               </Field>
+ 
+               <Text size={200} style={{ color: "#666", marginTop: 4 }}>
+-                【提醒】新增或編輯將建立「待核准預覽」，需在主畫面點選「核准套用變更」後才會正式寫入詞庫。若填寫別名，系統將建立等價中文關聯詞條。
++                【提醒】新增或編輯將建立「待核准預覽」，需在主畫面點選「核准套用變更」後才會正式寫入詞庫。若填寫新增中文名稱，系統將自動追加一筆等價中文關聯詞條。
+               </Text>
+             </DialogContent>
+             <DialogActions style={{ marginTop: 16 }}>
+-- 
+2.54.0 (Apple Git-157)
+

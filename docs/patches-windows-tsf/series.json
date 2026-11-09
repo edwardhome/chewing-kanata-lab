@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "fec62af83f51dcdd7bbdb77e733f5708ade9fe20",
+  "tree": "216372088ae209e27c600e47db99f266167b3679",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -142,6 +142,14 @@
     {
       "file": "0035-fix-word-state-and-notification-lifecycle.patch",
       "sha256": "fe1cb6873496df2cd32e218edfb2bfbf22996585c7d3ea684574c1903383f039"
+    },
+    {
+      "file": "0036-feat-config-add-initial_letter_hold_delay_ms-setting.patch",
+      "sha256": "ff06e19ca51a7fc02a22dae2fdda0c47b2a57a8a8ebe6e306caed1675fa648c3"
+    },
+    {
+      "file": "0037-feat-input-integrate-safe-hold-timers-and-unified-le.patch",
+      "sha256": "b4d7c31dfa9df1fe61f5f79ac35c86aa8aad6cc4ec6964b3352f7a4ed976dcc2"
     }
   ],
   "native_commit": "56a9321dd9a1fb080a729c7cb60275625915a29d"
