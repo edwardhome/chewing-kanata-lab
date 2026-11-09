@@ -41,7 +41,7 @@ fn altered(statement: &str) -> Vec<u8> {
     assert!(sql::decode(&altered("UPDATE entries SET payload=substr(payload,1,length(payload)-1)||',\"source\":\"duplicate\"}' WHERE position=0")).is_err());
 }
 #[test] fn invalid_relations_are_rejected() {
-    for change in ["UPDATE relations SET kind='replace'", "UPDATE relations SET source_id='missing'", "UPDATE relations SET target_id=source_id", "UPDATE relations SET source_id=target_id"] {
+    for change in ["UPDATE relations SET kind='replace'", "UPDATE relations SET source_id='missing'", "UPDATE relations SET target_id=source_id WHERE target_id=(SELECT target_id FROM relations LIMIT 1)", "UPDATE relations SET source_id=target_id"] {
         assert!(sql::decode(&altered(change)).is_err());
     }
 }

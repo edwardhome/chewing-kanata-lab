@@ -24,3 +24,9 @@
 已依使用者明確要求在 WorkstationX 完成 Release 建置、套件 preflight 與使用者層級安裝。套件 `C:\Users\Defu\Documents\AI-Chewing\1.1.2-preview.wordfix.1`，來源 outer 437ad79、native 56a9321、preferences cbc0cd3（沿用已驗證 1.1.1 設定程式及公開字典）。套件版本為測試識別；原生 PE 與設定程式內部版本仍為 1.1.1，未宣稱正式發布 1.1.2。
 
 註冊 DLL：`C:\Users\Defu\AppData\Local\Programs\ChewingDev\versions\1.1.2-preview.wordfix.1-56a9321dd9a1\chewing_tip.dll`。已安裝與建置 DLL SHA256 均為 `55982cac81d75c9dfc75bcfd449ce3e7d7b31e9f9bc8ab152f89992f29871e04`；Installed apps DisplayVersion 為 1.1.2-preview.wordfix.1。保留舊安裝與詞庫，未終止 Word 或其他使用者應用；需要使用者重開 Word 載入新 DLL。Windows 共用外層維持乾淨 main。實機結果等待使用者回報。
+
+## 使用者 Word 實機驗收
+
+時間：2026-11-09T23:34:51+08:00
+
+使用者回報：「測試後 Word 實作沒問題」。此回報確認本次已安裝 Word 修復在使用者測試情境下正常；不擴大解讀為其他 Office 應用、全部 F／Shift 邊界或 SQLite 新功能已驗收。Word 回報問題狀態：使用者實機驗收通過。
