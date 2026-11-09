@@ -16,3 +16,11 @@
 交接：修復成果保存在 fix/word-openclose-and-shift-ux；外層回 main 前保留兩份舊未追蹤報告於 Documents/AI-Chewing/workspace-handoff-* 並核對 SHA256。原生 nested repository 回到與外層 main 契約一致的 release/v1.1.1，不切換至其歷史上游 main；修復分支完整保留。
 
 後續獨立開發：使用者另授權 Shift 首字母長按轉小寫（按住字母鍵，不是 Shift）、本機統一 SQLite 與離線預覽核准匯入／匯出。尚無共同 DDL 定案，只有 term/representation/reading/binding/exclusion 邏輯提案；等待 Mac 負責者契約草案，Windows 不降版。本次 Word 修復不混入此功能；不改 Mac。
+
+## 使用者授權重新安裝
+
+時間：2026-11-09T23:28:08+08:00
+
+已依使用者明確要求在 WorkstationX 完成 Release 建置、套件 preflight 與使用者層級安裝。套件 `C:\Users\Defu\Documents\AI-Chewing\1.1.2-preview.wordfix.1`，來源 outer 437ad79、native 56a9321、preferences cbc0cd3（沿用已驗證 1.1.1 設定程式及公開字典）。套件版本為測試識別；原生 PE 與設定程式內部版本仍為 1.1.1，未宣稱正式發布 1.1.2。
+
+註冊 DLL：`C:\Users\Defu\AppData\Local\Programs\ChewingDev\versions\1.1.2-preview.wordfix.1-56a9321dd9a1\chewing_tip.dll`。已安裝與建置 DLL SHA256 均為 `55982cac81d75c9dfc75bcfd449ce3e7d7b31e9f9bc8ab152f89992f29871e04`；Installed apps DisplayVersion 為 1.1.2-preview.wordfix.1。保留舊安裝與詞庫，未終止 Word 或其他使用者應用；需要使用者重開 Word 載入新 DLL。Windows 共用外層維持乾淨 main。實機結果等待使用者回報。
