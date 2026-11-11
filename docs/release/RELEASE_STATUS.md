@@ -1,4 +1,16 @@
-# 目前正式版本：v1.1.2
+# 目前正式版本：v1.1.4
+
+更新時間：2026-11-11T16:05:30+08:00
+
+1.1.4 已由使用者實機驗證成功並授權發布；GitHub Latest 已指向本版，draft=false、prerelease=false。
+
+- Shift+F 英文輸入與首字母長按處理、設定程式預設內嵌前端修正。
+- 保留使用者驗證的執行檔；319 項 Windows 測試、23 項套件防護案例通過，39/16 份來源補丁完整重播一致。
+- [正式下載](https://github.com/edwardhome/chewing-kanata-lab/releases/tag/v1.1.4)；[來源與驗證範圍](../verification/runs/RUN-20261111-114-RELEASE.md)。
+
+---
+
+# 前一正式版本：v1.1.2
 
 更新時間：2026-11-10T00:52:24+08:00
 
