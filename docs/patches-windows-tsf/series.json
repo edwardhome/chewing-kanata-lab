@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "216372088ae209e27c600e47db99f266167b3679",
+  "tree": "3f5b5e99d7800338f8caee0f2b5f928f0133a8fb",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -150,6 +150,14 @@
     {
       "file": "0037-feat-input-integrate-safe-hold-timers-and-unified-le.patch",
       "sha256": "b4d7c31dfa9df1fe61f5f79ac35c86aa8aad6cc4ec6964b3352f7a4ed976dcc2"
+    },
+    {
+      "file": "0038-fix-input-support-Shift-F-hold-to-lowercase-and-bump.patch",
+      "sha256": "2f5a83240e355d456a9f78bf88f2333a6b49028e14cf4d85aafa8c08eae7d783"
+    },
+    {
+      "file": "0039-chore-release-bump-version-to-1.1.4.patch",
+      "sha256": "48a46e6808cc2162649a1510de749b3ebb361bd8001d22e12181ba0d15ede64a"
     }
   ],
   "native_commit": "56a9321dd9a1fb080a729c7cb60275625915a29d"

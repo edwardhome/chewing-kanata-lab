@@ -1,0 +1,279 @@
+From d43777422c516a983fa334f4ff3d2085e706ca4a Mon Sep 17 00:00:00 2001
+From: AGY <defu@local.dev>
+Date: Wed, 11 Nov 2026 11:15:00 +0800
+Subject: [PATCH 38/39] fix(input): support Shift+F hold-to-lowercase and bump
+ version to 1.1.3
+
+---
+ Cargo.lock                      |   8 +-
+ Cargo.toml                      |   2 +-
+ tip/rc/version.rc               |  16 ++--
+ tip/src/text_service/chewing.rs | 137 +++++++++++++++++++-------------
+ 4 files changed, 95 insertions(+), 68 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 7295da4..cc57de9 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -328,7 +328,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip"
+-version = "1.1.2"
++version = "1.1.3"
+ dependencies = [
+  "anyhow",
+  "cc",
+@@ -351,7 +351,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.1.2"
++version = "1.1.3"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+@@ -372,7 +372,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_host"
+-version = "1.1.2"
++version = "1.1.3"
+ dependencies = [
+  "anyhow",
+  "chewing",
+@@ -2792,7 +2792,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
+ 
+ [[package]]
+ name = "tsfreg"
+-version = "1.1.2"
++version = "1.1.3"
+ dependencies = [
+  "chewing_tip_core",
+  "scoped-error",
+diff --git a/Cargo.toml b/Cargo.toml
+index fa33069..b5ac47a 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -9,7 +9,7 @@ members = [
+ ]
+ 
+ [workspace.package]
+-version = "1.1.2"
++version = "1.1.3"
+ 
+ [workspace.dependencies]
+ anyhow = "1"
+diff --git a/tip/rc/version.rc b/tip/rc/version.rc
+index 16d8f5b..a1af961 100644
+--- a/tip/rc/version.rc
++++ b/tip/rc/version.rc
+@@ -1,8 +1,8 @@
+-#define VER_FILEVERSION             1,1,2,0
+-#define VER_FILEVERSION_STR         "1.1.2.0\0"
+-#define VER_PRODUCTVERSION          1,1,2,0
+-#define VER_PRODUCTVERSION_STR      "1.1.2.0\0"
+-#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.1.2.0)\0"
+-#define ABOUT_VERSION_STR           "版本：1.1.2.0\0"
+-#define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 11 月 07 日\0"
+-#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.1.2.0)\0"
++#define VER_FILEVERSION             1,1,3,0
++#define VER_FILEVERSION_STR         "1.1.3.0\0"
++#define VER_PRODUCTVERSION          1,1,3,0
++#define VER_PRODUCTVERSION_STR      "1.1.3.0\0"
++#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.1.3.0)\0"
++#define ABOUT_VERSION_STR           "版本：1.1.3.0\0"
++#define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 11 月 11 日\0"
++#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.1.3.0)\0"
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 8bfa4a4..d644de4 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -653,6 +653,9 @@ impl ChewingTextService {
+         // Shift itself is a modifier, never an instruction to commit an English word.
+         if evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT { return Ok(false); }
+ 
++        let shift_held = self.shift_key_state.reconcile(evt.is_state_on(KeyState::Shift),
++            evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT);
++
+         // Shortcut modifiers must bypass the custom F/English policy.
+         if other_modifiers {
+             self.double_shift.reset();
+@@ -664,12 +667,15 @@ impl ChewingTextService {
+             if self.shift_session.is_some() { return Ok(true); }
+             // Leave upstream Ctrl keybindings to the normal handling below.
+         }
+-        if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
+-        if !other_modifiers && ev.vk == 0x46 && !self.chewing_editor.is_selecting() {
+-            return Ok(true);
+-        }
+-        if matches!(self.f_key_state, kanata_layer::FKeyState::Down(_) | kanata_layer::FKeyState::Held) {
+-            return Ok(true);
++        let is_shift_f = shift_held && self.f_buffer.as_ref().is_some_and(|b| b.symbols().is_empty()) || (shift_held && self.f_buffer.is_none());
++        if !is_shift_f {
++            if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
++            if !other_modifiers && ev.vk == 0x46 && !self.chewing_editor.is_selecting() {
++                return Ok(true);
++            }
++            if matches!(self.f_key_state, kanata_layer::FKeyState::Down(_) | kanata_layer::FKeyState::Held) {
++                return Ok(true);
++            }
+         }
+ 
+         // 3. If ShiftLetterSession is active, intercept word keys, backspace, enter, esc, space
+@@ -811,59 +817,65 @@ impl ChewingTextService {
+ 
+         // Resolve the F gesture before Shift-letter handling, including direct
+         // English and an existing ASCII composition. Key-up owns the commit.
+-        if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
+-        if ev.vk == 0x46 && !evt.is_state_on(KeyState::Control) && !evt.is_state_on(KeyState::Alt)
+-            && !evt.is_state_on(KeyState::Super) && !self.chewing_editor.is_selecting() {
+-            if self.f_key_state == kanata_layer::FKeyState::Up && !ev.repeating {
+-                self.f_event = Some(ev);
+-                self.f_buffer = Some(FCompositionBuffer::new(self.shift_session.take(), &self.lexicon));
+-                self.f_key_state = kanata_layer::FKeyState::Down(Instant::now());
++        // NOTE: If shift is held and no F-layer buffer is currently accumulating,
++        // user intends to type Shift+F (or start/continue ShiftLetterSession).
++        // Let it fall through to ShiftLetterSession rather than hijacking into F-layer.
++        let is_shift_f = shift_held && self.f_buffer.as_ref().is_some_and(|b| b.symbols().is_empty()) || (shift_held && self.f_buffer.is_none());
++        if !is_shift_f {
++            if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
++            if ev.vk == 0x46 && !evt.is_state_on(KeyState::Control) && !evt.is_state_on(KeyState::Alt)
++                && !evt.is_state_on(KeyState::Super) && !self.chewing_editor.is_selecting() {
++                if self.f_key_state == kanata_layer::FKeyState::Up && !ev.repeating {
++                    self.f_event = Some(ev);
++                    self.f_buffer = Some(FCompositionBuffer::new(self.shift_session.take(), &self.lexicon));
++                    self.f_key_state = kanata_layer::FKeyState::Down(Instant::now());
++                }
++                return Ok(true);
+             }
+-            return Ok(true);
+-        }
+-        if matches!(self.f_key_state, kanata_layer::FKeyState::Down(_) | kanata_layer::FKeyState::Held) {
+-            let delay = Duration::from_millis(self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64);
+-            let pending = matches!(self.f_key_state, kanata_layer::FKeyState::Down(t) if t.elapsed() <= delay);
+-            let phonetic = kanata_layer::prefers_phonetic_f_chord(ev.vk, pending,
+-                self.lang_mode.get() == TsfLangMode::Chinese && self.f_buffer.as_ref().is_some_and(|b| b.base.is_none()),
+-                matches!(self.kbtype, KeyboardLayoutCompat::Default) && matches!(self.keymap, KeymapOp::None), shift_held);
+-            let has_symbols = self.f_buffer.as_ref().is_some_and(|b| !b.symbols().is_empty());
+-            if !phonetic && can_handle_f_layer(&self.chewing_editor, ev.vk, has_symbols) {
+-                let was_held = self.f_key_state == kanata_layer::FKeyState::Held;
+-                let is_backspace = ev.vk == 0x08;
+-                let mapped_symbol = kanata_layer::map_kanata_number_layer(ev.vk);
+-
+-                self.f_key_state = kanata_layer::FKeyState::Held;
+-
+-                let mut chinese_commit = String::new();
+-                if !was_held && !self.chewing_editor.is_empty() {
+-                    let _ = self.chewing_editor.commit();
+-                    chinese_commit = self.chewing_editor.display_commit().to_owned();
+-                    if !chinese_commit.is_empty() {
+-                        self.chewing_editor.ack();
++            if matches!(self.f_key_state, kanata_layer::FKeyState::Down(_) | kanata_layer::FKeyState::Held) {
++                let delay = Duration::from_millis(self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64);
++                let pending = matches!(self.f_key_state, kanata_layer::FKeyState::Down(t) if t.elapsed() <= delay);
++                let phonetic = kanata_layer::prefers_phonetic_f_chord(ev.vk, pending,
++                    self.lang_mode.get() == TsfLangMode::Chinese && self.f_buffer.as_ref().is_some_and(|b| b.base.is_none()),
++                    matches!(self.kbtype, KeyboardLayoutCompat::Default) && matches!(self.keymap, KeymapOp::None), shift_held);
++                let has_symbols = self.f_buffer.as_ref().is_some_and(|b| !b.symbols().is_empty());
++                if !phonetic && can_handle_f_layer(&self.chewing_editor, ev.vk, has_symbols) {
++                    let was_held = self.f_key_state == kanata_layer::FKeyState::Held;
++                    let is_backspace = ev.vk == 0x08;
++                    let mapped_symbol = kanata_layer::map_kanata_number_layer(ev.vk);
++
++                    self.f_key_state = kanata_layer::FKeyState::Held;
++
++                    let mut chinese_commit = String::new();
++                    if !was_held && !self.chewing_editor.is_empty() {
++                        let _ = self.chewing_editor.commit();
++                        chinese_commit = self.chewing_editor.display_commit().to_owned();
++                        if !chinese_commit.is_empty() {
++                            self.chewing_editor.ack();
++                        }
+                     }
+-                }
+ 
+-                if let Some(buffer) = &mut self.f_buffer {
+-                    if is_backspace { buffer.backspace(); }
+-                    else if let Some(symbol) = mapped_symbol { buffer.append(symbol); }
+-                }
++                    if let Some(buffer) = &mut self.f_buffer {
++                        if is_backspace { buffer.backspace(); }
++                        else if let Some(symbol) = mapped_symbol { buffer.append(symbol); }
++                    }
+ 
+-                if !chinese_commit.is_empty() {
+-                    let preview = self.f_buffer.as_ref().map(|b| b.preview(&self.lexicon)).unwrap_or_default();
+-                    let text = preview.display();
+-                    let cursor = text.chars().take(preview.display_cursor()).map(char::len_utf16).sum();
+-                    self.set_composition_string(context, &chinese_commit, text, vec![(0, text.encode_utf16().count())], cursor)?;
+-                } else {
+-                    self.render_ascii(context)?;
++                    if !chinese_commit.is_empty() {
++                        let preview = self.f_buffer.as_ref().map(|b| b.preview(&self.lexicon)).unwrap_or_default();
++                        let text = preview.display();
++                        let cursor = text.chars().take(preview.display_cursor()).map(char::len_utf16).sum();
++                        self.set_composition_string(context, &chinese_commit, text, vec![(0, text.encode_utf16().count())], cursor)?;
++                    } else {
++                        self.render_ascii(context)?;
++                    }
++                    return Ok(true);
+                 }
+-                return Ok(true);
++                // Refusing a layer handoff does not forward the current key to the
++                // host. Resolve the deferred F, then continue through normal input.
++                if pending { self.replay_f_tap(context)?; }
++                else { self.finish_f_buffer(context)?; }
++                self.f_key_state = kanata_layer::FKeyState::Cancelled;
+             }
+-            // Refusing a layer handoff does not forward the current key to the
+-            // host. Resolve the deferred F, then continue through normal input.
+-            if pending { self.replay_f_tap(context)?; }
+-            else { self.finish_f_buffer(context)?; }
+-            self.f_key_state = kanata_layer::FKeyState::Cancelled;
+         }
+ 
+         if ev.repeating && self.initial_hold.current_vk() == Some(ev.vk) {
+@@ -1236,7 +1248,7 @@ impl ChewingTextService {
+             if let Some(session)=self.shift_session.as_mut() {session.cancel_initial_timing();}
+             self.cancel_initial_hold();
+         }
+-        if ev.vk == 0x46 {
++        if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up {
+             let previous = self.f_key_state;
+             let delay = Duration::from_millis(self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64);
+             if matches!(previous, kanata_layer::FKeyState::Down(t) if t.elapsed() <= delay) {
+@@ -1568,7 +1580,7 @@ impl ChewingTextService {
+ 
+     fn start_initial_hold(&mut self, vk: u16) {
+         self.cancel_initial_hold();
+-        if !(0x41..=0x5A).contains(&vk) || vk == 0x46 { return; }
++        if !(0x41..=0x5A).contains(&vk) { return; }
+         let Some(target) = self.pending_state.clone().filter(|s| s.is_active() && !s.is_failed()) else { return; };
+         let delay = self.cfg.chewing_tsf.initial_letter_hold_delay_ms.clamp(100, 1000) as u32;
+         self.initial_hold.set_delay(Duration::from_millis(delay as u64));
+@@ -2665,6 +2677,21 @@ mod f_and_shift_handoff_tests {
+         assert!(lowered_initial_session(&session,'A','a',&lexicon).is_none());
+     }
+     #[test]
++    fn initial_hold_works_for_f_key() {
++        let lexicon = TechnicalLexicon::default();
++        let session = ShiftLetterSession::start_with_letter('F', &lexicon);
++        assert_eq!(lowered_initial_session(&session, 'F', 'f', &lexicon).unwrap().composition.raw, "f");
++        let start = Instant::now();
++        let mut hold = InitialLetterHoldGesture::default();
++        let generation = hold.start(0x46, 'F', start);
++        hold.handle_shift_release();
++        assert_eq!(hold.handle_key_press(0x46, true, start + Duration::from_millis(100)), HoldEffect::ConsumeRepeat);
++        let effect = hold.tick(generation, start + Duration::from_millis(250));
++        assert!(matches!(effect, HoldEffect::TransformToLowercase { uppercase: 'F', lowercase: 'f' }));
++        hold.handle_key_up(0x46, start + Duration::from_millis(250));
++        assert_eq!(hold.tick(generation, start + Duration::from_millis(500)), HoldEffect::None);
++    }
++    #[test]
+     fn initial_hold_elapsed_keyup_fallback_is_single_conversion() {
+         let start=Instant::now();let mut hold=InitialLetterHoldGesture::default();
+         let generation=hold.start(0x53,'S',start);hold.handle_shift_release();
+-- 
+2.54.0 (Apple Git-157)
+

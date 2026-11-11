@@ -1,0 +1,87 @@
+From e860db17bf0a2d4980bd110d06c179984b48b27c Mon Sep 17 00:00:00 2001
+From: AGY <defu@local.dev>
+Date: Wed, 11 Nov 2026 14:18:22 +0800
+Subject: [PATCH 39/39] chore(release): bump version to 1.1.4
+
+---
+ Cargo.lock        |  8 ++++----
+ Cargo.toml        |  2 +-
+ tip/rc/version.rc | 14 +++++++-------
+ 3 files changed, 12 insertions(+), 12 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index cc57de9..31f2416 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -328,7 +328,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip"
+-version = "1.1.3"
++version = "1.1.4"
+ dependencies = [
+  "anyhow",
+  "cc",
+@@ -351,7 +351,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.1.3"
++version = "1.1.4"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+@@ -372,7 +372,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_host"
+-version = "1.1.3"
++version = "1.1.4"
+ dependencies = [
+  "anyhow",
+  "chewing",
+@@ -2792,7 +2792,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
+ 
+ [[package]]
+ name = "tsfreg"
+-version = "1.1.3"
++version = "1.1.4"
+ dependencies = [
+  "chewing_tip_core",
+  "scoped-error",
+diff --git a/Cargo.toml b/Cargo.toml
+index b5ac47a..dab795a 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -9,7 +9,7 @@ members = [
+ ]
+ 
+ [workspace.package]
+-version = "1.1.3"
++version = "1.1.4"
+ 
+ [workspace.dependencies]
+ anyhow = "1"
+diff --git a/tip/rc/version.rc b/tip/rc/version.rc
+index a1af961..3c43488 100644
+--- a/tip/rc/version.rc
++++ b/tip/rc/version.rc
+@@ -1,8 +1,8 @@
+-#define VER_FILEVERSION             1,1,3,0
+-#define VER_FILEVERSION_STR         "1.1.3.0\0"
+-#define VER_PRODUCTVERSION          1,1,3,0
+-#define VER_PRODUCTVERSION_STR      "1.1.3.0\0"
+-#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.1.3.0)\0"
+-#define ABOUT_VERSION_STR           "版本：1.1.3.0\0"
++#define VER_FILEVERSION             1,1,4,0
++#define VER_FILEVERSION_STR         "1.1.4.0\0"
++#define VER_PRODUCTVERSION          1,1,4,0
++#define VER_PRODUCTVERSION_STR      "1.1.4.0\0"
++#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.1.4.0)\0"
++#define ABOUT_VERSION_STR           "版本：1.1.4.0\0"
+ #define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 11 月 11 日\0"
+-#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.1.3.0)\0"
++#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.1.4.0)\0"
+-- 
+2.54.0 (Apple Git-157)
+

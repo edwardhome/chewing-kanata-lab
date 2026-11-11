@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "e04b712c6e97a7579abac537ef4cb47e7dc84dcb",
-  "preferences_commit": "cbc0cd3d6740c9d2b6e45fb7b6eedb915bffc044",
+  "tree": "fa541e5f35601ce38fd45abc8b4d5729d89a9dee",
+  "preferences_commit": "ee3e08b2cf04d43eb70c6ee438cf3020e4fb5f00",
   "patches": [
     {
       "file": "0001-fix-preferences-restore-native-settings.patch",
@@ -59,6 +59,14 @@
     {
       "file": "0014-feat-preferences-integrate-reviewed-offline-manager-.patch",
       "sha256": "614f0aa64d4d62affbd7c06e0445f161f28b24fa915cc39a8a491d4e817c9a21"
+    },
+    {
+      "file": "0015-chore-deps-update-chewing_tip_core-to-1.1.3.patch",
+      "sha256": "dc2a363014c57bf75aa71ca161720db16ddc026a9c36e7ca6a3c9bafb06ae68f"
+    },
+    {
+      "file": "0016-fix-embed-frontend-dist-and-bump-version-to-1.1.4.patch",
+      "sha256": "12e5bf13b311a67226f98feb147bc5ca2c7eacd0758aa1a2648f3427970b90db"
     }
   ]
 }
