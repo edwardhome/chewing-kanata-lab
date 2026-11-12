@@ -1,0 +1,78 @@
+From 8e0332cce18be8476dfcba10f13a390c1d45ea36 Mon Sep 17 00:00:00 2001
+From: AGY <defu@local.dev>
+Date: Thu, 12 Nov 2026 13:41:46 +0800
+Subject: [PATCH 40/41] refactor(menu): cleanup obsolete links, move restart
+ first, and redirect help
+
+---
+ tip/rc/ChewingTextService.rc    | 24 +++---------------------
+ tip/src/text_service/chewing.rs |  8 +-------
+ 2 files changed, 4 insertions(+), 28 deletions(-)
+
+diff --git a/tip/rc/ChewingTextService.rc b/tip/rc/ChewingTextService.rc
+index b17850b..a0f8950 100644
+--- a/tip/rc/ChewingTextService.rc
++++ b/tip/rc/ChewingTextService.rc
+@@ -118,32 +118,14 @@ IDR_MENU MENU
+ BEGIN
+     POPUP "POPUP"
+     BEGIN
++        MENUITEM "Restart：恢復中文輸入(&R)",             ID_RECOVER_INPUT
++        MENUITEM SEPARATOR
+         MENUITEM "有新版本可以下載(&U)",                ID_CHECK_NEW_VER
+         MENUITEM "關於AI新酷音(&A)",                    ID_ABOUT
+-        MENUITEM "參觀AI新酷音官方網站(&W)",               ID_WEBSITE
+-        MENUITEM "AI新酷音線上討論區(&G)",                ID_GROUP
+-        MENUITEM SEPARATOR
+-        MENUITEM "軟體本身的建議及錯誤回報(&B)",            ID_BUGREPORT
+-        MENUITEM "注音及選字選詞錯誤回報 (&P)",            ID_DICT_BUGREPORT
+-        MENUITEM SEPARATOR
+         MENUITEM "AI新酷音使用說明 (&H)",                ID_CHEWING_HELP
++        MENUITEM SEPARATOR
+         MENUITEM "編輯使用者詞庫 (&E)",                 ID_HASHED
+         MENUITEM "AI新酷音設定(&C)",                    ID_CONFIG
+-        MENUITEM "Restart：恢復中文輸入(&R)",             ID_RECOVER_INPUT
+-        POPUP "首字母長按轉小寫時間"
+-        BEGIN
+-            MENUITEM "100 ms", 41100
+-            MENUITEM "200 ms", 41200
+-            MENUITEM "250 ms（預設）", 41250
+-            MENUITEM "300 ms", 41300
+-            MENUITEM "400 ms", 41400
+-            MENUITEM "500 ms", 41500
+-            MENUITEM "600 ms", 41600
+-            MENUITEM "700 ms", 41700
+-            MENUITEM "800 ms", 41800
+-            MENUITEM "900 ms", 41900
+-            MENUITEM "1000 ms", 42000
+-        END
+         MENUITEM SEPARATOR
+         POPUP "網路辭典 (&D)"
+         BEGIN
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index d644de4..53fdcc7 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -1555,18 +1555,12 @@ impl ChewingTextService {
+                 }
+                 ID_CHECK_NEW_VER => open_url(&self.cfg.chewing_tsf.update_info_url),
+                 ID_ABOUT => open_url("https://github.com/edwardhome/chewing-kanata-lab"),
+-                ID_WEBSITE => open_url("https://chewing.im/"),
+-                ID_GROUP => open_url("https://groups.google.com/group/chewing-devel"),
+-                ID_BUGREPORT => open_url("https://codeberg.org/chewing/windows-chewing-tsf/issues"),
+-                ID_DICT_BUGREPORT => {
+-                    open_url("https://codeberg.org/chewing/libchewing-data/issues")
+-                }
+                 ID_MOEDICT => open_url("https://www.moedict.tw/"),
+                 ID_DICT => open_url("https://dict.revised.moe.edu.tw/"),
+                 ID_SIMPDICT => open_url("https://dict.concised.moe.edu.tw/"),
+                 ID_LITTLEDICT => open_url("https://dict.mini.moe.edu.tw/"),
+                 ID_PROVERBDICT => open_url("https://dict.idioms.moe.edu.tw/"),
+-                ID_CHEWING_HELP => open_url("https://chewing.im/features.html"),
++                ID_CHEWING_HELP => open_url("https://github.com/edwardhome/chewing-kanata-lab"),
+                 _ => {}
+             }
+         }
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "fa541e5f35601ce38fd45abc8b4d5729d89a9dee",
-  "preferences_commit": "ee3e08b2cf04d43eb70c6ee438cf3020e4fb5f00",
+  "tree": "f4189e276e7409a7074ba0c10fc2634529c67646",
+  "preferences_commit": "08cf8ce4eb8af620827f56fe034631cdcc6831ea",
   "patches": [
     {
       "file": "0001-fix-preferences-restore-native-settings.patch",
@@ -67,6 +67,26 @@
     {
       "file": "0016-fix-embed-frontend-dist-and-bump-version-to-1.1.4.patch",
       "sha256": "12e5bf13b311a67226f98feb147bc5ca2c7eacd0758aa1a2648f3427970b90db"
+    },
+    {
+      "file": "0017-feat-preferences-replace-symbol-tabs-with-editable-F.patch",
+      "sha256": "b5ff2bd0e1acaf3870fc71dc6ae29fb8c1bd86609fe890c8d17f48695a3ac635"
+    },
+    {
+      "file": "0018-feat-settings-integrate-validated-F-mapping-storage-.patch",
+      "sha256": "df58dbe675a31e8747dbb3dafaa150ab9e5278d2743e48bc8167173f29a77f71"
+    },
+    {
+      "file": "0019-feat-settings-qwerty-keyboard-single-row-tabs.patch",
+      "sha256": "d623ab9347211636a6a7cd883f06bd8121199f44fede6790d5a780246b623123"
+    },
+    {
+      "file": "0020-fix-build-retain-native-core-version.patch",
+      "sha256": "59720d5927da6d11c3bf0df3622f18684bad4f1777ec27d43ac1726bb5540600"
+    },
+    {
+      "file": "0021-chore-release-set-version-1.1.5.patch",
+      "sha256": "92de2ea647416cbe3ef163febc18f9ce9b50a761b7b7a51907b68ab61c4e3f2b"
     }
   ]
 }

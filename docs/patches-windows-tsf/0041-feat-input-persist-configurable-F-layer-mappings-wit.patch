@@ -1,0 +1,412 @@
+From 8374f3fca4ae579960291cb4816450ecdbd742cd Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Thu, 12 Nov 2026 13:45:23 +0800
+Subject: [PATCH 41/41] feat(input): persist configurable F-layer mappings with
+ shared defaults
+
+---
+ Cargo.lock                             |   8 +-
+ Cargo.toml                             |   2 +-
+ crates/chewing_tip_core/src/config.rs  |  11 +++
+ crates/chewing_tip_core/src/f_layer.rs | 109 +++++++++++++++++++++++++
+ crates/chewing_tip_core/src/lib.rs     |   2 +
+ tip/rc/version.rc                      |  16 ++--
+ tip/src/text_service/chewing.rs        |  25 +++++-
+ tip/src/text_service/kanata_layer.rs   |  63 +-------------
+ 8 files changed, 157 insertions(+), 79 deletions(-)
+ create mode 100644 crates/chewing_tip_core/src/f_layer.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 31f2416..decbbe4 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -328,7 +328,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip"
+-version = "1.1.4"
++version = "1.2.0-preview.search.1"
+ dependencies = [
+  "anyhow",
+  "cc",
+@@ -351,7 +351,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.1.4"
++version = "1.2.0-preview.search.1"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+@@ -372,7 +372,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_host"
+-version = "1.1.4"
++version = "1.2.0-preview.search.1"
+ dependencies = [
+  "anyhow",
+  "chewing",
+@@ -2792,7 +2792,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
+ 
+ [[package]]
+ name = "tsfreg"
+-version = "1.1.4"
++version = "1.2.0-preview.search.1"
+ dependencies = [
+  "chewing_tip_core",
+  "scoped-error",
+diff --git a/Cargo.toml b/Cargo.toml
+index dab795a..237b175 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -9,7 +9,7 @@ members = [
+ ]
+ 
+ [workspace.package]
+-version = "1.1.4"
++version = "1.2.0-preview.search.1"
+ 
+ [workspace.dependencies]
+ anyhow = "1"
+diff --git a/crates/chewing_tip_core/src/config.rs b/crates/chewing_tip_core/src/config.rs
+index 0410144..839f82e 100644
+--- a/crates/chewing_tip_core/src/config.rs
++++ b/crates/chewing_tip_core/src/config.rs
+@@ -90,6 +90,7 @@ pub struct ChewingTsfConfig {
+     pub update_info_url: String,
+     pub last_update_check_time: u64,
+     pub modified_timestamp: u64,
++    pub f_layer_mappings: std::collections::BTreeMap<String, String>,
+     pub f_hold_delay_ms: i32,
+     pub initial_letter_hold_delay_ms: i32,
+     pub enable_ai: bool,
+@@ -154,6 +155,7 @@ impl Default for ChewingTsfConfig {
+             update_info_url: "".to_string(),
+             last_update_check_time: 0,
+             modified_timestamp: 0,
++            f_layer_mappings: Default::default(),
+             f_hold_delay_ms: 150,
+             initial_letter_hold_delay_ms: 250,
+             enable_ai: false,
+@@ -199,6 +201,11 @@ impl Config {
+                 .access(KEY_WOW64_64KEY.0)
+                 .open("Software\\ChewingDev")?;
+             let mut cfg = ChewingTsfConfig::default();
++            if let Ok(json) = key.get_string("FLayerMappings") {
++                if let Ok(map) = serde_json::from_str(&json) {
++                    if crate::f_layer::validate(&map).is_ok() { cfg.f_layer_mappings = map; }
++                }
++            }
+ 
+             // if let Ok(path) = user_symbols_dat_path() {
+             //     cfg.set_symbols_dat(fs::read_to_string(path)?.into());
+@@ -367,6 +374,8 @@ impl Config {
+     pub fn try_save_reg(&self) -> Result<(), ConfigError> {
+         expect_error("Unable to save AI Chewing settings", || {
+         let chewing_tsf = &self.chewing_tsf;
++        crate::f_layer::validate(&chewing_tsf.f_layer_mappings)?;
++        let f_layer_json = serde_json::to_string(&chewing_tsf.f_layer_mappings)?;
+ 
+         let key = CURRENT_USER.options().create().access(KEY_WOW64_64KEY.0)
+             .write().open("Software\\ChewingDev")?;
+@@ -419,6 +428,7 @@ impl Config {
+             chewing_tsf.advance_after_selection,
+         )?;
+         reg_set_bool(&key, "AutoWrapCursor", chewing_tsf.auto_wrap_cursor)?;
++        key.set_string("FLayerMappings", &f_layer_json)?;
+         reg_set_i32(&key, "FHoldDelayMs", chewing_tsf.f_hold_delay_ms)?;
+         reg_set_i32(&key, "InitialLetterHoldDelayMs", chewing_tsf.initial_letter_hold_delay_ms)?;
+         reg_set_bool(&key, "EnableAI", chewing_tsf.enable_ai)?;
+@@ -751,6 +761,7 @@ mod legacy_preferences_tests {
+         let cfg: ChewingTsfConfig = serde_json::from_str(r#"{"font_size":24,"show_cand_with_space_key":true}"#).unwrap();
+         assert_eq!(cfg.font_size,24);
+         assert!(cfg.show_cand_with_space_key);
++        assert!(cfg.f_layer_mappings.is_empty());
+         assert_eq!(cfg.f_hold_delay_ms,150);
+         assert_eq!(cfg.initial_letter_hold_delay_ms,250);
+         assert!(!cfg.enable_ai);
+diff --git a/crates/chewing_tip_core/src/f_layer.rs b/crates/chewing_tip_core/src/f_layer.rs
+new file mode 100644
+index 0000000..ea1d205
+--- /dev/null
++++ b/crates/chewing_tip_core/src/f_layer.rs
+@@ -0,0 +1,109 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// One authoritative table for native F-layer lookup and the preferences form.
++use std::collections::BTreeMap;
++use serde::Serialize;
++
++#[derive(Debug, Serialize)]
++pub struct Mapping { pub key: u16, pub label: &'static str, pub output: &'static str }
++pub const DEFAULTS: &[Mapping] = &[
++    Mapping { key: 27, label: "Esc", output: "`" },
++    Mapping { key: 192, label: "`", output: "`" },
++    Mapping { key: 49, label: "1", output: "!" },
++    Mapping { key: 50, label: "2", output: "@" },
++    Mapping { key: 51, label: "3", output: "#" },
++    Mapping { key: 52, label: "4", output: "$" },
++    Mapping { key: 53, label: "5", output: "%" },
++    Mapping { key: 54, label: "6", output: "^" },
++    Mapping { key: 55, label: "7", output: "&" },
++    Mapping { key: 56, label: "8", output: "~" },
++    Mapping { key: 57, label: "9", output: "(" },
++    Mapping { key: 48, label: "0", output: ")" },
++    Mapping { key: 189, label: "-", output: "_" },
++    Mapping { key: 187, label: "=", output: "'" },
++    Mapping { key: 81, label: "Q", output: "/" },
++    Mapping { key: 87, label: "W", output: "*" },
++    Mapping { key: 69, label: "E", output: "-" },
++    Mapping { key: 82, label: "R", output: "+" },
++    Mapping { key: 89, label: "Y", output: "7" },
++    Mapping { key: 85, label: "U", output: "8" },
++    Mapping { key: 73, label: "I", output: "9" },
++    Mapping { key: 79, label: "O", output: "{" },
++    Mapping { key: 80, label: "P", output: "}" },
++    Mapping { key: 219, label: "[", output: "[" },
++    Mapping { key: 221, label: "]", output: "]" },
++    Mapping { key: 220, label: "\\", output: "\\" },
++    Mapping { key: 65, label: "A", output: "<" },
++    Mapping { key: 83, label: "S", output: ">" },
++    Mapping { key: 68, label: "D", output: "=" },
++    Mapping { key: 71, label: "G", output: ">" },
++    Mapping { key: 72, label: "H", output: "4" },
++    Mapping { key: 74, label: "J", output: "5" },
++    Mapping { key: 75, label: "K", output: "6" },
++    Mapping { key: 76, label: "L", output: ":" },
++    Mapping { key: 186, label: ";", output: ";" },
++    Mapping { key: 222, label: "'", output: "\"" },
++    Mapping { key: 90, label: "Z", output: "'" },
++    Mapping { key: 88, label: "X", output: "|" },
++    Mapping { key: 66, label: "B", output: "°" },
++    Mapping { key: 78, label: "N", output: "1" },
++    Mapping { key: 77, label: "M", output: "2" },
++    Mapping { key: 188, label: ",", output: "3" },
++    Mapping { key: 190, label: ".", output: "." },
++    Mapping { key: 191, label: "/", output: "?" },
++    Mapping { key: 32, label: "Space", output: "0" },
++    Mapping { key: 84, label: "T", output: "" },
++    Mapping { key: 67, label: "C", output: "" },
++    Mapping { key: 86, label: "V", output: "" },
++];
++pub fn default_output(key: u16) -> Option<&'static str> {
++    DEFAULTS.iter().find(|row| row.key == key).map(|row| row.output).filter(|s| !s.is_empty())
++}
++pub fn validate(overrides: &BTreeMap<String, String>) -> Result<(), String> {
++    for (key, output) in overrides {
++        if !DEFAULTS.iter().any(|row| row.key.to_string() == *key) {
++            return Err(format!("F 分層不支援按鍵代碼 {key}。"));
++        }
++        if output.chars().count() > 1 || output.chars().any(char::is_control) {
++            return Err("F 分層每個按鍵只能設定一個可顯示字元，或留空使用原按鍵。".into());
++        }
++    }
++    Ok(())
++}
++pub fn resolve(overrides: &BTreeMap<String, String>, key: u16) -> Option<&str> {
++    if !DEFAULTS.iter().any(|row| row.key == key) { return None; }
++    match overrides.get(&key.to_string()) {
++        Some(value) => (!value.is_empty()).then_some(value.as_str()),
++        None => default_output(key),
++    }
++}
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test] fn defaults_and_overrides_are_independent() {
++        let mut map=BTreeMap::new();
++        assert_eq!(resolve(&map,0x4a),Some("5"));
++        map.insert(0x4au16.to_string(),"λ".into()); assert!(validate(&map).is_ok());
++        assert_eq!(resolve(&map,0x4a),Some("λ")); assert_eq!(resolve(&map,0x4b),Some("6"));
++        map.insert(0x4au16.to_string(),String::new()); assert_eq!(resolve(&map,0x4a),None);
++        map.remove(&0x4au16.to_string());assert_eq!(resolve(&map,0x4a),Some("5"));
++        map.insert(0x54u16.to_string(),"7".into());assert_eq!(resolve(&map,0x54),Some("7"));
++    }
++    #[test] fn rejects_modifiers_controls_and_multiple_characters() {
++        for (key,value) in [(0x46u16,"a"),(0x08,"b"),(0x10,"c"),(0x4a,"ab"),(0x4a,"\n"),(0x4a,"\0")] {
++            assert!(validate(&BTreeMap::from([(key.to_string(),value.into())])).is_err());
++        }
++        assert!(validate(&BTreeMap::from([("74".into(),"𠀀".into())])).is_ok());
++        assert!(validate(&BTreeMap::from([("074".into(),"x".into())])).is_err());
++    }
++    #[test] fn table_has_unique_non_modifier_keys() {
++        let mut keys=std::collections::BTreeSet::new();
++        for row in DEFAULTS {assert!(keys.insert(row.key));assert_ne!(row.key,0x46);assert!(row.output.chars().count()<=1);}
++        assert_eq!(default_output(0x1b),Some("`"));assert_eq!(default_output(0x20),Some("0"));
++    }
++    #[test] fn serialized_overrides_roundtrip_and_empty_restores_defaults() {
++        let map=BTreeMap::from([(0x4au16.to_string(),"λ".to_string()),(0x4bu16.to_string(),String::new())]);
++        let parsed:BTreeMap<String,String>=serde_json::from_str(&serde_json::to_string(&map).unwrap()).unwrap();
++        assert_eq!(parsed,map);assert!(validate(&parsed).is_ok());
++        let restored:BTreeMap<String,String>=serde_json::from_str("{}").unwrap();assert_eq!(resolve(&restored,0x4b),Some("6"));
++    }
++}
+diff --git a/crates/chewing_tip_core/src/lib.rs b/crates/chewing_tip_core/src/lib.rs
+index 8e8afaf..eda0e01 100644
+--- a/crates/chewing_tip_core/src/lib.rs
++++ b/crates/chewing_tip_core/src/lib.rs
+@@ -3,3 +3,5 @@ pub mod ipc;
+ pub mod sandbox;
+ pub mod shell;
+ pub mod update;
++
++pub mod f_layer;
+diff --git a/tip/rc/version.rc b/tip/rc/version.rc
+index 3c43488..3e02621 100644
+--- a/tip/rc/version.rc
++++ b/tip/rc/version.rc
+@@ -1,8 +1,8 @@
+-#define VER_FILEVERSION             1,1,4,0
+-#define VER_FILEVERSION_STR         "1.1.4.0\0"
+-#define VER_PRODUCTVERSION          1,1,4,0
+-#define VER_PRODUCTVERSION_STR      "1.1.4.0\0"
+-#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.1.4.0)\0"
+-#define ABOUT_VERSION_STR           "版本：1.1.4.0\0"
+-#define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 11 月 11 日\0"
+-#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.1.4.0)\0"
++#define VER_FILEVERSION             1,2,0,0
++#define VER_FILEVERSION_STR         "1.2.0.0\0"
++#define VER_PRODUCTVERSION          1,2,0,0
++#define VER_PRODUCTVERSION_STR      "1.2.0.0\0"
++#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.2.0.0)\0"
++#define ABOUT_VERSION_STR           "版本：1.2.0.0\0"
++#define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 11 月 12 日\0"
++#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.2.0.0)\0"
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 53fdcc7..77c5abd 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -839,10 +839,10 @@ impl ChewingTextService {
+                     self.lang_mode.get() == TsfLangMode::Chinese && self.f_buffer.as_ref().is_some_and(|b| b.base.is_none()),
+                     matches!(self.kbtype, KeyboardLayoutCompat::Default) && matches!(self.keymap, KeymapOp::None), shift_held);
+                 let has_symbols = self.f_buffer.as_ref().is_some_and(|b| !b.symbols().is_empty());
+-                if !phonetic && can_handle_f_layer(&self.chewing_editor, ev.vk, has_symbols) {
++                if !phonetic && can_handle_configured_f_layer(&self.chewing_editor, ev.vk, has_symbols, &self.cfg.chewing_tsf.f_layer_mappings) {
+                     let was_held = self.f_key_state == kanata_layer::FKeyState::Held;
+                     let is_backspace = ev.vk == 0x08;
+-                    let mapped_symbol = kanata_layer::map_kanata_number_layer(ev.vk);
++                    let mapped_symbol = chewing_tip_core::f_layer::resolve(&self.cfg.chewing_tsf.f_layer_mappings, ev.vk).map(str::to_owned);
+ 
+                     self.f_key_state = kanata_layer::FKeyState::Held;
+ 
+@@ -857,7 +857,7 @@ impl ChewingTextService {
+ 
+                     if let Some(buffer) = &mut self.f_buffer {
+                         if is_backspace { buffer.backspace(); }
+-                        else if let Some(symbol) = mapped_symbol { buffer.append(symbol); }
++                        else if let Some(symbol) = mapped_symbol { buffer.append(&symbol); }
+                     }
+ 
+                     if !chinese_commit.is_empty() {
+@@ -2580,9 +2580,13 @@ fn can_handoff_to_ascii(editor: &Editor) -> bool {
+     !editor.entering_syllable() && !editor.is_selecting()
+ }
+ 
++#[cfg(test)]
+ fn can_handle_f_layer(editor: &Editor, vk: u16, has_symbols: bool) -> bool {
++    can_handle_configured_f_layer(editor,vk,has_symbols,&Default::default())
++}
++fn can_handle_configured_f_layer(editor: &Editor, vk: u16, has_symbols: bool, mappings: &std::collections::BTreeMap<String,String>) -> bool {
+     can_handoff_to_ascii(editor)
+-        && (kanata_layer::map_kanata_number_layer(vk).is_some()
++        && (chewing_tip_core::f_layer::resolve(mappings,vk).is_some()
+             || (vk == 0x08 && has_symbols))
+ }
+ 
+@@ -2846,6 +2850,19 @@ mod f_and_shift_handoff_tests {
+         assert!(editor.is_empty());
+     }
+ 
++    #[test]
++    fn configured_f_guard_uses_saved_mapping_and_preserves_syllable() {
++        let mut editor = Editor::fallback();
++        let mut map = std::collections::BTreeMap::from([("84".into(), "λ".into()), ("74".into(), String::new())]);
++        assert!(can_handle_configured_f_layer(&editor,0x54,false,&map));
++        assert!(!can_handle_configured_f_layer(&editor,0x4a,false,&map));
++        assert!(can_handle_configured_f_layer(&editor,0x08,true,&map));
++        map.clear();assert!(can_handle_configured_f_layer(&editor,0x4a,false,&map));
++        editor.process_keyevent(KeyboardEvent { code: chewing::input::keycode::KEY_H, ksym: chewing::input::keysym::SYM_LOWER_H,state:0 });
++        assert!(!can_handle_configured_f_layer(&editor,0x4a,false,&map));
++        assert_eq!(editor.syllable_buffer_display(),"ㄘ");
++    }
++
+     #[test]
+     fn test_shift_modifier_alone_no_commit() {
+         let mut state = ShiftKeyState::Down(Instant::now());
+diff --git a/tip/src/text_service/kanata_layer.rs b/tip/src/text_service/kanata_layer.rs
+index ff0c6d9..14a642e 100644
+--- a/tip/src/text_service/kanata_layer.rs
++++ b/tip/src/text_service/kanata_layer.rs
+@@ -25,68 +25,7 @@ impl Default for FKeyState {
+ 
+ /// 依據 kanata.original.kbd 的 number layer 定義進行虛擬鍵映射
+ pub(crate) fn map_kanata_number_layer(vk: u16) -> Option<&'static str> {
+-    match vk {
+-        // AI-Bopomofo QuickSymbolLayer: F + Esc -> `
+-        0x1B => Some("`"),  // VK_ESCAPE -> `
+-        // Row 1: ` 1 2 3 4 5 6 7 8 9 0 - =
+-        0xC0 => Some("`"),  // VK_OEM_3 (`~) -> `
+-        0x31 => Some("!"),  // VK_1 -> !
+-        0x32 => Some("@"),  // VK_2 -> @
+-        0x33 => Some("#"),  // VK_3 -> #
+-        0x34 => Some("$"),  // VK_4 -> $
+-        0x35 => Some("%"),  // VK_5 -> %
+-        0x36 => Some("^"),  // VK_6 -> ^
+-        0x37 => Some("&"),  // VK_7 -> &
+-        0x38 => Some("~"),  // VK_8 -> ~
+-        0x39 => Some("("),  // VK_9 -> (
+-        0x30 => Some(")"),  // VK_0 -> )
+-        0xBD => Some("_"),  // VK_OEM_MINUS -> _
+-        0xBB => Some("'"),  // VK_OEM_PLUS (=+) -> '
+-
+-        // Row 2: q w e r t y u i o p [ ] \
+-        0x51 => Some("/"),  // Q -> /
+-        0x57 => Some("*"),  // W -> *
+-        0x45 => Some("-"),  // E -> -
+-        0x52 => Some("+"),  // R -> +
+-        // T is transparent
+-        0x59 => Some("7"),  // Y -> 7
+-        0x55 => Some("8"),  // U -> 8
+-        0x49 => Some("9"),  // I -> 9
+-        0x4F => Some("{"),  // O -> {
+-        0x50 => Some("}"),  // P -> }
+-        0xDB => Some("["),  // VK_OEM_4 ([{) -> [
+-        0xDD => Some("]"),  // VK_OEM_6 (]} ) -> ]
+-        0xDC => Some("\\"), // VK_OEM_5 (\|) -> \
+-
+-        // Row 3: a s d f g h j k l ; '
+-        0x41 => Some("<"),  // A -> <
+-        0x53 => Some(">"),  // S -> >
+-        0x44 => Some("="),  // D -> =
+-        // F is the hold modifier itself
+-        0x47 => Some(">"),  // G -> >
+-        0x48 => Some("4"),  // H -> 4
+-        0x4A => Some("5"),  // J -> 5
+-        0x4B => Some("6"),  // K -> 6
+-        0x4C => Some(":"),  // L -> :
+-        0xBA => Some(";"),  // VK_OEM_1 (;:) -> ;
+-        0xDE => Some("\""), // VK_OEM_7 ('") -> "
+-
+-        // Row 4: z x c v b n m , . /
+-        0x5A => Some("'"),  // Z -> '
+-        0x58 => Some("|"),  // X -> |
+-        // C, V transparent
+-        0x42 => Some("°"),  // B -> ° (degree sign U+00B0)
+-        0x4E => Some("1"),  // N -> 1
+-        0x4D => Some("2"),  // M -> 2
+-        0xBC => Some("3"),  // VK_OEM_COMMA (,<) -> 3
+-        0xBE => Some("."),  // VK_OEM_PERIOD (.>) -> .
+-        0xBF => Some("?"),  // VK_OEM_2 (/?) -> ?
+-
+-        // Row 5: Space
+-        0x20 => Some("0"),  // VK_SPACE -> 0
+-
+-        _ => None,
+-    }
++    chewing_tip_core::f_layer::default_output(vk)
+ }
+ 
+ #[cfg(test)]
+-- 
+2.54.0 (Apple Git-157)
+

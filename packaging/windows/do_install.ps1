@@ -1,4 +1,4 @@
-﻿# AI新酷音：僅安裝經隔離身分稽核的使用者層級套件。
+﻿# AI新酷音：公開套件與 COM 置於機器層，偏好與私人詞庫維持使用者層。
 param(
     [switch]$NonInteractive,
     [string]$PackageDirectory = $PSScriptRoot,
@@ -7,10 +7,15 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'package_guard.ps1')
+. (Join-Path $PSScriptRoot 'machine_registration.ps1')
 Assert-ChewingInstallUser $ExpectedUserSid
 
 # 必須在任何登錄、複製、程序操作之前完成。舊套件沒有 manifest，直接拒絕。
 $manifest = Assert-ChewingDevPackage -Directory $PackageDirectory
+if (-not $manifest.files.PSObject.Properties['machine_registration.ps1']) {
+    throw 'Missing machine_registration.ps1; use the matching machine-registration package.'
+}
+$machineRoot = Get-ChewingMachineRoot
 if ($ValidateOnly) { Write-Output 'Package preflight passed; no changes made.'; return }
 if ($manifest.PSObject.Properties['preferences_runtime'] -and $manifest.preferences_runtime -eq 'WebView2') {
     $webView = @('HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients',
@@ -23,8 +28,11 @@ if ($manifest.PSObject.Properties['preferences_runtime'] -and $manifest.preferen
 if (Invoke-ChewingElevationIfNeeded -ScriptPath $PSCommandPath -Parameters @{PackageDirectory = (Resolve-Path -LiteralPath $PackageDirectory).Path}) { return }
 
 $baseDir = Join-Path $env:LOCALAPPDATA 'Programs\ChewingDev'
-$targetDir = Join-Path $baseDir ('versions\' + $manifest.version + '-' + $manifest.windows_source_commit.Substring(0, 12))
+$targetDir = Join-Path $machineRoot ('versions\' + $manifest.version + '-' + $manifest.windows_source_commit.Substring(0, 12))
 $regBase = 'HKCU:\Software\Classes\CLSID\{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}'
+$machineClass = 'HKLM:\Software\Classes\CLSID\{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}'
+$ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+Assert-ChewingMachineRegistrationOwner $machineClass $ownerSid
 $inproc = Join-Path $regBase 'InProcServer32'
 $progId = 'HKCU:\Software\Classes\AI-Chewing.TextService'
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AI-Chewing'
@@ -38,10 +46,16 @@ if ($hadUninstallEntry) {
 }
 $previousDll = $null
 if (Test-Path -LiteralPath $inproc) { $previousDll = (Get-Item -LiteralPath $inproc).GetValue('') }
+$registrationBackup = @{}
+foreach ($path in @($regBase, $machineClass, $progId)) {
+    $registrationBackup[$path] = Get-ChewingRegistrySnapshot $path
+}
+$null = Initialize-ChewingMachineRoot
+Assert-ChewingNoLinks $targetDir
 
 # 同版本檔案不可覆寫，保留仍被應用程式載入的舊 DLL。
 if (Test-Path -LiteralPath $targetDir) {
-    $installed = Assert-ChewingDevPackage -Directory $targetDir
+    $installed = Assert-ChewingMachinePackage -Directory $targetDir
     if ($installed.source_commit -cne $manifest.source_commit -or
         (Get-FileHash (Join-Path $targetDir 'package-manifest.json')).Hash -ne
         (Get-FileHash (Join-Path $PackageDirectory 'package-manifest.json')).Hash) {
@@ -49,6 +63,14 @@ if (Test-Path -LiteralPath $targetDir) {
     }
 } else {
     $stagingDir = $targetDir + '.staging-' + [Guid]::NewGuid().ToString('N')
+    # Validate both absolute paths before moving a directory.
+    $versions = [IO.Path]::GetFullPath((Join-Path $machineRoot 'versions'))
+    foreach ($path in @($stagingDir, $targetDir)) {
+        if ((Split-Path -Parent ([IO.Path]::GetFullPath($path))) -ine $versions) {
+            throw 'Payload move would leave the protected versions directory.'
+        }
+        Assert-ChewingNoLinks $path
+    }
     New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
     try {
         foreach ($entry in $manifest.files.PSObject.Properties) {
@@ -59,22 +81,27 @@ if (Test-Path -LiteralPath $targetDir) {
         Copy-Item -LiteralPath (Join-Path $PackageDirectory 'package-manifest.json') -Destination $stagingDir
         $null = Assert-ChewingDevPackage -Directory $stagingDir
         Move-Item -LiteralPath $stagingDir -Destination $targetDir
-    } finally {
-        if (Test-Path -LiteralPath $stagingDir) { Remove-Item -LiteralPath $stagingDir -Recurse -Force }
+    } catch {
+        # Keep failed staging for inspection; no recursive cleanup of computed paths.
+        throw
     }
 }
+$null = Assert-ChewingMachinePackage -Directory $targetDir
+New-Item -ItemType Directory -Path $baseDir -Force | Out-Null
 
-# 只寫獨立的 HKCU COM 身分，不修改正式新酷音、詞庫、設定或系統預設來源。
+# SearchHost/AppContainer must be able to load the DLL and public dictionaries.
+# Grant only the verified package; never relax private dictionaries or parent folders.
+. (Join-Path $PSScriptRoot 'appcontainer_access.ps1')
+Grant-ChewingPackageReadAccess -Directory $targetDir
+
+# SearchHost did not resolve the HKCU-only class. Publish the same protected DLL
+# in native x64 HKLM and HKCU views; no WOW6432Node or system-default changes.
 try {
-    New-Item -Path $regBase -Force | Out-Null
-    Set-Item -LiteralPath $regBase -Value 'AI新酷音'
+    Set-ChewingComClasses $regBase $machineClass $targetDir $ownerSid
     New-Item -Path (Join-Path $regBase 'ProgID') -Force | Out-Null
     Set-Item -LiteralPath (Join-Path $regBase 'ProgID') -Value 'AI-Chewing.TextService'
     New-Item -Path (Join-Path $progId 'CLSID') -Force | Out-Null
     Set-Item -LiteralPath (Join-Path $progId 'CLSID') -Value '{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}'
-    New-Item -Path $inproc -Force | Out-Null
-    Set-Item -LiteralPath $inproc -Value (Join-Path $targetDir 'chewing_tip.dll')
-    New-ItemProperty -LiteralPath $inproc -Name ThreadingModel -Value Apartment -PropertyType String -Force | Out-Null
     Invoke-ChewingDevRegistration -Executable (Join-Path $targetDir 'tsfreg.exe') -Arguments @('-r', (Join-Path $targetDir 'chewing.ico'))
     # 不呼叫 -i：保留使用者目前輸入來源，由 Win+Space 主動選擇。
     $pointerTemp = Join-Path $baseDir ('current-' + [Guid]::NewGuid().ToString('N') + '.tmp')
@@ -106,14 +133,13 @@ try {
             New-ItemProperty -LiteralPath $uninstallKey -Name $entry.Key -Value $entry.Value.Value -PropertyType $entry.Value.Kind -Force | Out-Null
         }
     }
-    if ($previousDll) {
-        Set-Item -LiteralPath $inproc -Value $previousDll
-    } else {
+    if (-not $previousDll) {
         # Registration can fail after partially creating the isolated TSF profile.
         try { Invoke-ChewingDevRegistration -Executable (Join-Path $targetDir 'tsfreg.exe') -Arguments @('-u') }
         catch { Write-Warning 'Unable to remove the incomplete ChewingDev profile.' }
-        if (Test-Path -LiteralPath $regBase) { Remove-Item -LiteralPath $regBase -Recurse -Force }
-        if (Test-Path -LiteralPath $progId) { Remove-Item -LiteralPath $progId -Recurse -Force }
+    }
+    foreach ($path in @($regBase, $machineClass, $progId)) {
+        Restore-ChewingRegistrySnapshot $path $registrationBackup[$path]
     }
     throw $failure
 }

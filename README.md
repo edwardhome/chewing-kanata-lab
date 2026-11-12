@@ -1,9 +1,15 @@
 # Chewing × Kanata × Context-Aware AI IME (CKAI)
 # 繁體中文／英文混合輸入法全生命週期專案
 
-> **專案代號**：`CKAI-MASTER-001` ｜ **版本**：`v1.0.0-rc.1` (Win/Linux) / `v1.1.0-pre` (macOS)  
-> **當前分支**：`feature/chewing-ascii-first-mvp`  
-> **核心準則**：保留新酷音原生注音體驗、保留使用者 Kanata 既有配置、離線優先、零雲端依賴、先確定性後 AI。
+> **Windows 正式版本**：`1.1.5` ｜ **整合主線**：`main`
+> **下載**：[GitHub Releases](https://github.com/edwardhome/chewing-kanata-lab/releases/latest)
+> **核心準則**：保留新酷音原生注音體驗、保留使用者 Kanata 既有配置、離線優先。
+
+Windows x64：下載並解壓正式版 ZIP，執行 `install_ime.bat`，由原使用者帳戶核准 UAC。1.1.5 將公開套件放在受保護的 `Program Files\ChewingDev`，修復開始選單／工作列搜尋的輸入法查找問題；私人詞庫與偏好仍保留在使用者目錄。安裝器不強制關閉應用，儲存工作後重新開啟測試應用，再用 Win+Space 選擇 AI新酷音。
+
+本版另含 QWERTY F 層映射、加寬設定視窗與單行頁籤、置頂的 Restart，以及更新後的選單連結。若要解除安裝，請使用目前版本的移除器；勿用舊版安裝器直接覆蓋回退，以免留下機器層註冊。跨帳戶共用安裝尚未完成人工驗證。
+
+以下保留早期跨平台架構規劃；不代表所有研究項目都已實作或發布。
 
 ---
 

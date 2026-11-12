@@ -1,0 +1,353 @@
+From 43d7dd98645e9133c7c6f5a3616d849df05542fd Mon Sep 17 00:00:00 2001
+From: AGY <defu@local.dev>
+Date: Thu, 12 Nov 2026 13:49:46 +0800
+Subject: [PATCH 17/18] feat(preferences): replace symbol tabs with editable
+ F-layer mapping form
+
+---
+ src/App.tsx            |  58 ++---------
+ src/FLayerMappings.tsx | 227 +++++++++++++++++++++++++++++++++++++++++
+ src/config.tsx         |   1 +
+ 3 files changed, 234 insertions(+), 52 deletions(-)
+ create mode 100644 src/FLayerMappings.tsx
+
+diff --git a/src/App.tsx b/src/App.tsx
+index d494bfc..bd6cc63 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -40,6 +40,7 @@ import Updates from "./Updates";
+ import Recovery from "./Recovery";
+ import EngineeringTerms from "./EngineeringTerms";
+ import UnifiedLexicon from "./UnifiedLexicon";
++import FLayerMappings from "./FLayerMappings";
+ 
+ type FontFamilyName = {
+   name: string;
+@@ -330,8 +331,7 @@ function App() {
+         <Tab value="2">界面外觀</Tab>
+         <Tab value="3">鍵盤設定</Tab>
+         <Tab value="keybind">自訂快捷鍵</Tab>
+-        <Tab value="4">特殊符號</Tab>
+-        <Tab value="5">快捷符號</Tab>
++        <Tab value="flayer">F鍵分層映射</Tab>
+         <Tab value="engineering">自訂工程詞彙</Tab>
+         <Tab value="shared">使用者與工程詞庫</Tab>
+         <Tab value="6">其他設定</Tab>
+@@ -367,16 +367,12 @@ function App() {
+           setConfig={setConfig}
+         />
+       )}
+-      {selectedTab === "4" && config && (
+-        <Symbols
+-          styles={styles}
+-          symbols_dat={symbols_dat}
+-          setSymbolsDat={setSymbolsDat}
++      {selectedTab === "flayer" && config && (
++        <FLayerMappings
++          mappings={config.f_layer_mappings ?? {}}
++          onChange={(next) => setConfig({ ...config, f_layer_mappings: next })}
+         />
+       )}
+-      {selectedTab === "5" && config && (
+-        <Shortcut styles={styles} swkb_dat={swkb_dat} setSwkbDat={setSwkbDat} />
+-      )}
+       {selectedTab === "6" && config && (
+         <Others config={config} styles={styles} setConfig={setConfig} />
+       )}
+@@ -947,48 +943,6 @@ const Layout = ({
+   </div>
+ );
+ 
+-const Symbols = ({ styles, symbols_dat, setSymbolsDat }) => (
+-  <div className={styles.content} role="tabpanel" aria-labelledby="Symbols">
+-    <div className={styles.column}>
+-      <Field label="輸入中文時，按下 ` 鍵，會顯示下列的符號表：">
+-        <Textarea
+-          value={symbols_dat}
+-          className={styles.textarea}
+-          textarea={{ className: styles.texarea_inner }}
+-          onChange={(_ev, data) => setSymbolsDat(data.value)}
+-        />
+-      </Field>
+-      <Text>
+-        以上是符號表的設定檔，語法相當簡單：
+-        <br />
+-        每一行的內容都是：「分類名稱」＝「此分類下的所有符號」
+-        <br />
+-        您也可以一行只放一個符號，則該符號會被放在最上層選單。
+-      </Text>
+-    </div>
+-  </div>
+-);
+-
+-const Shortcut = ({ styles, swkb_dat, setSwkbDat }) => (
+-  <div className={styles.content} role="tabpanel" aria-labelledby="Shortcut">
+-    <div className={styles.column}>
+-      <Field label="輸入中文時，按下 Shift 鍵（或 Ctrl + Shift）加英文字母即可快速輸入文字：">
+-        <Textarea
+-          value={swkb_dat}
+-          className={styles.textarea}
+-          textarea={{ className: styles.texarea_inner }}
+-          onChange={(_ev, data) => setSwkbDat(data.value)}
+-        />
+-      </Field>
+-      <Text>
+-        以上是符號表的設定檔，語法相當簡單：
+-        <br />
+-        每一行的內容都是：「大寫字母」＋「空格」＋「對應的符號或文字」。
+-      </Text>
+-    </div>
+-  </div>
+-);
+-
+ const Others = ({ config, styles, setConfig }) => (
+   <div className={styles.content} role="tabpanel" aria-labelledby="Others">
+     <div className={styles.column}>
+diff --git a/src/FLayerMappings.tsx b/src/FLayerMappings.tsx
+new file mode 100644
+index 0000000..50b1977
+--- /dev/null
++++ b/src/FLayerMappings.tsx
+@@ -0,0 +1,227 @@
++// SPDX-FileCopyrightText: 2026 AI Chewing contributors
++//
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++import React, { useEffect, useState } from "react";
++import {
++  Button,
++  Field,
++  Input,
++  Text,
++  makeStyles,
++  tokens,
++} from "@fluentui/react-components";
++import { invoke } from "@tauri-apps/api/core";
++
++export type FLayerDefault = {
++  key: number;
++  label: string;
++  output: string;
++};
++
++const useStyles = makeStyles({
++  container: {
++    padding: "16px",
++    display: "flex",
++    flexDirection: "column",
++    gap: "12px",
++    maxHeight: "75vh",
++    overflowY: "auto",
++  },
++  headerRow: {
++    display: "flex",
++    justifyContent: "space-between",
++    alignItems: "center",
++    marginBottom: "8px",
++  },
++  table: {
++    width: "100%",
++    borderCollapse: "collapse",
++    "& th, & td": {
++      padding: "6px 10px",
++      textAlign: "left",
++      borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
++    },
++    "& th": {
++      color: tokens.colorNeutralForeground2,
++      fontWeight: 600,
++      position: "sticky",
++      top: 0,
++      background: tokens.colorNeutralBackground1,
++      zIndex: 1,
++    },
++  },
++  keyCol: {
++    width: "120px",
++  },
++  defaultCol: {
++    width: "120px",
++  },
++  outputCol: {
++    width: "180px",
++  },
++  actionCol: {
++    width: "120px",
++  },
++  input: {
++    width: "120px",
++    fontFamily: "monospace",
++  },
++  invalidInput: {
++    borderColor: tokens.colorPaletteRedBorderActive,
++  },
++  descText: {
++    color: tokens.colorNeutralForeground3,
++    fontSize: "12px",
++    lineHeight: "16px",
++  },
++});
++
++interface Props {
++  mappings: Record<string, string>;
++  onChange: (next: Record<string, string>) => void;
++}
++
++export function validateOutputScalar(val: string): { ok: boolean; reason?: string } {
++  if (val === "") {
++    return { ok: true };
++  }
++  const chars = Array.from(val);
++  if (chars.length !== 1) {
++    return { ok: false, reason: "只能輸入一個字元或留空" };
++  }
++  const cp = chars[0].codePointAt(0);
++  if (cp === undefined) {
++    return { ok: false, reason: "無效字元" };
++  }
++  // Controls: 0..=31, 127, 128..=159
++  if ((cp >= 0 && cp <= 31) || cp === 127 || (cp >= 128 && cp <= 159)) {
++    return { ok: false, reason: "不能使用控制字元" };
++  }
++  return { ok: true };
++}
++
++export default function FLayerMappings({ mappings, onChange }: Props) {
++  const styles = useStyles();
++  const [defaults, setDefaults] = useState<FLayerDefault[]>([]);
++  const [errorMap, setErrorMap] = useState<Record<string, string>>({});
++
++  useEffect(() => {
++    invoke<FLayerDefault[]>("f_layer_defaults")
++      .then((res) => {
++        if (Array.isArray(res)) {
++          setDefaults(res);
++        }
++      })
++      .catch((err) => {
++        console.error("Failed to load f_layer_defaults:", err);
++      });
++  }, []);
++
++  const handleInputChange = (keyStr: string, rawVal: string) => {
++    const check = validateOutputScalar(rawVal);
++    if (!check.ok) {
++      setErrorMap((prev) => ({ ...prev, [keyStr]: check.reason || "無效" }));
++    } else {
++      setErrorMap((prev) => {
++        const next = { ...prev };
++        delete next[keyStr];
++        return next;
++      });
++    }
++
++    const nextMappings = { ...mappings };
++    nextMappings[keyStr] = rawVal;
++    onChange(nextMappings);
++  };
++
++  const handleResetRow = (keyStr: string) => {
++    const nextMappings = { ...mappings };
++    delete nextMappings[keyStr];
++    setErrorMap((prev) => {
++      const next = { ...prev };
++      delete next[keyStr];
++      return next;
++    });
++    onChange(nextMappings);
++  };
++
++  const handleRestoreAllDefaults = () => {
++    setErrorMap({});
++    onChange({});
++  };
++
++  return (
++    <div className={styles.container} role="tabpanel" aria-labelledby="FLayerMappings">
++      <div className={styles.headerRow}>
++        <div>
++          <Text weight="semibold" size={400}>
++            F 鍵分層符號對照表 (Kanata Number / Symbol Layer)
++          </Text>
++          <div className={styles.descText}>
++            長按 F 鍵到達設定延遲時間後，按下對應按鍵輸出的符號。每個按鍵可設定 1 個字元；留空則為透明（使用原鍵直出）。
++          </div>
++        </div>
++        <Button size="small" appearance="outline" onClick={handleRestoreAllDefaults}>
++          全部還原預設值
++        </Button>
++      </div>
++
++      <table className={styles.table}>
++        <thead>
++          <tr>
++            <th className={styles.keyCol}>按鍵</th>
++            <th className={styles.defaultCol}>預設輸出</th>
++            <th className={styles.outputCol}>自訂輸出</th>
++            <th className={styles.actionCol}>重設</th>
++          </tr>
++        </thead>
++        <tbody>
++          {defaults.map((row) => {
++            const keyStr = String(row.key);
++            const isOverridden = Object.prototype.hasOwnProperty.call(mappings, keyStr);
++            const currentVal = isOverridden ? mappings[keyStr] : row.output;
++            const err = errorMap[keyStr];
++
++            return (
++              <tr key={row.key}>
++                <td>
++                  <Text weight="medium">{row.label}</Text>
++                  <Text size={200} style={{ color: tokens.colorNeutralForeground4, marginLeft: "6px" }}>
++                    ({row.key})
++                  </Text>
++                </td>
++                <td>
++                  <Text style={{ fontFamily: "monospace" }}>
++                    {row.output === "" ? "（透明）" : row.output}
++                  </Text>
++                </td>
++                <td>
++                  <Field validationMessage={err} validationState={err ? "error" : "none"}>
++                    <Input
++                      className={styles.input}
++                      value={currentVal}
++                      placeholder={row.output === "" ? "（透明）" : row.output}
++                      onChange={(_e, data) => handleInputChange(keyStr, data.value)}
++                    />
++                  </Field>
++                </td>
++                <td>
++                  {isOverridden && (
++                    <Button
++                      size="small"
++                      appearance="subtle"
++                      onClick={() => handleResetRow(keyStr)}
++                    >
++                      還原預設
++                    </Button>
++                  )}
++                </td>
++              </tr>
++            );
++          })}
++        </tbody>
++      </table>
++    </div>
++  );
++}
+diff --git a/src/config.tsx b/src/config.tsx
+index 88ad9d1..df0c64f 100644
+--- a/src/config.tsx
++++ b/src/config.tsx
+@@ -3,6 +3,7 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ export type ChewingTsfConfig = {
++  f_layer_mappings?: Record<string, string>;
+   f_hold_delay_ms: number;
+   initial_letter_hold_delay_ms: number;
+   enable_ai: boolean;
+-- 
+2.54.0 (Apple Git-157)
+

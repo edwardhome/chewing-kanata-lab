@@ -1,0 +1,26 @@
+PASS: AppContainer can read verified payload without write or private-data access
+PASS: Tampered package fails before any permission changes
+PASS: Valid isolated synthetic package
+PASS: Restored preferences provenance is accepted
+PASS: Incomplete preferences provenance is rejected
+PASS: Unknown preferences runtime is rejected
+PASS: Missing manifest never reaches executable
+PASS: Official COM identity rejected
+PASS: Official preference namespace rejected
+PASS: Official dictionary directory rejected
+PASS: Parent traversal rejected
+PASS: Absolute path rejected
+PASS: Required file missing from manifest rejected
+PASS: Missing runtime dictionary rejected
+PASS: Modified payload rejected
+PASS: Official binary rejected even with correct hash and claimed dev identity
+PASS: Payload without isolated binary identity rejected
+PASS: Version path injection rejected
+PASS: Unpinned source rejected
+PASS: Bundled dictionary allowed without deploying to private data
+PASS: ValidateOnly does not execute synthetic registration tool or install
+PASS: All packaging scripts parse
+PASS: Child failure is awaited and propagated
+PASS: Child arguments preserve spaces quotes and trailing backslashes
+PASS: Elevation accepts the owner and rejects another Windows account
+25 package guard cases passed.

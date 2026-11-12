@@ -1,0 +1,25 @@
+From 0701285cc94fb80c93041804d3c37b26d31fcba7 Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Thu, 12 Nov 2026 16:28:32 +0800
+Subject: [PATCH] fix(build): retain unchanged native core version in lockfile
+
+---
+ src-tauri/Cargo.lock | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index af7059c..ea46eb7 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -538,7 +538,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.2.0-preview.search.2"
++version = "1.2.0-preview.search.1"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+-- 
+2.54.0 (Apple Git-157)
+

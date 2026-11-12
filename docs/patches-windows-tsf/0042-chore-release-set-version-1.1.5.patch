@@ -1,0 +1,66 @@
+From 1ead9a43b614550d0bf9b4ac93341043517f0d7f Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Thu, 12 Nov 2026 18:06:42 +0800
+Subject: [PATCH] chore(release): set user-authorized Windows version 1.1.5
+
+---
+ Cargo.lock | 8 ++++----
+ Cargo.toml | 2 +-
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index decbbe4..d55b57c 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -328,7 +328,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip"
+-version = "1.2.0-preview.search.1"
++version = "1.1.5"
+ dependencies = [
+  "anyhow",
+  "cc",
+@@ -351,7 +351,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.2.0-preview.search.1"
++version = "1.1.5"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+@@ -372,7 +372,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_host"
+-version = "1.2.0-preview.search.1"
++version = "1.1.5"
+ dependencies = [
+  "anyhow",
+  "chewing",
+@@ -2792,7 +2792,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
+ 
+ [[package]]
+ name = "tsfreg"
+-version = "1.2.0-preview.search.1"
++version = "1.1.5"
+ dependencies = [
+  "chewing_tip_core",
+  "scoped-error",
+diff --git a/Cargo.toml b/Cargo.toml
+index 237b175..d45bd58 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -9,7 +9,7 @@ members = [
+ ]
+ 
+ [workspace.package]
+-version = "1.2.0-preview.search.1"
++version = "1.1.5"
+ 
+ [workspace.dependencies]
+ anyhow = "1"
+-- 
+2.54.0 (Apple Git-157)
+

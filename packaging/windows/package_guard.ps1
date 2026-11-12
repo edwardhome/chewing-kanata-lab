@@ -101,8 +101,8 @@ function Invoke-ChewingDevRegistration {
     }
 }
 
-# TSF profile registration is machine-level even though the COM server and
-# payload are per-user. Keep elevation in the same user account.
+# TSF profile and machine COM registration require elevation. Keep elevation
+# in the same user account so that preferences and per-user state stay correct.
 function Assert-ChewingInstallUser([string]$ExpectedUserSid) {
     if ($ExpectedUserSid -and [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -cne $ExpectedUserSid) {
         throw 'Please approve elevation with the same Windows account that owns this installation.'
