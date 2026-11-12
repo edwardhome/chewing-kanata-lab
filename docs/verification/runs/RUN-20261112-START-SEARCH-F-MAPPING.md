@@ -25,3 +25,17 @@
 Zbook 開始選單／工作列是否可選回並輸入中文、修改 F 映射後的實體按鍵、還原預設與 Word 回歸均 NOT_RUN。未安裝、不重啟使用者程式、不推送、不合併 main、不建立 Release。本測試版不能被描述為已修復全部開始列問題。
 
 完整需求、權限修正依據及範圍見 [工作紀錄](../../tasks/START_SEARCH_F_MAPPING.md)。
+
+## 封裝確認
+
+更新時間：2026-11-12T13:54:02+08:00
+
+Windows 設定 Release 建置成功；設定 ProductVersion=1.2.0-preview.search.1，原生 FileVersion=1.2.0.0，三個 PE 都為 x64。前端 dist 三檔與本機雜湊一致。
+
+套件來源 outer 652cf1cb7b151d9ea317f5ddce1cb6fa01dc32de；所有來源已提交且乾淨後封裝。ValidateOnly、Windows ZIP 解壓檢查及本機 CRC/26 個 payload 雜湊通過。未執行安裝。
+
+ZIP 11029982 bytes；SHA-256 `65e13d4c0bb978a30a6d13e7bc0826e9c687018eccd799e97167a3872acd003e`。
+
+WorkstationX 成品：`C:\Users\Defu\Documents\AI-Chewing\1.2.0-preview.search.1`，ZIP 位於同一 AI-Chewing 上層目錄。Mac 本機成品位於 `dist/windows/1.2.0-preview.search.1/`。
+
+Windows 工作目錄交接：外層回 main、巢狀來源回 release/1.1.4，對應既有正式版；新成果保留各自 fix/start-search-menu，沒有合併或發布。已比對的中間變更保留於標記 Verified search preview source backup 的 stash，私人資料未清理。
