@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "3f5b5e99d7800338f8caee0f2b5f928f0133a8fb",
+  "tree": "77c69a64e305bf345a6beea6721b6170ecf0f7cc",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -158,6 +158,14 @@
     {
       "file": "0039-chore-release-bump-version-to-1.1.4.patch",
       "sha256": "48a46e6808cc2162649a1510de749b3ebb361bd8001d22e12181ba0d15ede64a"
+    },
+    {
+      "file": "0040-refactor-menu-cleanup-obsolete-links-move-restart-fi.patch",
+      "sha256": "d265abcbfa27b0b256ecd3dda45ad0ba07656776aa3b48ce0cbefc1f47b377b9"
+    },
+    {
+      "file": "0041-feat-input-persist-configurable-F-layer-mappings-wit.patch",
+      "sha256": "175aa1148503be677726b317866c58b3f8112e1a8904e8430527bb961734f763"
     }
   ],
   "native_commit": "56a9321dd9a1fb080a729c7cb60275625915a29d"

@@ -64,6 +64,11 @@ if (Test-Path -LiteralPath $targetDir) {
     }
 }
 
+# SearchHost/AppContainer must be able to load the DLL and public dictionaries.
+# Grant only the verified package; never relax private dictionaries or parent folders.
+. (Join-Path $PSScriptRoot 'appcontainer_access.ps1')
+Grant-ChewingPackageReadAccess -Directory $targetDir
+
 # 只寫獨立的 HKCU COM 身分，不修改正式新酷音、詞庫、設定或系統預設來源。
 try {
     New-Item -Path $regBase -Force | Out-Null

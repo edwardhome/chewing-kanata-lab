@@ -1,6 +1,7 @@
 # Headless tests: synthetic files and a child shell; never execute an IME or registration tool.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'package_guard.ps1')
+. (Join-Path $PSScriptRoot 'appcontainer_access.ps1')
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('ckai-package-tests-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 $script:passed = 0
@@ -46,6 +47,42 @@ function Case([string]$Name, [scriptblock]$Body) {
 }
 
 try {
+    Case 'AppContainer can read verified payload without write or private-data access' {
+        $f = New-Fixture; Save-Fixture $f
+        $private = Join-Path $f.Directory 'private-user-data.txt'
+        [IO.File]::WriteAllText($private, 'synthetic private data')
+        $beforePrivate = (Get-Acl $private).Sddl
+        $beforeParent = (Get-Acl $testRoot).Sddl
+        $dll = Join-Path $f.Directory 'chewing_tip.dll'
+        $beforeRules = @((Get-Acl $dll).Access | ForEach-Object { $_.ToString() })
+        Grant-ChewingPackageReadAccess $f.Directory
+        foreach ($path in @($f.Directory, $dll, (Join-Path $f.Directory 'Dictionary/static_dict.bin'))) {
+            $acl = Get-Acl $path
+            $rules = @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq 'S-1-15-2-1' })
+            if ($rules.Count -ne 1 -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].InheritanceFlags -ne 'None') { throw 'Unexpected package access rule' }
+            $rights = $rules[0].FileSystemRights
+            if (($rights -band [Security.AccessControl.FileSystemRights]::ReadAndExecute) -ne [Security.AccessControl.FileSystemRights]::ReadAndExecute) { throw 'Missing read/execute' }
+            if ($rights -band ([Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::ChangePermissions)) { throw 'Unexpected write rights' }
+        }
+        foreach ($rule in $beforeRules) {
+            if ($rule -notin @((Get-Acl $dll).Access | ForEach-Object { $_.ToString() })) { throw 'Existing access was removed' }
+        }
+        $once = (Get-Acl $dll).Sddl
+        Grant-ChewingPackageReadAccess $f.Directory
+        if ((Get-Acl $dll).Sddl -ne $once) { throw 'Repeated installation changed access' }
+        # Windows may mark an unchanged child DACL auto-inherited when the
+        # parent's non-inheriting ACE is added. Compare rights, owner and group;
+        # only that bookkeeping flag may differ.
+        if (((Get-Acl $private).Sddl -replace 'D:AI', 'D:') -ne ($beforePrivate -replace 'D:AI', 'D:') -or (Get-Acl $testRoot).Sddl -ne $beforeParent) { throw 'Access escaped public package scope' }
+    }
+    Case 'Tampered package fails before any permission changes' {
+        $f = New-Fixture; Save-Fixture $f
+        $before = (Get-Acl $f.Directory).Sddl
+        [IO.File]::WriteAllText((Join-Path $f.Directory 'chewing_tip.dll'), 'tampered')
+        $rejected = $false
+        try { Grant-ChewingPackageReadAccess $f.Directory } catch { $rejected = $true }
+        if (-not $rejected -or (Get-Acl $f.Directory).Sddl -ne $before) { throw 'Invalid package changed permissions' }
+    }
     Case 'Valid isolated synthetic package' {
         $f = New-Fixture; Save-Fixture $f
         $null = Assert-ChewingDevPackage -Directory $f.Directory

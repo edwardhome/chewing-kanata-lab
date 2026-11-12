@@ -1,0 +1,336 @@
+From 6fcac6e30d1e8ee2f670169603b20dcb3530e8bd Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Thu, 12 Nov 2026 13:51:12 +0800
+Subject: [PATCH 18/18] feat(settings): integrate validated F mapping storage
+ and preview UI
+
+---
+ package-lock.json         |  4 +--
+ package.json              |  2 +-
+ src-tauri/Cargo.lock      |  4 +--
+ src-tauri/Cargo.toml      |  2 +-
+ src-tauri/src/config.rs   | 15 ++++++++
+ src-tauri/src/lib.rs      |  1 +
+ src-tauri/tauri.conf.json |  2 +-
+ src/App.tsx               |  3 +-
+ src/FLayerMappings.tsx    | 74 +++++++++++++++------------------------
+ 9 files changed, 52 insertions(+), 55 deletions(-)
+
+diff --git a/package-lock.json b/package-lock.json
+index 5be1a76..49271f8 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+   "name": "chewing-preferences",
+-  "version": "1.1.2",
++  "version": "1.2.0-preview.search.1",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "chewing-preferences",
+-      "version": "1.1.2",
++      "version": "1.2.0-preview.search.1",
+       "dependencies": {
+         "@fluentui/react-components": "^9.70.0",
+         "@fluentui/react-icons": "^2.0.323",
+diff --git a/package.json b/package.json
+index 0403984..c62b082 100644
+--- a/package.json
++++ b/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "chewing-preferences",
+   "private": true,
+-  "version": "1.1.4",
++  "version": "1.2.0-preview.search.1",
+   "type": "module",
+   "scripts": {
+     "dev": "vite",
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index b4b0102..855dc8e 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -514,7 +514,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing-preferences"
+-version = "1.1.4"
++version = "1.2.0-preview.search.1"
+ dependencies = [
+  "chewing-policy-core",
+  "chewing_tip_core",
+@@ -538,7 +538,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.1.4"
++version = "1.2.0-preview.search.1"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+index 1ab0b23..0da9364 100644
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -4,7 +4,7 @@
+ 
+ [package]
+ name = "chewing-preferences"
+-version = "1.1.4"
++version = "1.2.0-preview.search.1"
+ edition = "2024"
+ license = "GPL-3.0-or-later"
+ 
+diff --git a/src-tauri/src/config.rs b/src-tauri/src/config.rs
+index 18a652e..b29eeeb 100644
+--- a/src-tauri/src/config.rs
++++ b/src-tauri/src/config.rs
+@@ -123,6 +123,7 @@ pub fn save_config(mut config: Config) -> Result<(), String> {
+ 
+ fn validate_config(config: &Config) -> Result<(), String> {
+     let c = &config.chewing_tsf;
++    chewing_tip_core::f_layer::validate(&c.f_layer_mappings)?;
+     if !(1..=10).contains(&c.cand_per_row) || !(1..=10).contains(&c.cand_per_page) {
+         return Err("每列與每頁候選字數必須介於 1 到 10。".into());
+     }
+@@ -139,6 +140,15 @@ fn validate_config(config: &Config) -> Result<(), String> {
+ mod tests {
+     use super::*;
+     #[test]
++    fn f_mapping_roundtrips_in_export_without_touching_legacy_symbols() {
++        let mut cfg=Config::default();
++        cfg.chewing_tsf.f_layer_mappings.insert("74".into(),"λ".into());
++        cfg.symbols_dat="legacy".into();cfg.swkb_dat="Q old".into();
++        let text=toml::to_string(&cfg).unwrap();let parsed:Config=toml::from_str(&text).unwrap();
++        assert_eq!(parsed,cfg);assert!(validate_config(&parsed).is_ok());
++        cfg.chewing_tsf.f_layer_mappings.insert("70".into(),"x".into());assert!(validate_config(&cfg).is_err());
++    }
++    #[test]
+     fn invalid_candidate_geometry_is_rejected_before_save() {
+         let mut cfg = Config::default();
+         assert!(validate_config(&cfg).is_ok());
+@@ -177,3 +187,8 @@ mod tests {
+         fs::remove_dir_all(&root).unwrap();
+     }
+ }
++
++#[tauri::command]
++pub(crate) fn f_layer_defaults() -> Vec<&'static chewing_tip_core::f_layer::Mapping> {
++    chewing_tip_core::f_layer::DEFAULTS.iter().collect()
++}
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index 3779b05..beff1b8 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -79,6 +79,7 @@ pub fn run() {
+             import_config,
+             export_config,
+             load_config,
++            config::f_layer_defaults,
+             save_config,
+             get_system_fonts,
+             chewing_version,
+diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+index a97d1d1..a0bcbca 100644
+--- a/src-tauri/tauri.conf.json
++++ b/src-tauri/tauri.conf.json
+@@ -1,7 +1,7 @@
+ {
+   "$schema": "https://schema.tauri.app/config/2",
+   "productName": "AI新酷音設定",
+-  "version": "1.1.4",
++  "version": "1.2.0-preview.search.1",
+   "identifier": "org.aichewing.preferences",
+   "build": {
+     "beforeDevCommand": "npm run dev",
+diff --git a/src/App.tsx b/src/App.tsx
+index bd6cc63..2eac40f 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -17,7 +17,6 @@ import {
+   SpinButton,
+   Combobox,
+   Input,
+-  Textarea,
+   Text,
+   CheckboxOnChangeData,
+   OptionOnSelectData,
+@@ -331,7 +330,7 @@ function App() {
+         <Tab value="2">界面外觀</Tab>
+         <Tab value="3">鍵盤設定</Tab>
+         <Tab value="keybind">自訂快捷鍵</Tab>
+-        <Tab value="flayer">F鍵分層映射</Tab>
++        <Tab value="flayer">F 分層映射</Tab>
+         <Tab value="engineering">自訂工程詞彙</Tab>
+         <Tab value="shared">使用者與工程詞庫</Tab>
+         <Tab value="6">其他設定</Tab>
+diff --git a/src/FLayerMappings.tsx b/src/FLayerMappings.tsx
+index 50b1977..c9a6be4 100644
+--- a/src/FLayerMappings.tsx
++++ b/src/FLayerMappings.tsx
+@@ -2,7 +2,7 @@
+ //
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+-import React, { useEffect, useState } from "react";
++import { useEffect, useState } from "react";
+ import {
+   Button,
+   Field,
+@@ -67,9 +67,6 @@ const useStyles = makeStyles({
+     width: "120px",
+     fontFamily: "monospace",
+   },
+-  invalidInput: {
+-    borderColor: tokens.colorPaletteRedBorderActive,
+-  },
+   descText: {
+     color: tokens.colorNeutralForeground3,
+     fontSize: "12px",
+@@ -95,7 +92,7 @@ export function validateOutputScalar(val: string): { ok: boolean; reason?: strin
+     return { ok: false, reason: "無效字元" };
+   }
+   // Controls: 0..=31, 127, 128..=159
+-  if ((cp >= 0 && cp <= 31) || cp === 127 || (cp >= 128 && cp <= 159)) {
++  if ((cp >= 0 && cp <= 31) || cp === 127 || (cp >= 128 && cp <= 159) || (cp >= 0xd800 && cp <= 0xdfff)) {
+     return { ok: false, reason: "不能使用控制字元" };
+   }
+   return { ok: true };
+@@ -104,70 +101,57 @@ export function validateOutputScalar(val: string): { ok: boolean; reason?: strin
+ export default function FLayerMappings({ mappings, onChange }: Props) {
+   const styles = useStyles();
+   const [defaults, setDefaults] = useState<FLayerDefault[]>([]);
+-  const [errorMap, setErrorMap] = useState<Record<string, string>>({});
++  const [loadError, setLoadError] = useState<string | null>(null);
++  const [loading, setLoading] = useState(true);
++  const [retry, setRetry] = useState(0);
+ 
+   useEffect(() => {
++    let active = true;
++    setLoading(true);
++    setLoadError(null);
+     invoke<FLayerDefault[]>("f_layer_defaults")
+       .then((res) => {
+-        if (Array.isArray(res)) {
+-          setDefaults(res);
+-        }
++        if (!Array.isArray(res) || res.length === 0) throw new Error("預設映射資料不完整");
++        if (active) setDefaults(res);
+       })
+-      .catch((err) => {
+-        console.error("Failed to load f_layer_defaults:", err);
+-      });
+-  }, []);
++      .catch((err) => { if (active) setLoadError(`無法載入 F 映射：${String(err)}`); })
++      .finally(() => { if (active) setLoading(false); });
++    return () => { active = false; };
++  }, [retry]);
+ 
+   const handleInputChange = (keyStr: string, rawVal: string) => {
+-    const check = validateOutputScalar(rawVal);
+-    if (!check.ok) {
+-      setErrorMap((prev) => ({ ...prev, [keyStr]: check.reason || "無效" }));
+-    } else {
+-      setErrorMap((prev) => {
+-        const next = { ...prev };
+-        delete next[keyStr];
+-        return next;
+-      });
+-    }
+-
+-    const nextMappings = { ...mappings };
+-    nextMappings[keyStr] = rawVal;
+-    onChange(nextMappings);
++    onChange({ ...mappings, [keyStr]: rawVal });
+   };
+ 
+   const handleResetRow = (keyStr: string) => {
+     const nextMappings = { ...mappings };
+     delete nextMappings[keyStr];
+-    setErrorMap((prev) => {
+-      const next = { ...prev };
+-      delete next[keyStr];
+-      return next;
+-    });
+     onChange(nextMappings);
+   };
+ 
+   const handleRestoreAllDefaults = () => {
+-    setErrorMap({});
+     onChange({});
+   };
+ 
+   return (
+-    <div className={styles.container} role="tabpanel" aria-labelledby="FLayerMappings">
++    <div className={styles.container} role="tabpanel" aria-label="F 分層映射">
+       <div className={styles.headerRow}>
+         <div>
+           <Text weight="semibold" size={400}>
+-            F 鍵分層符號對照表 (Kanata Number / Symbol Layer)
++            F 分層映射
+           </Text>
+           <div className={styles.descText}>
+-            長按 F 鍵到達設定延遲時間後，按下對應按鍵輸出的符號。每個按鍵可設定 1 個字元；留空則為透明（使用原鍵直出）。
++            長按 F 鍵到達設定延遲時間後，按下對應按鍵輸出的符號。每個按鍵可設定 1 個字元；留空則使用原按鍵功能。修改後按「套用」或「確定」儲存。F 與退格保留原用途。
+           </div>
+         </div>
+-        <Button size="small" appearance="outline" onClick={handleRestoreAllDefaults}>
++        <Button size="small" appearance="outline" disabled={loading || !!loadError} onClick={handleRestoreAllDefaults}>
+           全部還原預設值
+         </Button>
+       </div>
+ 
+-      <table className={styles.table}>
++      {loading && <Text role="status">正在載入映射表…</Text>}
++      {loadError && <div role="alert">{loadError} <Button onClick={() => setRetry((n) => n + 1)}>重試</Button></div>}
++      {!loading && !loadError && <table className={styles.table}>
+         <thead>
+           <tr>
+             <th className={styles.keyCol}>按鍵</th>
+@@ -181,27 +165,25 @@ export default function FLayerMappings({ mappings, onChange }: Props) {
+             const keyStr = String(row.key);
+             const isOverridden = Object.prototype.hasOwnProperty.call(mappings, keyStr);
+             const currentVal = isOverridden ? mappings[keyStr] : row.output;
+-            const err = errorMap[keyStr];
++            const err = validateOutputScalar(currentVal).reason;
+ 
+             return (
+               <tr key={row.key}>
+                 <td>
+-                  <Text weight="medium">{row.label}</Text>
+-                  <Text size={200} style={{ color: tokens.colorNeutralForeground4, marginLeft: "6px" }}>
+-                    ({row.key})
+-                  </Text>
++                  <Text weight="medium">F + {row.label}</Text>
+                 </td>
+                 <td>
+                   <Text style={{ fontFamily: "monospace" }}>
+-                    {row.output === "" ? "（透明）" : row.output}
++                    {row.output === "" ? "（原按鍵）" : row.output}
+                   </Text>
+                 </td>
+                 <td>
+                   <Field validationMessage={err} validationState={err ? "error" : "none"}>
+                     <Input
+                       className={styles.input}
++                      aria-label={`F + ${row.label} 的輸出`}
+                       value={currentVal}
+-                      placeholder={row.output === "" ? "（透明）" : row.output}
++                      placeholder={row.output === "" ? "（原按鍵）" : row.output}
+                       onChange={(_e, data) => handleInputChange(keyStr, data.value)}
+                     />
+                   </Field>
+@@ -221,7 +203,7 @@ export default function FLayerMappings({ mappings, onChange }: Props) {
+             );
+           })}
+         </tbody>
+-      </table>
++      </table>}
+     </div>
+   );
+ }
+-- 
+2.54.0 (Apple Git-157)
+
