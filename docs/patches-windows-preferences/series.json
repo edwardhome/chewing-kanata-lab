@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "28c49157ef8cc85443567a7aa51d7bf3990d168f",
-  "preferences_commit": "96df796f8c1450195f53472f9a82bff76b18338f",
+  "tree": "58d4bc1ce4f9030bd1b7ef8a83b7d50592020d5a",
+  "preferences_commit": "0701285cc94fb80c93041804d3c37b26d31fcba7",
   "patches": [
     {
       "file": "0001-fix-preferences-restore-native-settings.patch",
@@ -79,6 +79,10 @@
     {
       "file": "0019-feat-settings-qwerty-keyboard-single-row-tabs.patch",
       "sha256": "d623ab9347211636a6a7cd883f06bd8121199f44fede6790d5a780246b623123"
+    },
+    {
+      "file": "0020-fix-build-retain-native-core-version.patch",
+      "sha256": "59720d5927da6d11c3bf0df3622f18684bad4f1777ec27d43ac1726bb5540600"
     }
   ]
 }
