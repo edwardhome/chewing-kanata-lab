@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "58d4bc1ce4f9030bd1b7ef8a83b7d50592020d5a",
-  "preferences_commit": "0701285cc94fb80c93041804d3c37b26d31fcba7",
+  "tree": "f4189e276e7409a7074ba0c10fc2634529c67646",
+  "preferences_commit": "08cf8ce4eb8af620827f56fe034631cdcc6831ea",
   "patches": [
     {
       "file": "0001-fix-preferences-restore-native-settings.patch",
@@ -83,6 +83,10 @@
     {
       "file": "0020-fix-build-retain-native-core-version.patch",
       "sha256": "59720d5927da6d11c3bf0df3622f18684bad4f1777ec27d43ac1726bb5540600"
+    },
+    {
+      "file": "0021-chore-release-set-version-1.1.5.patch",
+      "sha256": "92de2ea647416cbe3ef163febc18f9ce9b50a761b7b7a51907b68ab61c4e3f2b"
     }
   ]
 }
