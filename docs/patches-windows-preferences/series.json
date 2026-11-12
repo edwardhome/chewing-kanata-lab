@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "821bf55b06ad44763e8657b5308c89a598d9a975",
-  "preferences_commit": "6fcac6e30d1e8ee2f670169603b20dcb3530e8bd",
+  "tree": "28c49157ef8cc85443567a7aa51d7bf3990d168f",
+  "preferences_commit": "96df796f8c1450195f53472f9a82bff76b18338f",
   "patches": [
     {
       "file": "0001-fix-preferences-restore-native-settings.patch",
@@ -75,6 +75,10 @@
     {
       "file": "0018-feat-settings-integrate-validated-F-mapping-storage-.patch",
       "sha256": "df58dbe675a31e8747dbb3dafaa150ab9e5278d2743e48bc8167173f29a77f71"
+    },
+    {
+      "file": "0019-feat-settings-qwerty-keyboard-single-row-tabs.patch",
+      "sha256": "d623ab9347211636a6a7cd883f06bd8121199f44fede6790d5a780246b623123"
     }
   ]
 }
