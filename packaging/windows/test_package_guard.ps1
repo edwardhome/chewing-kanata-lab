@@ -14,7 +14,7 @@ function New-Fixture {
     $guid = [Guid]'{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}'
     $bytes = [byte[]](@(0x4d, 0x5a) + $guid.ToByteArray())
     $files = @{}
-    foreach ($name in @('chewing_tip.dll', 'tsfreg.exe', 'chewing.ico', 'ChewingPreferences.exe', 'Dictionary/swkb.dat', 'Dictionary/symbols.dat', 'Dictionary/static_dict.bin', 'Dictionary/rare_dict.bin', 'Dictionary/static_words.bin', 'Dictionary/static_lm.bin')) {
+    foreach ($name in @('chewing_tip.dll', 'tsfreg.exe', 'chewing.ico', 'ChewingPreferences.exe', 'machine_registration.ps1', 'Dictionary/swkb.dat', 'Dictionary/symbols.dat', 'Dictionary/static_dict.bin', 'Dictionary/rare_dict.bin', 'Dictionary/static_words.bin', 'Dictionary/static_lm.bin')) {
         New-Item -ItemType Directory -Path (Split-Path -Parent (Join-Path $dir $name)) -Force | Out-Null
         [IO.File]::WriteAllBytes((Join-Path $dir $name), $bytes)
         $files[$name] = (Get-FileHash (Join-Path $dir $name)).Hash.ToLowerInvariant()
@@ -226,5 +226,9 @@ exit 0
     }
     Write-Output "$script:passed package guard cases passed."
 } finally {
+    $resolved = [IO.Path]::GetFullPath($testRoot)
+    $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    if (-not $resolved.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase) -or
+        (Split-Path -Leaf $resolved) -notmatch '^ckai-package-tests-[a-f0-9]{32}$') { throw 'Unsafe test cleanup path' }
     Remove-Item -LiteralPath $testRoot -Recurse -Force
 }

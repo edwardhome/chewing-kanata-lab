@@ -1,6 +1,6 @@
 # Read-only diagnostic: never activates, registers or restarts an input method.
 # No typed text, dictionaries, credentials or complete event messages are read.
-param([string]$OutputPath = (Join-Path $PSScriptRoot ('search-diagnostic-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')))
+param([string]$OutputPath = (Join-Path ([IO.Path]::GetTempPath()) ('search-diagnostic-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')))
 $ErrorActionPreference = 'Stop'
 function PublicPath([string]$Path) {
     if (!$Path) { return $null }
@@ -17,22 +17,24 @@ function FileSummary([string]$Path) {
     })
     return @{ present=$true; path=(PublicPath $Path); version=$f.VersionInfo.ProductVersion; sha256=(Get-FileHash -LiteralPath $Path).Hash; signature=$sig.Status.ToString(); appContainerRules=$appRules }
 }
-$r = [ordered]@{ schema=1; time=[DateTimeOffset]::Now.ToString('o'); purpose='Start/Search IME activation diagnosis; no input text collected'; errors=@() }
+$r = [ordered]@{ schema=2; time=[DateTimeOffset]::Now.ToString('o'); purpose='Start/Search IME activation diagnosis; no input text collected'; errors=@() }
 $os = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
 $r.os = @{ build=$os.CurrentBuildNumber; revision=$os.UBR; displayVersion=$os.DisplayVersion; process64bit=[Environment]::Is64BitProcess }
 $clsid='{D4C3B2A1-0E9E-4340-9E11-209B0E9C7E2E}'
 $r.registrations=@()
+foreach($hiveName in @([Microsoft.Win32.RegistryHive]::CurrentUser,[Microsoft.Win32.RegistryHive]::LocalMachine)) {
 foreach($view in @([Microsoft.Win32.RegistryView]::Registry64,[Microsoft.Win32.RegistryView]::Registry32)) {
     $hive=$null;$key=$null
     try {
-        $hive=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser,$view)
+        $hive=[Microsoft.Win32.RegistryKey]::OpenBaseKey($hiveName,$view)
         $key=$hive.OpenSubKey("Software\Classes\CLSID\$clsid\InProcServer32")
         $dll=if($key){[string]$key.GetValue('')}else{''}
-        $entry=@{ view=$view.ToString(); present=!!$key }
+        $entry=@{ hive=$hiveName.ToString(); view=$view.ToString(); present=!!$key }
         if($dll){$entry.dll=FileSummary $dll}
         $r.registrations+=,$entry
-    } catch { $r.errors+=('registration:'+$view+':'+$_.Exception.GetType().Name) }
+    } catch { $r.errors+=('registration:'+$hiveName+':'+$view+':'+$_.Exception.GetType().Name) }
     finally {if($key){$key.Dispose()};if($hive){$hive.Dispose()}}
+}
 }
 $r.hosts=@()
 foreach($p in @(Get-Process SearchHost,StartMenuExperienceHost,ctfmon -ErrorAction SilentlyContinue)) {

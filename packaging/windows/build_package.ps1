@@ -42,7 +42,7 @@ $payload['AI-Bopomofo-LICENSE.txt'] = Join-Path $sourceRoot 'policy-core\resourc
 foreach ($name in @('swkb.dat', 'symbols.dat', 'static_dict.bin', 'rare_dict.bin', 'static_words.bin', 'static_lm.bin')) {
     $payload['Dictionary/' + $name] = Join-Path $DictionaryDirectory $name
 }
-foreach ($name in @('package_guard.ps1', 'appcontainer_access.ps1', 'diagnose_search.ps1', 'diagnose_search.bat', 'do_install.ps1', 'do_uninstall.ps1', 'install_ime.bat', 'uninstall_ime.bat')) {
+foreach ($name in @('package_guard.ps1', 'machine_registration.ps1', 'appcontainer_access.ps1', 'diagnose_search.ps1', 'diagnose_search.bat', 'do_install.ps1', 'do_uninstall.ps1', 'install_ime.bat', 'uninstall_ime.bat')) {
     $payload[$name] = Join-Path $PSScriptRoot $name
 }
 foreach ($source in $payload.Values) {

@@ -1,0 +1,14 @@
+PASS: Protected public ACL allows only administrators/system to write
+PASS: User-writable machine DLL is rejected
+PASS: User-owned machine payload is rejected even if its DACL is read-only
+PASS: Creator-owner writable inheritance is rejected
+PASS: Machine payload cannot point into a user profile or a prefix sibling
+PASS: Intermediate directory junction is rejected before any file access
+PASS: Snapshot rollback preserves values, kinds, subkeys and pre-existing ACLs
+PASS: Both COM views publish the same DLL and Apartment threading model
+PASS: Existing machine registration owned by another account is not overwritten
+PASS: Repeated registration preserves pre-existing properties, child keys and ACLs
+PASS: Unmarked pre-existing machine class is not adopted
+PASS: Second-view failure restores an existing machine DLL and user DLL
+PASS: Second-view failure removes a newly created machine class
+13 machine registration cases passed.
