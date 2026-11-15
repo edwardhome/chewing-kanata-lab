@@ -74,9 +74,9 @@ impl Default for AppInputRulesDocument {
 /// - Unicode 小寫化，統一反斜線 `\`
 /// - 消除 `.` 與合法消除 `..`，不可跳出磁碟機根目錄
 pub fn normalize_canonical_app_id(raw_path: &str) -> Option<String> {
-    let trimmed = raw_path.trim();
+    let trimmed = raw_path.strip_prefix(r"\\?\").unwrap_or(raw_path);
     if trimmed.is_empty()
-        || trimmed.len() > MAX_PATH_CHARS
+        || trimmed.encode_utf16().count() > MAX_PATH_CHARS
         || trimmed.chars().any(char::is_control)
     {
         return None;
@@ -103,7 +103,7 @@ pub fn normalize_canonical_app_id(raw_path: &str) -> Option<String> {
     // 分解 path segments，統一處理 / 與 \
     let mut segments = Vec::new();
     for seg in rest.split(['\\', '/']) {
-        let seg_trim = seg.trim();
+        let seg_trim = seg;
         if seg_trim.is_empty() || seg_trim == "." {
             continue;
         }
@@ -156,7 +156,7 @@ pub fn parse_and_validate_rules(json_str: &str) -> Vec<AppInputRule> {
     for rule in doc.rules {
         let name_trimmed = rule.display_name.trim();
         if name_trimmed.is_empty()
-            || name_trimmed.len() > MAX_DISPLAY_NAME_CHARS
+            || name_trimmed.chars().count() > MAX_DISPLAY_NAME_CHARS
             || name_trimmed.chars().any(char::is_control)
         {
             return Vec::new();
@@ -168,8 +168,8 @@ pub fn parse_and_validate_rules(json_str: &str) -> Vec<AppInputRule> {
         };
 
         if !seen_ids.insert(norm_id.clone()) {
-            // 重複 app_id，fail whole document
-            return Vec::new();
+            // Preserve the first rule when an import repeats an identity.
+            continue;
         }
 
         valid_rules.push(AppInputRule {
@@ -340,7 +340,9 @@ impl AppInputRulesTracker {
     ) -> bool {
         let norm_client = client_app_id.and_then(normalize_canonical_app_id);
         if let Some(visit) = &mut self.current_visit {
-            if visit.generation == expected_generation && norm_client.as_deref() == Some(&visit.app_id) {
+            if visit.target_mode.is_some()
+                && visit.generation == expected_generation
+                && norm_client.as_deref() == Some(&visit.app_id) {
                 visit.target_mode = Some(mode);
                 return true;
             }
@@ -473,7 +475,7 @@ mod tests {
         };
         let mut tracker = AppInputRulesTracker::new(true, &[rule1]);
 
-        // Visit 1: 进入 Notepad
+        // Visit 1: 進入 Notepad
         let (gen1, target1) = tracker.on_foreground_app_changed(Some(r"C:\Windows\Notepad.exe")).unwrap();
         assert_eq!(gen1, 1);
         assert_eq!(target1, Some(RuleMode::English));
