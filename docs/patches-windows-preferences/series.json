@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "6f8dcd13a28faae80b5c412115ddf41998c4c438",
-  "preferences_commit": "6fb061675e2b5e98904beb92d5238a8d02780aa1",
+  "tree": "16b38d6f313b8fa39bffdfa560b88a490451b819",
+  "preferences_commit": "5da8f2b30295a77c711395a18d2fcc0706326995",
   "patches": [
     {
       "file": "0001-fix-preferences-restore-native-settings.patch",
@@ -107,6 +107,10 @@
     {
       "file": "0026-docs-settings-explain-existing-Caps-Lock-mode-preced.patch",
       "sha256": "9db5b0daf29d8668adb8771a2a258b4653ba41228b29d0302925c156df8de498"
+    },
+    {
+      "file": "0027-feat-settings-choose-running-apps-without-reading-wi.patch",
+      "sha256": "3e86dfa5465c665e522a8c07f4b42d13f7ebeab799bf9e8954486f791580e06e"
     }
   ]
 }
