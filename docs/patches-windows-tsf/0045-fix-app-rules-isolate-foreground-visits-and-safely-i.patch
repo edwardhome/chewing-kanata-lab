@@ -1,0 +1,664 @@
+From 4ed66022220d03d41eae6d2cd56967ce55512436 Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Mon, 16 Nov 2026 00:07:17 +0800
+Subject: [PATCH 45/47] fix(app-rules): isolate foreground visits and safely
+ integrate TSF boundaries
+
+---
+ Cargo.lock                              |  10 +-
+ Cargo.toml                              |   2 +-
+ tip/Cargo.toml                          |   3 +
+ tip/rc/version.rc                       |  14 +-
+ tip/src/text_service/app_input_rules.rs | 322 +++++++++---------------
+ tip/src/text_service/chewing.rs         |  81 +++---
+ tip/src/text_service/mod.rs             |   3 +-
+ 7 files changed, 187 insertions(+), 248 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index d55b57c..11de4d2 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -67,7 +67,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "aho-corasick"
+-version = "1.1.5"
++version = "1.3.0-dev.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
+ dependencies = [
+@@ -328,7 +328,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip"
+-version = "1.1.5"
++version = "1.3.0-dev.1"
+ dependencies = [
+  "anyhow",
+  "cc",
+@@ -351,7 +351,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.1.5"
++version = "1.3.0-dev.1"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+@@ -372,7 +372,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_host"
+-version = "1.1.5"
++version = "1.3.0-dev.1"
+ dependencies = [
+  "anyhow",
+  "chewing",
+@@ -2792,7 +2792,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
+ 
+ [[package]]
+ name = "tsfreg"
+-version = "1.1.5"
++version = "1.3.0-dev.1"
+ dependencies = [
+  "chewing_tip_core",
+  "scoped-error",
+diff --git a/Cargo.toml b/Cargo.toml
+index d45bd58..ca562ac 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -9,7 +9,7 @@ members = [
+ ]
+ 
+ [workspace.package]
+-version = "1.1.5"
++version = "1.3.0-dev.1"
+ 
+ [workspace.dependencies]
+ anyhow = "1"
+diff --git a/tip/Cargo.toml b/tip/Cargo.toml
+index 22c86e7..aad7b25 100644
+--- a/tip/Cargo.toml
++++ b/tip/Cargo.toml
+@@ -18,11 +18,13 @@ interprocess = { workspace = true }
+ log = { version = "0.4.0", features = ["kv"] }
+ logforth = { version = "0.29.1", features = ["bridge-log"] }
+ scoped-error.workspace = true
++serde_json = "1"
+ serde = { version = "1.0.228", features = ["derive"] }
+ windows = { version = "0.62.2", features = [
+   "Foundation",
+   "System",
+   "Win32_Globalization",
++  "Win32_Security",
+   "Win32_Graphics",
+   "Win32_Graphics_Direct2D",
+   "Win32_Graphics_Direct2D_Common",
+@@ -41,6 +43,7 @@ windows = { version = "0.62.2", features = [
+   "Win32_System_Ole",
+   "Win32_System_Registry",
+   "Win32_System_SystemServices",
++  "Win32_System_SystemInformation",
+   "Win32_System_Threading",
+   "Win32_System_Variant",
+   "Win32_UI_Accessibility",
+diff --git a/tip/rc/version.rc b/tip/rc/version.rc
+index c434415..d691b52 100644
+--- a/tip/rc/version.rc
++++ b/tip/rc/version.rc
+@@ -1,8 +1,8 @@
+-#define VER_FILEVERSION             1,1,5,0
+-#define VER_FILEVERSION_STR         "1.1.5.0\0"
+-#define VER_PRODUCTVERSION          1,1,5,0
+-#define VER_PRODUCTVERSION_STR      "1.1.5.0\0"
+-#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.1.5.0)\0"
+-#define ABOUT_VERSION_STR           "版本：1.1.5.0\0"
++#define VER_FILEVERSION             1,3,0,1
++#define VER_FILEVERSION_STR         "1.3.0-dev.1\0"
++#define VER_PRODUCTVERSION          1,3,0,1
++#define VER_PRODUCTVERSION_STR      "1.3.0-dev.1\0"
++#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.3.0-dev.1)\0"
++#define ABOUT_VERSION_STR           "版本：1.3.0-dev.1\0"
+ #define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 11 月 12 日\0"
+-#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.1.5.0)\0"
++#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.3.0-dev.1)\0"
+diff --git a/tip/src/text_service/app_input_rules.rs b/tip/src/text_service/app_input_rules.rs
+index fa15945..6433512 100644
+--- a/tip/src/text_service/app_input_rules.rs
++++ b/tip/src/text_service/app_input_rules.rs
+@@ -1,216 +1,138 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+-//! Windows 前景應用程式追蹤與規則管理 (WinEvent Hook + AppInputRulesTracker)
+-//!
+-//! 規範與安全要求：
+-//! 1. WinEventHook 由啟用線程在同一訊息迴圈線程安裝與反安裝，模組卸載或停用時確保 UnhookWinEvent，絕不殘留活體回呼。
+-//! 2. 前景事件僅觀察視窗代號 (HWND) 與行程 (PID)，由行程查詢可執行檔路徑並快取，絕不攔截全域按鍵、字元或視窗標題。
+-//! 3. 不在按鍵路徑 (OnKeyDown / OnTestKeyDown) 執行 Win32 行程路徑查詢或 Registry 讀取，完全使用快取。
+-//! 4. 使用 `policy_core::app_input_rules::AppInputRulesTracker` 進行世代與造訪追蹤。
+-//! 5. 跨行程局限性：本 TSF 為 in-process DLL 模組，各自運行於各宿主行程（如 Notepad, Explorer, Terminal）中。
+-//!    在單一行程模式下，各行程內的 TSF 實例透過 WinEvent 獨立監聽全系統前景視窗切換事件，
+-//!    當使用者切換至該行程視窗時能即時偵測到自己成為前景，並透過全域註冊表讀取最新規則設定。
+-//!    非同行程之間不強求跨行程共用記憶體，若有無法存取之特權行程則 fail-closed 回退，誠實回報限制。
+-
+-use chewing_policy_core::app_input_rules::{
+-    parse_and_validate_rules, AppInputRulesTracker, RuleMode,
+-};
+-use log::{debug, error};
+-use std::cell::RefCell;
+-use std::rc::Rc;
+-use windows::Win32::Foundation::{CloseHandle, HWND, MAX_PATH};
+-use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
+-use windows::Win32::System::Threading::{
+-    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+-    PROCESS_QUERY_LIMITED_INFORMATION,
+-};
+-use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
+-use windows::Win32::UI::WindowsAndMessaging::{
+-    GetWindowThreadProcessId, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
+-};
+-use windows_core::PWSTR;
+-
+-thread_local! {
+-    static ACTIVE_HOOKS: RefCell<Vec<HWINEVENTHOOK>> = RefCell::new(Vec::new());
+-    static GLOBAL_TRACKER: RefCell<Option<Rc<RefCell<AppInputRulesManager>>>> = RefCell::new(None);
+-}
+-
+-pub struct AppInputRulesManager {
+-    pub tracker: AppInputRulesTracker,
+-    cached_app_id: Option<String>,
+-    current_pid: u32,
+-    hook: Option<HWINEVENTHOOK>,
++// Copyright (c) 2026 AI Chewing contributors
++//! App identity only: no titles, text, global keyboard hook, or IME selection.
++//! A named mutex serializes the single current visit across host processes. The
++//! private registry value stores only the current visit, never a usage history.
++//! Key handling reads a process cache; registry/process queries occur on focus,
++//! foreground notifications, or explicit manual mode changes only.
++use chewing_policy_core::app_input_rules::{AppInputRulesTracker,CurrentVisit,RuleMode,parse_and_validate_rules};
++use serde::{Deserialize,Serialize};
++use std::{cell::RefCell,rc::{Rc,Weak},sync::Mutex};
++use windows::{core::{w,PWSTR},Win32::{
++    Foundation::{CloseHandle,GetLastError,HANDLE,HWND,ERROR_ALREADY_EXISTS,WAIT_OBJECT_0,WAIT_ABANDONED},
++    System::{Threading::{CreateMutexW,ReleaseMutex,WaitForSingleObject,OpenProcess,QueryFullProcessImageNameW,PROCESS_NAME_FORMAT,PROCESS_QUERY_LIMITED_INFORMATION},SystemInformation::GetTickCount},
++    UI::{Accessibility::{SetWinEventHook,UnhookWinEvent,HWINEVENTHOOK},WindowsAndMessaging::{GetForegroundWindow,GetWindowThreadProcessId,EVENT_SYSTEM_FOREGROUND,WINEVENT_OUTOFCONTEXT}},
++}};
++use windows_registry::CURRENT_USER;
++
++const RUNTIME_VALUE:&str="AppInputRulesRuntimeV1";
++#[derive(Clone,Default,Serialize,Deserialize)]
++struct SharedVisit { tracker:AppInputRulesTracker, tick:Option<u32> }
++#[derive(Clone)]
++struct CachedVisit { hwnd:usize,pid:u32,visit:CurrentVisit }
++static CACHE:Mutex<Option<CachedVisit>>=Mutex::new(None);
++thread_local! { static HOOK:RefCell<Weak<Hook>>=RefCell::new(Weak::new()); }
++
++/// Rc deliberately makes installation and destruction thread-affine.
++struct Hook { hook:HWINEVENTHOOK, mutex:HANDLE }
++impl Drop for Hook {
++    fn drop(&mut self) { unsafe { let _=UnhookWinEvent(self.hook); let _=CloseHandle(self.mutex); } }
+ }
+-
+-impl AppInputRulesManager {
+-    pub fn new(enabled: bool, rules_json: &str) -> Rc<RefCell<Self>> {
+-        let rules = parse_and_validate_rules(rules_json);
+-        let tracker = AppInputRulesTracker::new(enabled, &rules);
+-        let current_pid = unsafe { GetCurrentProcessId() };
+-
+-        // 查詢自己行程的 EXE 路徑作為初始路徑
+-        let initial_path = get_current_process_image_path();
+-
+-        let mut mgr = Self {
+-            tracker,
+-            cached_app_id: initial_path.clone(),
+-            current_pid,
+-            hook: None,
+-        };
+-
+-        if let Some(ref path) = initial_path {
+-            mgr.tracker.on_foreground_app_changed(Some(path));
+-        }
+-
+-        let rc = Rc::new(RefCell::new(mgr));
+-
+-        // 註冊為目前線程的全域實例
+-        GLOBAL_TRACKER.with(|gt| {
+-            *gt.borrow_mut() = Some(rc.clone());
+-        });
+-
+-        // 安裝 EVENT_SYSTEM_FOREGROUND 監聽
+-        let hook = unsafe {
+-            SetWinEventHook(
+-                EVENT_SYSTEM_FOREGROUND,
+-                EVENT_SYSTEM_FOREGROUND,
+-                None,
+-                Some(win_event_proc),
+-                0,
+-                0,
+-                WINEVENT_OUTOFCONTEXT,
+-            )
+-        };
+-
+-        if !hook.is_invalid() {
+-            rc.borrow_mut().hook = Some(hook);
+-            ACTIVE_HOOKS.with(|hooks| hooks.borrow_mut().push(hook));
+-            debug!("AppInputRulesManager: WinEventHook installed: {:?}", hook);
+-        } else {
+-            error!("AppInputRulesManager: failed to install WinEventHook");
+-        }
+-
+-        rc
++struct Lock(HANDLE);
++impl Drop for Lock { fn drop(&mut self){unsafe {let _=ReleaseMutex(self.0);}} }
++impl Hook {
++    fn lock(&self)->Option<Lock>{
++        let result=unsafe{WaitForSingleObject(self.mutex,25)};
++        if result==WAIT_OBJECT_0 || result==WAIT_ABANDONED {Some(Lock(self.mutex))} else {None}
+     }
+-
+-    /// 重新載入或更新規則組態（Next-visit-only）
+-    pub fn update_config(&mut self, enabled: bool, rules_json: &str) {
+-        let rules = parse_and_validate_rules(rules_json);
+-        self.tracker.update_config(enabled, &rules);
+-    }
+-
+-    /// 當前景視窗切換時呼叫
+-    pub fn on_foreground_window_changed(&mut self, hwnd: HWND) {
+-        let mut pid: u32 = 0;
+-        unsafe {
+-            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+-        }
+-
+-        if pid == 0 {
+-            return;
+-        }
+-
+-        // 若 PID 改變或是首次獲取，查詢並正規化執行檔路徑
+-        let exe_path = if pid == self.current_pid {
+-            get_current_process_image_path()
+-        } else {
+-            get_process_image_path(pid)
++    fn refresh(&self,hwnd:HWND,tick:u32,reset:bool,manual:Option<(CurrentVisit,RuleMode)>){
++        // Invalidate before any fallible operation. An inaccessible foreground
++        // must never leave a previous application's target available.
++        if let Ok(mut cache)=CACHE.lock(){*cache=None;}
++        let Some(_lock)=self.lock() else{return;};
++        let Ok(key)=CURRENT_USER.options().read().write().open("Software\\ChewingDev") else{return;};
++        let mut shared=if reset {SharedVisit::default()} else {
++            key.get_string(RUNTIME_VALUE).ok().filter(|s|s.len()<=2_097_152)
++                .and_then(|s|serde_json::from_str::<SharedVisit>(&s).ok()).unwrap_or_default()
+         };
+-
+-        if let Some(path) = exe_path {
+-            self.cached_app_id = Some(path.clone());
+-            self.tracker.on_foreground_app_changed(Some(&path));
+-        }
+-    }
+-
+-    /// 目前快取的前景應用程式路徑
+-    pub fn current_app_id(&self) -> Option<&str> {
+-        self.cached_app_id.as_deref()
+-    }
+-
+-    /// 取得目前 visit 的目標模式
+-    pub fn target(&self, safe: bool, active: bool, secure: bool) -> Option<RuleMode> {
+-        let generation = self.tracker.current_visit().map(|v| v.generation)?;
+-        self.tracker.target(generation, self.cached_app_id.as_deref(), safe, active, secure)
+-    }
+-
+-    /// 使用者手動切換中英文模式
+-    pub fn manual_toggle(&mut self, mode: RuleMode) -> bool {
+-        if let Some(visit) = self.tracker.current_visit() {
+-            let generation = visit.generation;
+-            self.tracker.manual(generation, self.cached_app_id.as_deref(), mode)
++        let mut pid=0;
++        unsafe{GetWindowThreadProcessId(hwnd,Some(&mut pid));}
++        if let Some((expected,mode))=manual {
++            // A manual action cannot revise a newer visit or a different App.
++            let actual=process_path(pid);
++            if unsafe{GetForegroundWindow()}!=hwnd || !shared.tracker.manual(expected.generation,actual.as_deref(),mode){return;}
++        } else if shared.tick.is_none_or(|last|not_older(tick,last)) {
++            let enabled=key.get_u32("AppInputRulesEnabled").unwrap_or(0)!=0;
++            let json=key.get_string("AppInputRulesJson").unwrap_or_default();
++            let rules=parse_and_validate_rules(&json);
++            shared.tracker.update_config(enabled,&rules);
++            let path=process_path(pid);
++            shared.tracker.on_foreground_app_changed(path.as_deref());
+         } else {
+-            false
++            // A delayed callback may populate cache from the newer shared state,
++            // but cannot change the visit. Verify identity below.
+         }
++        if shared.tick.is_none_or(|last|not_older(tick,last)){shared.tick=Some(tick);}
++        let Ok(json)=serde_json::to_string(&shared) else{return;};
++        if key.set_string(RUNTIME_VALUE,&json).is_err(){return;}
++        let Some(visit)=shared.tracker.current_visit().cloned() else{return;};
++        let actual=process_path(pid).and_then(|p|chewing_policy_core::app_input_rules::normalize_canonical_app_id(&p));
++        if actual.as_deref()!=Some(visit.app_id.as_str()) || unsafe{GetForegroundWindow()}!=hwnd{return;}
++        if let Ok(mut cache)=CACHE.lock(){*cache=Some(CachedVisit{hwnd:hwnd.0 as usize,pid,visit});}
+     }
+ }
+ 
+-impl Drop for AppInputRulesManager {
+-    fn drop(&mut self) {
+-        if let Some(hook) = self.hook.take() {
+-            unsafe {
+-                let _ = UnhookWinEvent(hook);
+-            }
+-            ACTIVE_HOOKS.with(|hooks| {
+-                hooks.borrow_mut().retain(|&h| h != hook);
+-            });
+-            debug!("AppInputRulesManager: WinEventHook unhooked: {:?}", hook);
+-        }
+-        GLOBAL_TRACKER.with(|gt| {
+-            *gt.borrow_mut() = None;
+-        });
++pub struct AppInputRulesManager { hook:Option<Rc<Hook>> }
++impl AppInputRulesManager {
++    pub fn new()->Self {
++        let existing=HOOK.with(|h|h.borrow().upgrade());
++        if let Some(hook)=existing{return Self{hook:Some(hook)};}
++        let mutex=unsafe{CreateMutexW(None,false,w!("Local\\AI-Chewing-AppRules-v1"))};
++        let Ok(mutex)=mutex else{return Self{hook:None};};
++        let reset=unsafe{GetLastError()}!=ERROR_ALREADY_EXISTS;
++        let hook=unsafe{SetWinEventHook(EVENT_SYSTEM_FOREGROUND,EVENT_SYSTEM_FOREGROUND,None,Some(win_event_proc),0,0,WINEVENT_OUTOFCONTEXT)};
++        if hook.is_invalid(){unsafe{let _=CloseHandle(mutex);}return Self{hook:None};}
++        let hook=Rc::new(Hook{hook,mutex});
++        HOOK.with(|slot|*slot.borrow_mut()=Rc::downgrade(&hook));
++        hook.refresh(unsafe{GetForegroundWindow()},unsafe{GetTickCount()},reset,None);
++        Self{hook:Some(hook)}
+     }
+-}
+-
+-/// WinEvent 回呼函式
+-unsafe extern "system" fn win_event_proc(
+-    _h_win_event_hook: HWINEVENTHOOK,
+-    event: u32,
+-    hwnd: HWND,
+-    _id_object: i32,
+-    _id_child: i32,
+-    _id_event_thread: u32,
+-    _dwms_event_time: u32,
+-) {
+-    if event == EVENT_SYSTEM_FOREGROUND && !hwnd.is_invalid() {
+-        GLOBAL_TRACKER.with(|gt| {
+-            if let Some(mgr_rc) = gt.borrow().as_ref() {
+-                if let Ok(mut mgr) = mgr_rc.try_borrow_mut() {
+-                    mgr.on_foreground_window_changed(hwnd);
+-                }
+-            }
+-        });
++    pub fn refresh(&self){if let Some(h)=&self.hook{h.refresh(unsafe{GetForegroundWindow()},unsafe{GetTickCount()},false,None);}}
++    pub fn target(&self)->Option<RuleMode>{
++        if self.hook.is_none(){return None;}
++        let cached=CACHE.lock().ok()?.clone()?;
++        let hwnd=unsafe{GetForegroundWindow()};let mut pid=0;
++        unsafe{GetWindowThreadProcessId(hwnd,Some(&mut pid));}
++        if cached.hwnd!=hwnd.0 as usize || cached.pid!=pid{return None;}
++        cached.visit.target_mode
++    }
++    pub fn manual_toggle(&self,mode:RuleMode){
++        let Some(h)=&self.hook else{return;};
++        let Some(cached)=CACHE.lock().ok().and_then(|v|v.clone()) else{return;};
++        if cached.visit.target_mode.is_none(){return;}
++        let hwnd=unsafe{GetForegroundWindow()};let mut pid=0;
++        unsafe{GetWindowThreadProcessId(hwnd,Some(&mut pid));}
++        if hwnd.0 as usize!=cached.hwnd || pid!=cached.pid{return;}
++        h.refresh(hwnd,unsafe{GetTickCount()},false,Some((cached.visit,mode)));
+     }
+ }
+-
+-/// 取得當前模組/行程的執行檔絕對路徑
+-fn get_current_process_image_path() -> Option<String> {
+-    let mut buffer = [0u16; MAX_PATH as usize * 2];
+-    let len = unsafe { GetModuleFileNameW(None, &mut buffer) as usize };
+-    if len == 0 {
+-        return None;
++unsafe extern "system" fn win_event_proc(_:HWINEVENTHOOK,event:u32,hwnd:HWND,_:i32,_:i32,_:u32,tick:u32){
++    if event!=EVENT_SYSTEM_FOREGROUND{return;}
++    // Clone outside the TLS borrow. Reentrant Win32 calls cannot panic on RefCell.
++    let hook=HOOK.with(|h|h.try_borrow().ok().and_then(|h|h.upgrade()));
++    if let Some(hook)=hook{hook.refresh(hwnd,tick,false,None);}
++}
++fn process_path(pid:u32)->Option<String>{
++    if pid==0{return None;}
++    unsafe{
++        let process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,false,pid).ok()?;
++        let mut buf=vec![0u16;32768];let mut size=buf.len() as u32;
++        let result=QueryFullProcessImageNameW(process,PROCESS_NAME_FORMAT(0),PWSTR(buf.as_mut_ptr()),&mut size);
++        let _=CloseHandle(process);
++        if result.is_err() || size==0 || size as usize>=buf.len(){return None;}
++        String::from_utf16(&buf[..size as usize]).ok()
+     }
+-    String::from_utf16(&buffer[..len]).ok()
+ }
+-
+-/// 透過 PID 查詢該行程的完整執行檔路徑（QueryFullProcessImageNameW）
+-fn get_process_image_path(pid: u32) -> Option<String> {
+-    unsafe {
+-        let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+-            Ok(h) => h,
+-            Err(_) => return None, // 權限不足或系統行程，fail-closed
+-        };
+-
+-        let mut buffer = [0u16; MAX_PATH as usize * 2];
+-        let mut size = buffer.len() as u32;
+-        let pwpath = PWSTR::from_raw(buffer.as_mut_ptr());
+-
+-        let res = QueryFullProcessImageNameW(handle, PROCESS_NAME_FORMAT(0), pwpath, &mut size);
+-        let _ = CloseHandle(handle);
+-
+-        if res.is_ok() && size > 0 {
+-            String::from_utf16(&buffer[..size as usize]).ok()
+-        } else {
+-            None
+-        }
++fn not_older(candidate:u32,last:u32)->bool{candidate.wrapping_sub(last) as i32>=0}
++#[cfg(test)] mod tests {
++    use super::*;
++    #[test]fn delayed_event_and_tick_wrap(){assert!(!not_older(99,100));assert!(not_older(100,100));assert!(not_older(3,u32::MAX-3));assert!(!not_older(u32::MAX-3,3));}
++    #[test]fn shared_visit_roundtrip_preserves_manual_choice(){
++        let rules=parse_and_validate_rules(r#"{"version":1,"rules":[{"app_id":"c:\\app.exe","display_name":"App","mode":"english"}]}"#);
++        let mut state=SharedVisit::default();state.tracker.update_config(true,&rules);
++        let(g,_)=state.tracker.on_foreground_app_changed(Some(r"c:\app.exe")).unwrap();
++        assert!(state.tracker.manual(g,Some(r"c:\app.exe"),RuleMode::Bopomofo));
++        let copy:SharedVisit=serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
++        assert_eq!(copy.tracker.target(g,Some(r"c:\app.exe"),true,true,false),Some(RuleMode::Bopomofo));
+     }
+ }
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 6d2b082..b9b0211 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -212,7 +212,7 @@ pub(super) struct ChewingTextService {
+     recovery_gate: RecoveryGate,
+     recovery_open_pending: Cell<bool>,
+     keyboard_sync_active: Cell<bool>,
+-    app_rules_mgr: Rc<RefCell<AppInputRulesManager>>,
++    app_rules_mgr: AppInputRulesManager,
+ 
+     has_focus: bool,
+     output_simp_chinese: bool,
+@@ -396,10 +396,7 @@ impl ChewingTextService {
+             recovery_gate: RecoveryGate::default(),
+             recovery_open_pending: Cell::new(false),
+             keyboard_sync_active: Cell::new(false),
+-            app_rules_mgr: AppInputRulesManager::new(
+-                cfg.chewing_tsf.app_input_rules_enabled,
+-                &cfg.chewing_tsf.app_input_rules_json,
+-            ),
++            app_rules_mgr: AppInputRulesManager::new(),
+         };
+ 
+         if let Err(error) = cts.init_openclose(tid) {
+@@ -434,6 +431,7 @@ impl ChewingTextService {
+ 
+     pub(super) fn on_kill_focus(&mut self, context: Option<ITfContext>) -> Result<()> {
+         debug!("on_kill_focus");
++        self.refresh_app_foreground();
+         self.has_focus = false;
+         self.hide_message();
+         self.hide_candidates();
+@@ -455,10 +453,12 @@ impl ChewingTextService {
+ 
+     pub(super) fn on_focus(&mut self) -> Result<()> {
+         debug!("on_focus");
++        self.refresh_app_foreground();
+         self.has_focus = true;
+         self.reset_shift_gesture();
+         self.recover_focused_context();
+         self.refresh_shared_lexicon();
++        let _ = self.check_and_apply_app_rule();
+         Ok(())
+     }
+ 
+@@ -470,6 +470,7 @@ impl ChewingTextService {
+     }
+ 
+     pub(super) fn on_thread_focus(&mut self) -> Result<()> {
++        self.refresh_app_foreground();
+         self.reset_shift_gesture();
+         self.refresh_shared_lexicon();
+         // Focus changes must not rebuild an editor that still owns uncommitted text.
+@@ -485,36 +486,46 @@ impl ChewingTextService {
+         Ok(())
+     }
+ 
+-    fn check_and_apply_app_rule(&mut self) -> Result<bool> {
+-        let safe = !self.has_pending_input();
+-        let active = self.has_focus;
+-        let secure = false; // TSF normal thread focus; secure desktop is handled fail-closed
+-
+-        let target_mode = {
+-            let mgr = self.app_rules_mgr.borrow();
+-            mgr.target(safe, active, secure)
+-        };
+-
+-        let Some(rule_mode) = target_mode else {
+-            return Ok(false);
+-        };
+-
+-        let desired_lang = match rule_mode {
++    fn app_rule_context_valid(&self) -> bool {
++        if !self.has_focus || self.lang_mode.get().is_disabled() { return false; }
++        (|| -> Result<bool> {
++            use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
++            let context = unsafe { self.thread_mgr.GetFocus()?.GetTop()? };
++            if !self.is_context_mutable(&context).unwrap_or(false) { return Ok(false); }
++            let view = unsafe { context.GetActiveView()?.GetWnd()? };
++            let foreground = unsafe { GetForegroundWindow() };
++            if view.is_invalid() || foreground.is_invalid() { return Ok(false); }
++            Ok(unsafe { GetAncestor(view, GA_ROOT) == GetAncestor(foreground, GA_ROOT) })
++        })().unwrap_or(false)
++    }
++
++    fn record_app_rule_manual(&self, mode: chewing_policy_core::app_input_rules::RuleMode) {
++        if self.app_rule_context_valid() { self.app_rules_mgr.manual_toggle(mode); }
++    }
++
++    pub(super) fn check_and_apply_app_rule(&mut self) -> Result<bool> {
++        if self.has_pending_input()
++            || !matches!(self.f_key_state, kanata_layer::FKeyState::Up)
++            || !matches!(self.shift_key_state, ShiftKeyState::Up)
++            || self.initial_timer.is_some()
++            || self.double_shift.is_active_at(self.start_time.elapsed())
++            || self.cfg.chewing_tsf.enable_caps_lock
++            || !self.app_rule_context_valid() { return Ok(false); }
++        let Some(mode) = self.app_rules_mgr.target() else { return Ok(false); };
++        let desired = match mode {
+             chewing_policy_core::app_input_rules::RuleMode::English => TsfLangMode::English,
+             chewing_policy_core::app_input_rules::RuleMode::Bopomofo => TsfLangMode::Chinese,
+         };
+-
+-        if self.lang_mode.get() != desired_lang && !self.lang_mode.get().is_disabled() {
+-            debug!("Applying app input rule: {:?} -> {:?}", self.lang_mode.get(), desired_lang);
+-            self.lang_mode.set(desired_lang);
+-            self.pending_lang_mode_change.set(true);
++        if self.lang_mode.get() != desired {
++            self.lang_mode.set(desired);
++            self.chewing_editor.set_editor_options(|opt| opt.language_mode = desired.into());
+             self.sync_lang_mode(true)?;
+-            return Ok(true);
+         }
+-
+-        Ok(false)
++        Ok(true)
+     }
+ 
++    pub(super) fn refresh_app_foreground(&self) { self.app_rules_mgr.refresh(); }
++
+     fn has_pending_input(&self) -> bool {
+         self.is_composing() || !self.chewing_editor.is_empty()
+             || !self.chewing_editor.syllable_buffer_display().is_empty()
+@@ -615,6 +626,7 @@ impl ChewingTextService {
+         context: &ITfContext,
+         ev: SystemKeyboardEvent,
+     ) -> Result<bool> {
++        let _ = self.check_and_apply_app_rule();
+         if self.try_recover_input(context).is_err() {
+             error!("input recovery could not complete; retry from settings");
+         }
+@@ -1378,6 +1390,10 @@ impl ChewingTextService {
+         let prev = self.lang_mode.get();
+         let next = mode_from_compartment(prev, value);
+         self.lang_mode.set(next);
++        if next != prev && !next.is_disabled() {
++            let mode = if next == TsfLangMode::Chinese { chewing_policy_core::app_input_rules::RuleMode::Bopomofo } else { chewing_policy_core::app_input_rules::RuleMode::English };
++            self.record_app_rule_manual(mode);
++        }
+         next != prev
+     }
+ 
+@@ -2320,7 +2336,7 @@ impl ChewingTextService {
+                 TsfLangMode::Chinese => chewing_policy_core::app_input_rules::RuleMode::Bopomofo,
+                 _ => chewing_policy_core::app_input_rules::RuleMode::English,
+             };
+-            self.app_rules_mgr.borrow_mut().manual_toggle(manual_mode);
++            self.record_app_rule_manual(manual_mode);
+ 
+             self.chewing_editor.clear_syllable_editor();
+             let _ = self.update_preedit(context, String::new());
+@@ -2343,7 +2359,7 @@ impl ChewingTextService {
+                 TsfLangMode::Chinese => chewing_policy_core::app_input_rules::RuleMode::Bopomofo,
+                 _ => chewing_policy_core::app_input_rules::RuleMode::English,
+             };
+-            self.app_rules_mgr.borrow_mut().manual_toggle(manual_mode);
++            self.record_app_rule_manual(manual_mode);
+ 
+             unsafe {
+                 if let Ok(doc_mgr) = self.thread_mgr.GetFocus() {
+@@ -2421,10 +2437,7 @@ impl ChewingTextService {
+     fn apply_config_if_changed(&mut self) -> Result<()> {
+         if !self.has_pending_input() && self.cfg.reload_if_needed()? {
+             self.apply_runtime_config()?;
+-            self.app_rules_mgr.borrow_mut().update_config(
+-                self.cfg.chewing_tsf.app_input_rules_enabled,
+-                &self.cfg.chewing_tsf.app_input_rules_json,
+-            );
++
+         }
+         Ok(())
+     }
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index 986d31e..4776e9e 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -115,6 +115,7 @@ impl TextService {
+                 Err(error) => error!("failed to handle composition termination: {error}"),
+             }
+         }
++        let _ = ts.check_and_apply_app_rule();
+     }
+ 
+ }
+@@ -373,7 +374,7 @@ impl ITfThreadFocusSink_Impl for TextService_Impl {
+     fn OnKillThreadFocus(&self) -> Result<()> {
+         debug!("on_kill_thread_focus");
+         if let Ok(mut borrowed) = self.inner.try_borrow_mut() {
+-            if let Some(ts) = borrowed.as_mut() { ts.reset_shift_gesture(); }
++            if let Some(ts) = borrowed.as_mut() { ts.refresh_app_foreground(); ts.reset_shift_gesture(); }
+         }
+         Ok(())
+     }
+-- 
+2.54.0 (Apple Git-157)
+

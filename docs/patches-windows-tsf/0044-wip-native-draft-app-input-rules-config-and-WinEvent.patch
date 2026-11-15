@@ -1,0 +1,434 @@
+From e2d4d9299e067e7eb13bb712ee5bedaccbe83311 Mon Sep 17 00:00:00 2001
+From: AGY <defu@local.dev>
+Date: Sun, 15 Nov 2026 23:58:24 +0800
+Subject: [PATCH 44/47] wip(native): draft app input rules config and WinEvent
+ tracking (WINDOWS-APP-RULES-130)
+
+---
+ crates/chewing_tip_core/src/config.rs   |  14 ++
+ tip/Cargo.toml                          |   2 +
+ tip/src/text_service/app_input_rules.rs | 216 ++++++++++++++++++++++++
+ tip/src/text_service/chewing.rs         |  57 ++++++-
+ tip/src/text_service/mod.rs             |   1 +
+ 5 files changed, 289 insertions(+), 1 deletion(-)
+ create mode 100644 tip/src/text_service/app_input_rules.rs
+
+diff --git a/crates/chewing_tip_core/src/config.rs b/crates/chewing_tip_core/src/config.rs
+index 839f82e..c058e19 100644
+--- a/crates/chewing_tip_core/src/config.rs
++++ b/crates/chewing_tip_core/src/config.rs
+@@ -94,6 +94,8 @@ pub struct ChewingTsfConfig {
+     pub f_hold_delay_ms: i32,
+     pub initial_letter_hold_delay_ms: i32,
+     pub enable_ai: bool,
++    pub app_input_rules_enabled: bool,
++    pub app_input_rules_json: String,
+ }
+ 
+ impl Default for ChewingTsfConfig {
+@@ -159,6 +161,8 @@ impl Default for ChewingTsfConfig {
+             f_hold_delay_ms: 150,
+             initial_letter_hold_delay_ms: 250,
+             enable_ai: false,
++            app_input_rules_enabled: false,
++            app_input_rules_json: r#"{"version":1,"rules":[]}"#.to_string(),
+         }
+     }
+ }
+@@ -270,6 +274,12 @@ impl Config {
+             if let Ok(value) = reg_get_bool(&key, "EnableAI") {
+                 cfg.enable_ai = value;
+             }
++            if let Ok(value) = reg_get_bool(&key, "AppInputRulesEnabled") {
++                cfg.app_input_rules_enabled = value;
++            }
++            if let Ok(value) = key.get_string("AppInputRulesJson") {
++                cfg.app_input_rules_json = value;
++            }
+             if let Ok(value) = reg_get_i32(&key, "DefFontSize") {
+                 cfg.font_size = value;
+             }
+@@ -432,6 +442,8 @@ impl Config {
+         reg_set_i32(&key, "FHoldDelayMs", chewing_tsf.f_hold_delay_ms)?;
+         reg_set_i32(&key, "InitialLetterHoldDelayMs", chewing_tsf.initial_letter_hold_delay_ms)?;
+         reg_set_bool(&key, "EnableAI", chewing_tsf.enable_ai)?;
++        reg_set_bool(&key, "AppInputRulesEnabled", chewing_tsf.app_input_rules_enabled)?;
++        key.set_string("AppInputRulesJson", &chewing_tsf.app_input_rules_json)?;
+         reg_set_i32(&key, "DefFontSize", chewing_tsf.font_size)?;
+         key.set_string("DefFontFamily", &chewing_tsf.font_family)?;
+         key.set_string("DefFontFgColor", &chewing_tsf.font_fg_color)?;
+@@ -765,5 +777,7 @@ mod legacy_preferences_tests {
+         assert_eq!(cfg.f_hold_delay_ms,150);
+         assert_eq!(cfg.initial_letter_hold_delay_ms,250);
+         assert!(!cfg.enable_ai);
++        assert!(!cfg.app_input_rules_enabled);
++        assert_eq!(cfg.app_input_rules_json, r#"{"version":1,"rules":[]}"#);
+     }
+ }
+diff --git a/tip/Cargo.toml b/tip/Cargo.toml
+index 58ea8a8..22c86e7 100644
+--- a/tip/Cargo.toml
++++ b/tip/Cargo.toml
+@@ -41,7 +41,9 @@ windows = { version = "0.62.2", features = [
+   "Win32_System_Ole",
+   "Win32_System_Registry",
+   "Win32_System_SystemServices",
++  "Win32_System_Threading",
+   "Win32_System_Variant",
++  "Win32_UI_Accessibility",
+   "Win32_UI_HiDpi",
+   "Win32_UI_Input_KeyboardAndMouse",
+   "Win32_UI_TextServices",
+diff --git a/tip/src/text_service/app_input_rules.rs b/tip/src/text_service/app_input_rules.rs
+new file mode 100644
+index 0000000..fa15945
+--- /dev/null
++++ b/tip/src/text_service/app_input_rules.rs
+@@ -0,0 +1,216 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++//! Windows 前景應用程式追蹤與規則管理 (WinEvent Hook + AppInputRulesTracker)
++//!
++//! 規範與安全要求：
++//! 1. WinEventHook 由啟用線程在同一訊息迴圈線程安裝與反安裝，模組卸載或停用時確保 UnhookWinEvent，絕不殘留活體回呼。
++//! 2. 前景事件僅觀察視窗代號 (HWND) 與行程 (PID)，由行程查詢可執行檔路徑並快取，絕不攔截全域按鍵、字元或視窗標題。
++//! 3. 不在按鍵路徑 (OnKeyDown / OnTestKeyDown) 執行 Win32 行程路徑查詢或 Registry 讀取，完全使用快取。
++//! 4. 使用 `policy_core::app_input_rules::AppInputRulesTracker` 進行世代與造訪追蹤。
++//! 5. 跨行程局限性：本 TSF 為 in-process DLL 模組，各自運行於各宿主行程（如 Notepad, Explorer, Terminal）中。
++//!    在單一行程模式下，各行程內的 TSF 實例透過 WinEvent 獨立監聽全系統前景視窗切換事件，
++//!    當使用者切換至該行程視窗時能即時偵測到自己成為前景，並透過全域註冊表讀取最新規則設定。
++//!    非同行程之間不強求跨行程共用記憶體，若有無法存取之特權行程則 fail-closed 回退，誠實回報限制。
++
++use chewing_policy_core::app_input_rules::{
++    parse_and_validate_rules, AppInputRulesTracker, RuleMode,
++};
++use log::{debug, error};
++use std::cell::RefCell;
++use std::rc::Rc;
++use windows::Win32::Foundation::{CloseHandle, HWND, MAX_PATH};
++use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
++use windows::Win32::System::Threading::{
++    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
++    PROCESS_QUERY_LIMITED_INFORMATION,
++};
++use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
++use windows::Win32::UI::WindowsAndMessaging::{
++    GetWindowThreadProcessId, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
++};
++use windows_core::PWSTR;
++
++thread_local! {
++    static ACTIVE_HOOKS: RefCell<Vec<HWINEVENTHOOK>> = RefCell::new(Vec::new());
++    static GLOBAL_TRACKER: RefCell<Option<Rc<RefCell<AppInputRulesManager>>>> = RefCell::new(None);
++}
++
++pub struct AppInputRulesManager {
++    pub tracker: AppInputRulesTracker,
++    cached_app_id: Option<String>,
++    current_pid: u32,
++    hook: Option<HWINEVENTHOOK>,
++}
++
++impl AppInputRulesManager {
++    pub fn new(enabled: bool, rules_json: &str) -> Rc<RefCell<Self>> {
++        let rules = parse_and_validate_rules(rules_json);
++        let tracker = AppInputRulesTracker::new(enabled, &rules);
++        let current_pid = unsafe { GetCurrentProcessId() };
++
++        // 查詢自己行程的 EXE 路徑作為初始路徑
++        let initial_path = get_current_process_image_path();
++
++        let mut mgr = Self {
++            tracker,
++            cached_app_id: initial_path.clone(),
++            current_pid,
++            hook: None,
++        };
++
++        if let Some(ref path) = initial_path {
++            mgr.tracker.on_foreground_app_changed(Some(path));
++        }
++
++        let rc = Rc::new(RefCell::new(mgr));
++
++        // 註冊為目前線程的全域實例
++        GLOBAL_TRACKER.with(|gt| {
++            *gt.borrow_mut() = Some(rc.clone());
++        });
++
++        // 安裝 EVENT_SYSTEM_FOREGROUND 監聽
++        let hook = unsafe {
++            SetWinEventHook(
++                EVENT_SYSTEM_FOREGROUND,
++                EVENT_SYSTEM_FOREGROUND,
++                None,
++                Some(win_event_proc),
++                0,
++                0,
++                WINEVENT_OUTOFCONTEXT,
++            )
++        };
++
++        if !hook.is_invalid() {
++            rc.borrow_mut().hook = Some(hook);
++            ACTIVE_HOOKS.with(|hooks| hooks.borrow_mut().push(hook));
++            debug!("AppInputRulesManager: WinEventHook installed: {:?}", hook);
++        } else {
++            error!("AppInputRulesManager: failed to install WinEventHook");
++        }
++
++        rc
++    }
++
++    /// 重新載入或更新規則組態（Next-visit-only）
++    pub fn update_config(&mut self, enabled: bool, rules_json: &str) {
++        let rules = parse_and_validate_rules(rules_json);
++        self.tracker.update_config(enabled, &rules);
++    }
++
++    /// 當前景視窗切換時呼叫
++    pub fn on_foreground_window_changed(&mut self, hwnd: HWND) {
++        let mut pid: u32 = 0;
++        unsafe {
++            GetWindowThreadProcessId(hwnd, Some(&mut pid));
++        }
++
++        if pid == 0 {
++            return;
++        }
++
++        // 若 PID 改變或是首次獲取，查詢並正規化執行檔路徑
++        let exe_path = if pid == self.current_pid {
++            get_current_process_image_path()
++        } else {
++            get_process_image_path(pid)
++        };
++
++        if let Some(path) = exe_path {
++            self.cached_app_id = Some(path.clone());
++            self.tracker.on_foreground_app_changed(Some(&path));
++        }
++    }
++
++    /// 目前快取的前景應用程式路徑
++    pub fn current_app_id(&self) -> Option<&str> {
++        self.cached_app_id.as_deref()
++    }
++
++    /// 取得目前 visit 的目標模式
++    pub fn target(&self, safe: bool, active: bool, secure: bool) -> Option<RuleMode> {
++        let generation = self.tracker.current_visit().map(|v| v.generation)?;
++        self.tracker.target(generation, self.cached_app_id.as_deref(), safe, active, secure)
++    }
++
++    /// 使用者手動切換中英文模式
++    pub fn manual_toggle(&mut self, mode: RuleMode) -> bool {
++        if let Some(visit) = self.tracker.current_visit() {
++            let generation = visit.generation;
++            self.tracker.manual(generation, self.cached_app_id.as_deref(), mode)
++        } else {
++            false
++        }
++    }
++}
++
++impl Drop for AppInputRulesManager {
++    fn drop(&mut self) {
++        if let Some(hook) = self.hook.take() {
++            unsafe {
++                let _ = UnhookWinEvent(hook);
++            }
++            ACTIVE_HOOKS.with(|hooks| {
++                hooks.borrow_mut().retain(|&h| h != hook);
++            });
++            debug!("AppInputRulesManager: WinEventHook unhooked: {:?}", hook);
++        }
++        GLOBAL_TRACKER.with(|gt| {
++            *gt.borrow_mut() = None;
++        });
++    }
++}
++
++/// WinEvent 回呼函式
++unsafe extern "system" fn win_event_proc(
++    _h_win_event_hook: HWINEVENTHOOK,
++    event: u32,
++    hwnd: HWND,
++    _id_object: i32,
++    _id_child: i32,
++    _id_event_thread: u32,
++    _dwms_event_time: u32,
++) {
++    if event == EVENT_SYSTEM_FOREGROUND && !hwnd.is_invalid() {
++        GLOBAL_TRACKER.with(|gt| {
++            if let Some(mgr_rc) = gt.borrow().as_ref() {
++                if let Ok(mut mgr) = mgr_rc.try_borrow_mut() {
++                    mgr.on_foreground_window_changed(hwnd);
++                }
++            }
++        });
++    }
++}
++
++/// 取得當前模組/行程的執行檔絕對路徑
++fn get_current_process_image_path() -> Option<String> {
++    let mut buffer = [0u16; MAX_PATH as usize * 2];
++    let len = unsafe { GetModuleFileNameW(None, &mut buffer) as usize };
++    if len == 0 {
++        return None;
++    }
++    String::from_utf16(&buffer[..len]).ok()
++}
++
++/// 透過 PID 查詢該行程的完整執行檔路徑（QueryFullProcessImageNameW）
++fn get_process_image_path(pid: u32) -> Option<String> {
++    unsafe {
++        let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
++            Ok(h) => h,
++            Err(_) => return None, // 權限不足或系統行程，fail-closed
++        };
++
++        let mut buffer = [0u16; MAX_PATH as usize * 2];
++        let mut size = buffer.len() as u32;
++        let pwpath = PWSTR::from_raw(buffer.as_mut_ptr());
++
++        let res = QueryFullProcessImageNameW(handle, PROCESS_NAME_FORMAT(0), pwpath, &mut size);
++        let _ = CloseHandle(handle);
++
++        if res.is_ok() && size > 0 {
++            String::from_utf16(&buffer[..size as usize]).ok()
++        } else {
++            None
++        }
++    }
++}
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 77c5abd..6d2b082 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -52,6 +52,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
+ use windows_core::{ComObject, ComObjectInner, GUID, HSTRING, IUnknown, Interface};
+ use zhconv::{Variant, zhconv};
+ 
++use super::app_input_rules::AppInputRulesManager;
+ use super::CommandType;
+ use super::initial_hold_timer::HoldTimer;
+ use chewing_policy_core::initial_letter_hold::{InitialLetterHoldGesture, Effect as HoldEffect};
+@@ -211,6 +212,7 @@ pub(super) struct ChewingTextService {
+     recovery_gate: RecoveryGate,
+     recovery_open_pending: Cell<bool>,
+     keyboard_sync_active: Cell<bool>,
++    app_rules_mgr: Rc<RefCell<AppInputRulesManager>>,
+ 
+     has_focus: bool,
+     output_simp_chinese: bool,
+@@ -394,6 +396,10 @@ impl ChewingTextService {
+             recovery_gate: RecoveryGate::default(),
+             recovery_open_pending: Cell::new(false),
+             keyboard_sync_active: Cell::new(false),
++            app_rules_mgr: AppInputRulesManager::new(
++                cfg.chewing_tsf.app_input_rules_enabled,
++                &cfg.chewing_tsf.app_input_rules_json,
++            ),
+         };
+ 
+         if let Err(error) = cts.init_openclose(tid) {
+@@ -469,13 +475,46 @@ impl ChewingTextService {
+         // Focus changes must not rebuild an editor that still owns uncommitted text.
+         if !self.has_pending_input() {
+             self.apply_config_if_changed()?;
+-            self.sync_lang_mode(true)?;
++            let rule_applied = self.check_and_apply_app_rule()?;
++            if !rule_applied {
++                self.sync_lang_mode(true)?;
++            }
+             self.chewing_editor.set_editor_options(|opt| opt.language_mode = self.lang_mode.get().into());
+         }
+         self.recover_focused_context();
+         Ok(())
+     }
+ 
++    fn check_and_apply_app_rule(&mut self) -> Result<bool> {
++        let safe = !self.has_pending_input();
++        let active = self.has_focus;
++        let secure = false; // TSF normal thread focus; secure desktop is handled fail-closed
++
++        let target_mode = {
++            let mgr = self.app_rules_mgr.borrow();
++            mgr.target(safe, active, secure)
++        };
++
++        let Some(rule_mode) = target_mode else {
++            return Ok(false);
++        };
++
++        let desired_lang = match rule_mode {
++            chewing_policy_core::app_input_rules::RuleMode::English => TsfLangMode::English,
++            chewing_policy_core::app_input_rules::RuleMode::Bopomofo => TsfLangMode::Chinese,
++        };
++
++        if self.lang_mode.get() != desired_lang && !self.lang_mode.get().is_disabled() {
++            debug!("Applying app input rule: {:?} -> {:?}", self.lang_mode.get(), desired_lang);
++            self.lang_mode.set(desired_lang);
++            self.pending_lang_mode_change.set(true);
++            self.sync_lang_mode(true)?;
++            return Ok(true);
++        }
++
++        Ok(false)
++    }
++
+     fn has_pending_input(&self) -> bool {
+         self.is_composing() || !self.chewing_editor.is_empty()
+             || !self.chewing_editor.syllable_buffer_display().is_empty()
+@@ -2277,6 +2316,12 @@ impl ChewingTextService {
+         self.sync_lang_mode(true)?;
+ 
+         if prev != self.lang_mode.get() {
++            let manual_mode = match self.lang_mode.get() {
++                TsfLangMode::Chinese => chewing_policy_core::app_input_rules::RuleMode::Bopomofo,
++                _ => chewing_policy_core::app_input_rules::RuleMode::English,
++            };
++            self.app_rules_mgr.borrow_mut().manual_toggle(manual_mode);
++
+             self.chewing_editor.clear_syllable_editor();
+             let _ = self.update_preedit(context, String::new());
+         }
+@@ -2294,6 +2339,12 @@ impl ChewingTextService {
+         self.sync_lang_mode(true)?;
+ 
+         if prev != self.lang_mode.get() {
++            let manual_mode = match self.lang_mode.get() {
++                TsfLangMode::Chinese => chewing_policy_core::app_input_rules::RuleMode::Bopomofo,
++                _ => chewing_policy_core::app_input_rules::RuleMode::English,
++            };
++            self.app_rules_mgr.borrow_mut().manual_toggle(manual_mode);
++
+             unsafe {
+                 if let Ok(doc_mgr) = self.thread_mgr.GetFocus() {
+                     if let Ok(context) = doc_mgr.GetTop() {
+@@ -2370,6 +2421,10 @@ impl ChewingTextService {
+     fn apply_config_if_changed(&mut self) -> Result<()> {
+         if !self.has_pending_input() && self.cfg.reload_if_needed()? {
+             self.apply_runtime_config()?;
++            self.app_rules_mgr.borrow_mut().update_config(
++                self.cfg.chewing_tsf.app_input_rules_enabled,
++                &self.cfg.chewing_tsf.app_input_rules_json,
++            );
+         }
+         Ok(())
+     }
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index 33944d2..986d31e 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -29,6 +29,7 @@ use self::display_attribute::{EnumTfDisplayAttributeInfo, get_display_attribute_
+ use self::key_event::SystemKeyboardEvent;
+ 
+ // mod ai_client;
++mod app_input_rules;
+ mod chewing;
+ mod composition_session;
+ mod display_attribute;
+-- 
+2.54.0 (Apple Git-157)
+

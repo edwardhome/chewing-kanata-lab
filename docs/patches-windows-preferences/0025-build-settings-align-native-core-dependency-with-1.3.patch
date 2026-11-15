@@ -1,0 +1,26 @@
+From 880d95186f610de6d17499b29d04bddf5ebcda58 Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Mon, 16 Nov 2026 00:07:17 +0800
+Subject: [PATCH 25/26] build(settings): align native core dependency with
+ 1.3.0 test build
+
+---
+ src-tauri/Cargo.lock | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index 3154f49..818d393 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -538,7 +538,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.1.5"
++version = "1.3.0-dev.1"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+-- 
+2.54.0 (Apple Git-157)
+

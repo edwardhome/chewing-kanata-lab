@@ -1,0 +1,23 @@
+From 10414423364274ae44e4e6f57af29fdf48eeaba7 Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Mon, 16 Nov 2026 00:11:58 +0800
+Subject: [PATCH 47/47] chore(release): date the 1.3.0 development build
+
+---
+ tip/rc/version.rc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tip/rc/version.rc b/tip/rc/version.rc
+index d691b52..7848ae8 100644
+--- a/tip/rc/version.rc
++++ b/tip/rc/version.rc
+@@ -4,5 +4,5 @@
+ #define VER_PRODUCTVERSION_STR      "1.3.0-dev.1\0"
+ #define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.3.0-dev.1)\0"
+ #define ABOUT_VERSION_STR           "版本：1.3.0-dev.1\0"
+-#define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 11 月 12 日\0"
++#define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 11 月 16 日\0"
+ #define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.3.0-dev.1)\0"
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "bb10e573ac6f9b44d997bd502480504bf1624b10",
+  "tree": "d164ddc6c89b5fc9e8c67726c2ac1998c0643bad",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -174,7 +174,23 @@
     {
       "file": "0043-fix-release-align-version-resource-1.1.5.patch",
       "sha256": "6455c506aafbd9270f221a75ce4a691c9d5676eb4b06e768a20869fcd5e4e92a"
+    },
+    {
+      "file": "0044-wip-native-draft-app-input-rules-config-and-WinEvent.patch",
+      "sha256": "614ff332346ccc8514fe61b64dd25902f58ded726950201c859b9296a38d4f5e"
+    },
+    {
+      "file": "0045-fix-app-rules-isolate-foreground-visits-and-safely-i.patch",
+      "sha256": "e36bcc51418e8ea1e338bf760dbe4b0b80fdf4684a1f2338818a503530db004c"
+    },
+    {
+      "file": "0046-build-app-rules-lock-shared-state-serialization-depe.patch",
+      "sha256": "6b1488c978e294f69b23208d4a0b29b3cfd86189ceedf03cbcb5abb54326702c"
+    },
+    {
+      "file": "0047-chore-release-date-the-1.3.0-development-build.patch",
+      "sha256": "c77171a8f90a003cc7bc5be7d7debdd0c7f976a3aee22339b4fd69e591c3f72b"
     }
   ],
-  "native_commit": "433075258cc9aaef99d922602d5e7adfd726a696"
+  "native_commit": "10414423364274ae44e4e6f57af29fdf48eeaba7"
 }

@@ -1,0 +1,25 @@
+From 6fb061675e2b5e98904beb92d5238a8d02780aa1 Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Mon, 16 Nov 2026 00:11:58 +0800
+Subject: [PATCH 26/26] docs(settings): explain existing Caps Lock mode
+ precedence
+
+---
+ src/AppInputRules.tsx | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/AppInputRules.tsx b/src/AppInputRules.tsx
+index 7c22c8f..e902512 100644
+--- a/src/AppInputRules.tsx
++++ b/src/AppInputRules.tsx
+@@ -47,6 +47,7 @@ export default function AppInputRules({ config, onChange }: { config: ChewingTsf
+       onChange={(_, data) => onChange({ ...config, app_input_rules_enabled: data.checked === true })} />
+     <Text>只切換 AI新酷音內部的英文／注音，不會搶回其他輸入法。同一 App 手動切換後會保留選擇；離開再返回才重新套用。</Text>
+     <Text>按下「套用」或「確定」儲存後，規則與開關從下一次切入 App 生效。組字、選字或按鍵手勢尚未結束時會延後切換。</Text>
++    {config.enable_caps_lock && <Text role="status">Caps Lock 模式控制已啟用; App 規則暫不介入。</Text>}
+     <div><Button disabled={busy || invalid} onClick={add}>加入應用程式…</Button></div>
+     <Text size={200}>請選擇實際的 .exe，不是捷徑。辨識依完整程式路徑，程式搬移後請重新加入。不辨識網站、Vim、SSH 或終端機分頁。</Text>
+     {invalid && <div role="alert"><Text>儲存的規則格式無法辨識，暫不套用。可清空規則後重新加入。</Text> <Button onClick={() => update([])}>清空規則</Button></div>}
+-- 
+2.54.0 (Apple Git-157)
+
