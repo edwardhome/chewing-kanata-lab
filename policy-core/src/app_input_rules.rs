@@ -5,11 +5,11 @@
 //! 1. `normalize_canonical_app_id`：
 //!    - 跨平台可編譯且行為一致（不依賴平臺特定的 std::path::Prefix）。
 //!    - 僅支援本機磁碟路徑（`[A-Za-z]:\` 開頭），拒絕 UNC（`\\server\share\...`）與相對路徑。
-//!    - 限制路徑長度（<= 1024 字元）與 display_name 長度（<= 128 字元）。
+//!    - 限制路徑長度（<= 32767 字元）與 display_name 長度（<= 256 字元）。
 //!    - 拒絕控制字元。
 //!    - 使用 Unicode lowercase (`to_lowercase()`)。
 //!    - 嚴格反斜線格式化，去除相對路徑元素（`.`, `..`）。
-//!    - 若文件內任何一條規則無效或重複，整份文件 fail-closed 回退至空規則。
+// De-duplicate valid identities by keeping their first mode.
 //! 2. 狀態機精簡架構（Desired Config + Current Visit）：
 //!    - `desired_config`: 由 `update_config` 更新，只影響未來的 visit（Next-visit-only）。
 //!    - `current_visit`: Option<CurrentVisit { app_id: String, generation: u64, target_mode: Option<RuleMode> }>。
@@ -31,9 +31,9 @@ pub const MAX_RULES_JSON_BYTES: usize = 1_048_576;
 /// 最大支援規則數量：256 筆
 pub const MAX_RULES_COUNT: usize = 256;
 /// 最大路徑字元長度
-pub const MAX_PATH_CHARS: usize = 1024;
+pub const MAX_PATH_CHARS: usize = 32767;
 /// 最大顯示名稱字元長度
-pub const MAX_DISPLAY_NAME_CHARS: usize = 128;
+pub const MAX_DISPLAY_NAME_CHARS: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
