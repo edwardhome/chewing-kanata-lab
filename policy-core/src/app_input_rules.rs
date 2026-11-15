@@ -182,7 +182,7 @@ pub fn parse_and_validate_rules(json_str: &str) -> Vec<AppInputRule> {
     valid_rules
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppInputRulesConfigSnapshot {
     pub enabled: bool,
     pub rules: HashMap<String, RuleMode>,
@@ -198,7 +198,7 @@ impl Default for AppInputRulesConfigSnapshot {
 }
 
 /// 當前應用程式存取階段 (Current Visit)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentVisit {
     pub app_id: String,
     pub generation: u64,
@@ -206,7 +206,7 @@ pub struct CurrentVisit {
 }
 
 /// 應用程式存取追蹤器 (Desired Config + Current Visit)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppInputRulesTracker {
     /// 下一次 visit 時採用的期望設定（update_config 僅修改此項）
     desired_config: AppInputRulesConfigSnapshot,
@@ -434,7 +434,7 @@ mod tests {
         }"#;
         assert_eq!(parse_and_validate_rules(unc_json), vec![]);
 
-        // Duplicate app_id fails whole document
+        // Duplicate identity retains the first configured mode.
         let dup_json = r#"{
             "version": 1,
             "rules": [
@@ -450,7 +450,8 @@ mod tests {
                 }
             ]
         }"#;
-        assert_eq!(parse_and_validate_rules(dup_json), vec![]);
+        assert_eq!(parse_and_validate_rules(dup_json).len(), 1);
+        assert_eq!(parse_and_validate_rules(dup_json)[0].mode, RuleMode::English);
 
         // Bad display_name fails whole document
         let bad_name = r#"{

@@ -36,6 +36,11 @@ impl DoubleShiftGesture {
         Self::default()
     }
 
+    /// Read-only guard for deferred App mode changes.
+    pub fn is_active_at(&self, now: Duration) -> bool {
+        self.shift_was_down || self.down_at.is_some() || self.first_release.is_some_and(|t| now < t || now - t <= self.interval)
+    }
+
     pub fn reset(&mut self) {
         self.down_at = None;
         self.first_release = None;
