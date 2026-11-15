@@ -1,24 +1,27 @@
 // SPDX-License-Identifier: MIT
 //! Windows 應用程式模式規則 (App Input Rules)
 //!
-//! 規範與審查修正：
+//! 規範與審查精簡架構：
 //! 1. `normalize_canonical_app_id`：
-//!    - 必須跨平台可編譯且行為一致（避免依賴平臺特定的 std::path::Prefix，在非 Windows 也能正確處理 Windows 磁碟路徑）。
-//!    - 僅支援本機磁碟路徑（`C:\...`），拒絕 UNC（`\\server\share\...`）。
-//!    - 限制路徑長度（1..=260，或 <= 1024 字元）與 display_name 長度（<= 128 字元）。
+//!    - 跨平台可編譯且行為一致（不依賴平臺特定的 std::path::Prefix）。
+//!    - 僅支援本機磁碟路徑（`[A-Za-z]:\` 開頭），拒絕 UNC（`\\server\share\...`）與相對路徑。
+//!    - 限制路徑長度（<= 1024 字元）與 display_name 長度（<= 128 字元）。
 //!    - 拒絕控制字元。
 //!    - 使用 Unicode lowercase (`to_lowercase()`)。
 //!    - 嚴格反斜線格式化，去除相對路徑元素（`.`, `..`）。
 //!    - 若文件內任何一條規則無效或重複，整份文件 fail-closed 回退至空規則。
-//! 2. 設定變更與快照（Next-visit-only）：
-//!    - 當前存取（Current Visit）中保持該次存取開始時的規則快照與啟用狀態。
-//!    - `update_desired_config` 僅更新 `desired_config`，不影響目前已經在進行中的 visit。
-//!    - 只有在實際進入不同應用程式（或全新 visit）時，才從 `desired_config` 拍下新的 visit 快照。
-//! 3. 世代（Generation）與多 TSF 實例共享：
-//!    - `visit_generation` 在實際 App leave/return 時遞增。
-//!    - `poll_pending_apply` 與 `on_user_manual_toggle` 驗證預期的 `visit_generation`。
-//!    - 同一 visit 內的使用者手動切換（Manual override）會作為目前 visit 的持續目標（Current-visit target），
-//!      即使其他控制項/分頁/新 TSF 實例在同一 visit 期間取得焦點，也能取到該手動覆蓋值，而非忘記或重複重設。
+//! 2. 狀態機精簡架構（Desired Config + Current Visit）：
+//!    - `desired_config`: 由 `update_config` 更新，只影響未來的 visit（Next-visit-only）。
+//!    - `current_visit`: Option<CurrentVisit { app_id: String, generation: u64, target_mode: Option<RuleMode> }>。
+//!      不維護過去所有 App 的龐大 Hash 表。
+//!    - `on_foreground_app_changed`:
+//!      - 若 App 未改變（同 app_id），保持 visit 與 target_mode 不變。
+//!      - 若 App 改變（或離開返回），generation 遞增，並從 desired_config 拍下該 App 的初始 target_mode。
+//!    - `target(expected_generation, client_app_id, safe, active, secure)`:
+//!      - 校驗 expected_generation、client_app_id、安全條件（!secure, active, safe）。
+//!      - 回傳 current visit target_mode 而不消耗它，讓同 visit 內的新/多個 TSF 實例也能採用。
+//!    - `manual(expected_generation, client_app_id, mode)`:
+//!      - 僅修改匹配的 current_visit 的 target_mode，過期或不符的呼叫直接忽略。
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -127,7 +130,7 @@ pub fn normalize_canonical_app_id(raw_path: &str) -> Option<String> {
 
 /// 解析並驗證 JSON 規則字串
 ///
-/// 審查要求：invalid entries fail whole document（若有任何無效條目或重複，整份文件回退為空規則）
+/// invalid entries fail whole document（若有任何無效條目或重複，整份文件回退為空規則）
 pub fn parse_and_validate_rules(json_str: &str) -> Vec<AppInputRule> {
     if json_str.len() > MAX_RULES_JSON_BYTES {
         return Vec::new();
@@ -194,26 +197,25 @@ impl Default for AppInputRulesConfigSnapshot {
     }
 }
 
-/// 應用程式存取階段與狀態機
+/// 當前應用程式存取階段 (Current Visit)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentVisit {
+    pub app_id: String,
+    pub generation: u64,
+    pub target_mode: Option<RuleMode>,
+}
+
+/// 應用程式存取追蹤器 (Desired Config + Current Visit)
 #[derive(Debug, Clone)]
 pub struct AppInputRulesTracker {
-    /// 下一次 visit 時預計採用的設定
+    /// 下一次 visit 時採用的期望設定（update_config 僅修改此項）
     desired_config: AppInputRulesConfigSnapshot,
 
-    /// 當前 visit 鎖定的設定快照
-    active_visit_config: AppInputRulesConfigSnapshot,
+    /// 當前進行中的 visit（包含 app_id、generation、target_mode）
+    current_visit: Option<CurrentVisit>,
 
-    /// 當前活動的應用程式路徑
-    current_app_id: Option<String>,
-
-    /// 當前 visit 世代，每次離開並進入不同 App（或返回 App）時遞增
-    visit_generation: u64,
-
-    /// 當前 visit 的手動切換目標（若有手動切換則設定，該 visit 內的所有控制項與新 TSF 實例均使用此目標）
-    current_visit_override: Option<RuleMode>,
-
-    /// 待套用的規則預設模式（首次進入且尚未完成套用）
-    pending_rule_apply: Option<(u64, String, RuleMode)>,
+    /// 全域單調遞增 generation 計數器
+    next_generation: u64,
 }
 
 impl Default for AppInputRulesTracker {
@@ -228,22 +230,18 @@ impl AppInputRulesTracker {
         for r in rules {
             map.insert(r.app_id.clone(), r.mode);
         }
-        let desired = AppInputRulesConfigSnapshot {
-            enabled,
-            rules: map,
-        };
         Self {
-            desired_config: desired.clone(),
-            active_visit_config: desired,
-            current_app_id: None,
-            visit_generation: 0,
-            current_visit_override: None,
-            pending_rule_apply: None,
+            desired_config: AppInputRulesConfigSnapshot {
+                enabled,
+                rules: map,
+            },
+            current_visit: None,
+            next_generation: 1,
         }
     }
 
-    /// 設定頁修改設定時更新期望設定（Next-visit-only：不影響目前正在進行中的 visit）
-    pub fn update_desired_config(&mut self, enabled: bool, rules: &[AppInputRule]) {
+    /// 更新期望設定（Next-visit-only：不影響目前正在進行中的 current_visit）
+    pub fn update_config(&mut self, enabled: bool, rules: &[AppInputRule]) {
         let mut map = HashMap::new();
         for r in rules {
             map.insert(r.app_id.clone(), r.mode);
@@ -254,117 +252,110 @@ impl AppInputRulesTracker {
         };
     }
 
-    /// 當前景應用程式變更時觸發（傳入由 Windows 解析的正規化執行檔路徑）
+    /// 當前景應用程式變更時觸發
     ///
-    /// 回傳 `(visit_generation, target_mode)`：
-    /// - 若是進入新 App 或離開後返回：推進 `visit_generation`，套用 `desired_config` 快照，
-    ///   清除之前的 `current_visit_override`，並設定 `pending_rule_apply`。
-    /// - 若是同一 App 內的焦點切換：保持原 `visit_generation`，回傳當前 visit 目標模式（若已有手動設定則為手動設定，否則為 pending 預設）。
-    pub fn on_foreground_app_changed(&mut self, new_app_id: Option<&str>) -> Option<(u64, RuleMode)> {
+    /// - 若新 App ID 與目前 visit 的 app_id 相同：保持 visit 與 target_mode 不變。
+    /// - 若新 App ID 改變（或離開後返回）：遞增 generation，並從 desired_config 拍下該 App 的初始 target_mode。
+    pub fn on_foreground_app_changed(&mut self, new_app_id: Option<&str>) -> Option<(u64, Option<RuleMode>)> {
         let norm_new = new_app_id.and_then(normalize_canonical_app_id);
 
-        if norm_new.is_some() && norm_new == self.current_app_id {
-            // 同一 App 存取（Visit）中：
-            let current = self.current_visit_target();
-            return current.map(|mode| (self.visit_generation, mode));
-        }
-
-        // 實際 App leave / return：推進 visit generation
-        self.current_app_id = norm_new.clone();
-        self.visit_generation = self.visit_generation.wrapping_add(1);
-        self.active_visit_config = self.desired_config.clone();
-        self.current_visit_override = None;
-        self.pending_rule_apply = None;
-
-        let app_id = norm_new?;
-        if !self.active_visit_config.enabled {
-            return None;
-        }
-
-        let rule_mode = self.active_visit_config.rules.get(&app_id).copied()?;
-
-        // 新 visit 排程套用
-        self.pending_rule_apply = Some((self.visit_generation, app_id, rule_mode));
-        Some((self.visit_generation, rule_mode))
-    }
-
-    /// 取得目前 visit 的目標模式（供新啟動或重新活化的 TSF 實例獲取同 visit 的持續狀態）
-    pub fn current_visit_target(&self) -> Option<RuleMode> {
-        if !self.active_visit_config.enabled {
-            return None;
-        }
-        let app_id = self.current_app_id.as_ref()?;
-        if let Some(manual) = self.current_visit_override {
-            return Some(manual);
-        }
-        self.active_visit_config.rules.get(app_id).copied()
-    }
-
-    /// 安全邊界輪詢並套用待處理的規則
-    ///
-    /// 審查要求：必須校驗 `expected_generation` 與目前實際所在的 App ID，並在有未完成組字時延後
-    pub fn poll_pending_apply(
-        &mut self,
-        expected_generation: u64,
-        current_app_id: Option<&str>,
-        has_active_composition: bool,
-    ) -> Option<RuleMode> {
-        if !self.active_visit_config.enabled || has_active_composition {
-            return None;
-        }
-
-        let norm_current = current_app_id.and_then(normalize_canonical_app_id)?;
-        if let Some((gen, ref pending_app, default_mode)) = self.pending_rule_apply {
-            if gen == expected_generation
-                && gen == self.visit_generation
-                && pending_app == &norm_current
-                && self.current_app_id.as_deref() == Some(&norm_current)
-            {
-                self.pending_rule_apply = None;
-                let target = self.current_visit_override.unwrap_or(default_mode);
-                return Some(target);
+        if let (Some(cur), Some(new)) = (&self.current_visit, &norm_new) {
+            if &cur.app_id == new {
+                // 未改變 App，保持現有 visit
+                return Some((cur.generation, cur.target_mode));
             }
         }
 
-        None
+        // App 改變或進入無效 App：
+        let app_id = match norm_new {
+            Some(id) => id,
+            None => {
+                self.current_visit = None;
+                return None;
+            }
+        };
+
+        let gen = self.next_generation;
+        self.next_generation = self.next_generation.wrapping_add(1);
+
+        let initial_target = if self.desired_config.enabled {
+            self.desired_config.rules.get(&app_id).copied()
+        } else {
+            None
+        };
+
+        let visit = CurrentVisit {
+            app_id,
+            generation: gen,
+            target_mode: initial_target,
+        };
+        self.current_visit = Some(visit);
+
+        Some((gen, initial_target))
+    }
+
+    /// 取得目前 visit 的目標模式（供安全邊界檢查或新 TSF 實例獲取目標）
+    ///
+    /// 審查合約：`target(expected_generation, client_app_id, safe, active, secure)`
+    /// - expected_generation 必須符合目前的 visit.generation。
+    /// - client_app_id 必須符合目前的 visit.app_id。
+    /// - safe: 必須為 true（即沒有 active composition、syllables、candidates、pending edits、gestures）。
+    /// - active: 必須為 true（TSF context 處於啟用與 focus 狀態）。
+    /// - secure: 必須為 false（安全桌面/密碼欄不套用規則）。
+    /// - 回傳 target_mode 而不消耗它，讓同 visit 內的新/多個 TSF 實例都能採用。
+    pub fn target(
+        &self,
+        expected_generation: u64,
+        client_app_id: Option<&str>,
+        safe: bool,
+        active: bool,
+        secure: bool,
+    ) -> Option<RuleMode> {
+        if secure || !active || !safe {
+            return None;
+        }
+
+        let visit = self.current_visit.as_ref()?;
+        if visit.generation != expected_generation {
+            return None;
+        }
+
+        let norm_client = client_app_id.and_then(normalize_canonical_app_id)?;
+        if visit.app_id != norm_client {
+            return None;
+        }
+
+        visit.target_mode
     }
 
     /// 使用者手動切換中英文模式時呼叫（例如按 Shift 切換）
     ///
-    /// 審查要求：校驗 `expected_generation`，取消該次 visit 待處理的預設套用，
-    /// 並設定 `current_visit_override` 供同 visit 內的所有 TSF 實例持續使用。
-    pub fn on_user_manual_toggle(
+    /// 審查合約：`manual(expected_generation, client_app_id, mode)`
+    /// - 僅修改匹配的 current_visit 的 target_mode，過期或不符的呼叫直接忽略。
+    pub fn manual(
         &mut self,
         expected_generation: u64,
-        active_app_id: Option<&str>,
-        new_mode: RuleMode,
+        client_app_id: Option<&str>,
+        mode: RuleMode,
     ) -> bool {
-        if expected_generation != self.visit_generation {
-            return false;
+        let norm_client = client_app_id.and_then(normalize_canonical_app_id);
+        if let Some(visit) = &mut self.current_visit {
+            if visit.generation == expected_generation && norm_client.as_deref() == Some(&visit.app_id) {
+                visit.target_mode = Some(mode);
+                return true;
+            }
         }
-        let norm_app = active_app_id.and_then(normalize_canonical_app_id);
-        if norm_app.is_some() && norm_app != self.current_app_id {
-            return false;
-        }
-
-        self.pending_rule_apply = None;
-        self.current_visit_override = Some(new_mode);
-        true
+        false
     }
 
-    /// 目前的應用程式路徑
-    pub fn current_app_id(&self) -> Option<&str> {
-        self.current_app_id.as_deref()
+    /// 取得當前進行中的 visit
+    pub fn current_visit(&self) -> Option<&CurrentVisit> {
+        self.current_visit.as_ref()
     }
 
-    /// 目前的 visit 世代
-    pub fn visit_generation(&self) -> u64 {
-        self.visit_generation
-    }
-
-    /// 目前 visit 是否啟用了規則
-    pub fn is_active_visit_enabled(&self) -> bool {
-        self.active_visit_config.enabled
+    /// 檢查 desired_config 是否啟用
+    pub fn is_desired_enabled(&self) -> bool {
+        self.desired_config.enabled
     }
 }
 
@@ -474,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn test_next_visit_only_setting_changes() {
+    fn test_desired_config_next_visit_only() {
         let rule1 = AppInputRule {
             app_id: r"c:\windows\notepad.exe".to_string(),
             display_name: "Notepad".to_string(),
@@ -483,29 +474,29 @@ mod tests {
         let mut tracker = AppInputRulesTracker::new(true, &[rule1]);
 
         // Visit 1: 进入 Notepad
-        let (gen1, mode1) = tracker.on_foreground_app_changed(Some(r"C:\Windows\Notepad.exe")).unwrap();
+        let (gen1, target1) = tracker.on_foreground_app_changed(Some(r"C:\Windows\Notepad.exe")).unwrap();
         assert_eq!(gen1, 1);
-        assert_eq!(mode1, RuleMode::English);
+        assert_eq!(target1, Some(RuleMode::English));
 
-        // 在 Visit 1 進行中修改設定：停用規則並改為空規則
-        tracker.update_desired_config(false, &[]);
+        // 進行中修改設定：停用規則
+        tracker.update_config(false, &[]);
 
-        // Visit 1 內部依然處於啟用狀態，poll_pending_apply 正常運作！
-        assert!(tracker.is_active_visit_enabled());
-        let applied = tracker.poll_pending_apply(gen1, Some(r"C:\Windows\Notepad.exe"), false);
-        assert_eq!(applied, Some(RuleMode::English));
+        // Visit 1 的 target 依然存在！
+        assert_eq!(
+            tracker.target(gen1, Some(r"C:\Windows\Notepad.exe"), true, true, false),
+            Some(RuleMode::English)
+        );
 
         // 離開並進入 Explorer，再回到 Notepad (Visit 2)
         tracker.on_foreground_app_changed(Some(r"C:\Windows\explorer.exe"));
-        let visit2 = tracker.on_foreground_app_changed(Some(r"C:\Windows\Notepad.exe"));
-
-        // Visit 2 現在才套用修改後的設定（已停用）
-        assert!(!tracker.is_active_visit_enabled());
-        assert_eq!(visit2, None);
+        let (gen2, target2) = tracker.on_foreground_app_changed(Some(r"C:\Windows\Notepad.exe")).unwrap();
+        assert_eq!(gen2, 3);
+        // Visit 2 現在才套用修改後的設定（已停用，無 target_mode）
+        assert_eq!(target2, None);
     }
 
     #[test]
-    fn test_manual_persistence_across_tsf_instances_in_same_visit() {
+    fn test_manual_persistence_across_multiple_tsf_instances() {
         let rule = AppInputRule {
             app_id: r"c:\windows\notepad.exe".to_string(),
             display_name: "Notepad".to_string(),
@@ -513,21 +504,42 @@ mod tests {
         };
         let mut tracker = AppInputRulesTracker::new(true, &[rule]);
 
-        // 首次進入 Notepad (Visit 1)
-        let (gen1, mode1) = tracker.on_foreground_app_changed(Some(r"C:\Windows\Notepad.exe")).unwrap();
-        assert_eq!(mode1, RuleMode::English);
+        // Visit 1: 進入 Notepad
+        let (gen1, target1) = tracker.on_foreground_app_changed(Some(r"C:\Windows\Notepad.exe")).unwrap();
+        assert_eq!(target1, Some(RuleMode::English));
+
+        // TSF Instance 1 取得 target
+        assert_eq!(
+            tracker.target(gen1, Some(r"C:\Windows\Notepad.exe"), true, true, false),
+            Some(RuleMode::English)
+        );
 
         // 使用者手動切換為 Bopomofo
-        assert!(tracker.on_user_manual_toggle(gen1, Some(r"C:\Windows\Notepad.exe"), RuleMode::Bopomofo));
+        assert!(tracker.manual(gen1, Some(r"C:\Windows\Notepad.exe"), RuleMode::Bopomofo));
 
-        // 另一個控制項/分頁/新 TSF 實例在同一 visit 啟用，查詢 current_visit_target 依然是手動的 Bopomofo！
-        assert_eq!(tracker.current_visit_target(), Some(RuleMode::Bopomofo));
+        // TSF Instance 2（或新分頁/控制項）在同一 visit 查詢 target，獲得手動覆蓋值 Bopomofo，且不被消耗！
+        assert_eq!(
+            tracker.target(gen1, Some(r"C:\Windows\Notepad.exe"), true, true, false),
+            Some(RuleMode::Bopomofo)
+        );
+        assert_eq!(
+            tracker.target(gen1, Some(r"C:\Windows\Notepad.exe"), true, true, false),
+            Some(RuleMode::Bopomofo)
+        );
 
-        // 重複觸發 on_foreground_app_changed（同 App）也是回傳手動的 Bopomofo
-        let same = tracker.on_foreground_app_changed(Some(r"C:\Windows\Notepad.exe")).unwrap();
-        assert_eq!(same, (gen1, RuleMode::Bopomofo));
+        // 若 safe 為 false（例如組字中），target 拒絕回傳
+        assert_eq!(
+            tracker.target(gen1, Some(r"C:\Windows\Notepad.exe"), false, true, false),
+            None
+        );
 
-        // 舊 generation 的 manual toggle 被拒絕
-        assert!(!tracker.on_user_manual_toggle(gen1 - 1, Some(r"C:\Windows\Notepad.exe"), RuleMode::English));
+        // 若 secure 為 true（密碼欄），target 拒絕回傳
+        assert_eq!(
+            tracker.target(gen1, Some(r"C:\Windows\Notepad.exe"), true, true, true),
+            None
+        );
+
+        // 舊 generation 的 manual 被拒絕
+        assert!(!tracker.manual(gen1 - 1, Some(r"C:\Windows\Notepad.exe"), RuleMode::English));
     }
 }
