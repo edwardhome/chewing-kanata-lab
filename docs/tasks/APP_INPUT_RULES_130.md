@@ -39,3 +39,10 @@ ChewingTsfConfig：app_input_rules_enabled=false；app_input_rules_json={"versio
 - 取消檔案選取無變更；重複加入原模式不變；同名不同路徑可分別設定。
 
 自動測試與編譯只能證明受測邏輯及產物，不能替代上述 Windows 實鍵驗收。
+
+## Windows 原生審查重點
+
+- 前景事件監聽須有訊息迴圈，解除監聽須回到安裝監聽的執行緒；DLL 卸載後不能留下回呼。依 [SetWinEventHook](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook) 與 [UnhookWinEvent](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-unhookwinevent) 的生命週期契約審查。
+- 路徑查詢只使用必要權限；讀取失敗不猜測身分。參考 [QueryFullProcessImageName](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamea)。
+- 延後中的規則屬於當次 App visit；更新設定不能立即改掉此快照。過期連線的手動切換也不能取消新 App 的待套用規則。
+- 不把設定頁編譯成功或純核心測試通過，當成 TSF 前景事件與跨程序行為已驗收。
