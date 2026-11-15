@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "f4189e276e7409a7074ba0c10fc2634529c67646",
-  "preferences_commit": "08cf8ce4eb8af620827f56fe034631cdcc6831ea",
+  "tree": "7702049c50a03967d57ac1cfd1c43823535db36c",
+  "preferences_commit": "10736f1df25c09a5cf52f787c3e33536b3c972ab",
   "patches": [
     {
       "file": "0001-fix-preferences-restore-native-settings.patch",
@@ -87,6 +87,18 @@
     {
       "file": "0021-chore-release-set-version-1.1.5.patch",
       "sha256": "92de2ea647416cbe3ef163febc18f9ce9b50a761b7b7a51907b68ab61c4e3f2b"
+    },
+    {
+      "file": "0022-feat-settings-add-opt-in-application-input-rules-edi.patch",
+      "sha256": "9ae834362b04f1dd281149d49430ae0afcaf708c172cce28fba437ebf9222e07"
+    },
+    {
+      "file": "0023-chore-release-identify-app-rules-test-build-as-1.3.0.patch",
+      "sha256": "a599a08776d9770af1d1de765b89ceda751929fde36b0a8f9bd2ed7fb184d771"
+    },
+    {
+      "file": "0024-fix-settings-display-current-test-package-version-in.patch",
+      "sha256": "71d350550eb15feea00d405474598a2a2a3ba23961c6d94f53478caf11f4ef2e"
     }
   ]
 }
