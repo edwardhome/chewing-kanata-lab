@@ -2,6 +2,7 @@
 //! 
 //! 本模組為純邏輯層，不包含平台特定 API (如 Win32/TSF 或 Fcitx)，亦不包含網路呼叫。
 
+pub mod app_input_rules;
 pub mod capi;
 pub mod candidate_snapshot;
 pub mod double_shift;
