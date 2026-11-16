@@ -1,0 +1,429 @@
+From 8ec6227bb91183c1a5ed913eeabc54056bd5f0a7 Mon Sep 17 00:00:00 2001
+From: AGY <defu@local.dev>
+Date: Mon, 16 Nov 2026 12:12:34 +0800
+Subject: [PATCH 48/52] fix(tsf): support xaml island app rules and mac f-hold
+ gesture parity
+
+---
+ tip/src/text_service/chewing.rs            | 194 +++++++++++++++++----
+ tip/src/text_service/initial_hold_timer.rs |  14 +-
+ tip/src/text_service/kanata_layer.rs       |  17 +-
+ tip/src/text_service/mod.rs                |   5 +
+ 4 files changed, 188 insertions(+), 42 deletions(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index b9b0211..05cd419 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -227,6 +227,8 @@ pub(super) struct ChewingTextService {
+     f_key_state: kanata_layer::FKeyState,
+     f_event: Option<SystemKeyboardEvent>,
+     f_buffer: Option<FCompositionBuffer>,
++    f_timer: Option<HoldTimer>,
++    f_preview_active: bool,
+     double_shift: DoubleShiftGesture,
+     start_time: Instant,
+     cfg: Config,
+@@ -368,6 +370,8 @@ impl ChewingTextService {
+             f_key_state: kanata_layer::FKeyState::Up,
+             f_event: None,
+             f_buffer: None,
++            f_timer: None,
++            f_preview_active: false,
+             double_shift: DoubleShiftGesture::new(),
+             start_time: Instant::now(),
+             cfg,
+@@ -444,6 +448,8 @@ impl ChewingTextService {
+         self.f_key_state = kanata_layer::FKeyState::Up;
+         self.f_event = None;
+         self.f_buffer = None;
++        self.f_timer = None;
++        self.f_preview_active = false;
+         self.shift_session = None;
+         self.double_shift.reset();
+         self.hide_candidates();
+@@ -489,13 +495,24 @@ impl ChewingTextService {
+     fn app_rule_context_valid(&self) -> bool {
+         if !self.has_focus || self.lang_mode.get().is_disabled() { return false; }
+         (|| -> Result<bool> {
+-            use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
++            use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GetWindowThreadProcessId, GA_ROOT};
+             let context = unsafe { self.thread_mgr.GetFocus()?.GetTop()? };
+             if !self.is_context_mutable(&context).unwrap_or(false) { return Ok(false); }
+             let view = unsafe { context.GetActiveView()?.GetWnd()? };
+             let foreground = unsafe { GetForegroundWindow() };
+             if view.is_invalid() || foreground.is_invalid() { return Ok(false); }
+-            Ok(unsafe { GetAncestor(view, GA_ROOT) == GetAncestor(foreground, GA_ROOT) })
++            if unsafe { GetAncestor(view, GA_ROOT) == GetAncestor(foreground, GA_ROOT) } {
++                return Ok(true);
++            }
++            // Hosted XAML Island applications (such as Windows Terminal) have distinct root HWNDs
++            // for the hosting frame and the embedded XAML/PTY control. Compare process IDs.
++            let mut view_pid = 0;
++            let mut fg_pid = 0;
++            unsafe {
++                GetWindowThreadProcessId(view, Some(&mut view_pid));
++                GetWindowThreadProcessId(foreground, Some(&mut fg_pid));
++            }
++            Ok(view_pid != 0 && view_pid == fg_pid)
+         })().unwrap_or(false)
+     }
+ 
+@@ -590,6 +607,8 @@ impl ChewingTextService {
+         self.reset_shift_gesture();
+         self.f_key_state = kanata_layer::FKeyState::Up;
+         self.f_event = None;
++        self.f_timer = None;
++        self.f_preview_active = false;
+         self.chewing_editor = editor;
+         self.lang_mode.set(TsfLangMode::Chinese);
+         self.pending_lang_mode_change.set(true);
+@@ -636,6 +655,8 @@ impl ChewingTextService {
+             self.f_key_state = kanata_layer::FKeyState::Up;
+             self.f_event = None;
+             self.f_buffer = None;
++            self.f_timer = None;
++            self.f_preview_active = false;
+             self.shift_session = None;
+             self.double_shift.reset();
+             return Ok(false);
+@@ -714,17 +735,19 @@ impl ChewingTextService {
+                 self.shift_session = buffer.base;
+                 self.f_key_state = kanata_layer::FKeyState::Cancelled;
+                 self.f_event = None;
++                self.f_timer = None;
+             }
+             if self.shift_session.is_some() { return Ok(true); }
+             // Leave upstream Ctrl keybindings to the normal handling below.
+         }
+-        let is_shift_f = shift_held && self.f_buffer.as_ref().is_some_and(|b| b.symbols().is_empty()) || (shift_held && self.f_buffer.is_none());
+-        if !is_shift_f {
++        if shift_held && ev.vk == 0x46 && self.f_buffer.as_ref().is_some_and(|b| b.symbols().is_empty()) || (shift_held && self.f_buffer.is_none()) {
++            // Shift+F belongs strictly to English casing (ShiftLetterSession), never F layer.
++        } else {
+             if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
+             if !other_modifiers && ev.vk == 0x46 && !self.chewing_editor.is_selecting() {
+                 return Ok(true);
+             }
+-            if matches!(self.f_key_state, kanata_layer::FKeyState::Down(_) | kanata_layer::FKeyState::Held) {
++            if matches!(self.f_key_state, kanata_layer::FKeyState::Down { .. } | kanata_layer::FKeyState::Held { .. }) {
+                 return Ok(true);
+             }
+         }
+@@ -877,28 +900,59 @@ impl ChewingTextService {
+             if ev.vk == 0x46 && !evt.is_state_on(KeyState::Control) && !evt.is_state_on(KeyState::Alt)
+                 && !evt.is_state_on(KeyState::Super) && !self.chewing_editor.is_selecting() {
+                 if self.f_key_state == kanata_layer::FKeyState::Up && !ev.repeating {
++                    let delay = Duration::from_millis(self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64);
++                    let mappings = self.cfg.chewing_tsf.f_layer_mappings.clone();
+                     self.f_event = Some(ev);
+                     self.f_buffer = Some(FCompositionBuffer::new(self.shift_session.take(), &self.lexicon));
+-                    self.f_key_state = kanata_layer::FKeyState::Down(Instant::now());
++                    self.f_key_state = kanata_layer::FKeyState::Down {
++                        started_at: Instant::now(),
++                        delay,
++                        mappings,
++                    };
++                    // Show reversible marked preview immediately without committing
++                    if self.lang_mode.get() == TsfLangMode::Chinese {
++                        let preview_char = self.f_hold_zhuyin_preview();
++                        self.set_composition_string(context, "", &preview_char, vec![(0, preview_char.encode_utf16().count())], preview_char.encode_utf16().count())?;
++                        self.f_preview_active = true;
++                    } else if self.shift_session.is_some() || self.f_buffer.as_ref().is_some_and(|b| b.base.is_some()) {
++                        self.render_ascii(context)?;
++                        self.f_preview_active = true;
++                    } else {
++                        // Direct English: preview 'f' in preedit without committing
++                        self.set_composition_string(context, "", "f", vec![(0, 1)], 1)?;
++                        self.f_preview_active = true;
++                    }
++                    if let Ok(command) = self.composition_sink.cast::<super::IFnRunCommand>() {
++                        self.f_timer = HoldTimer::start_with_cmd(command, delay.as_millis() as u32, CommandType::FHoldTick);
++                    }
+                 }
+                 return Ok(true);
+             }
+-            if matches!(self.f_key_state, kanata_layer::FKeyState::Down(_) | kanata_layer::FKeyState::Held) {
+-                let delay = Duration::from_millis(self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64);
+-                let pending = matches!(self.f_key_state, kanata_layer::FKeyState::Down(t) if t.elapsed() <= delay);
+-                let phonetic = kanata_layer::prefers_phonetic_f_chord(ev.vk, pending,
+-                    self.lang_mode.get() == TsfLangMode::Chinese && self.f_buffer.as_ref().is_some_and(|b| b.base.is_none()),
+-                    matches!(self.kbtype, KeyboardLayoutCompat::Default) && matches!(self.keymap, KeymapOp::None), shift_held);
++            if matches!(self.f_key_state, kanata_layer::FKeyState::Down { .. } | kanata_layer::FKeyState::Held { .. }) {
++                let state_clone = self.f_key_state.clone();
++                let (started_at, delay, mappings, is_held) = match state_clone {
++                    kanata_layer::FKeyState::Down { started_at, delay, mappings } => (started_at, delay, mappings, false),
++                    kanata_layer::FKeyState::Held { delay, mappings } => (Instant::now(), delay, mappings, true),
++                    _ => unreachable!(),
++                };
++                let pending = !is_held && started_at.elapsed() <= delay;
+                 let has_symbols = self.f_buffer.as_ref().is_some_and(|b| !b.symbols().is_empty());
+-                if !phonetic && can_handle_configured_f_layer(&self.chewing_editor, ev.vk, has_symbols, &self.cfg.chewing_tsf.f_layer_mappings) {
+-                    let was_held = self.f_key_state == kanata_layer::FKeyState::Held;
++
++                if !pending && can_handle_configured_f_layer(&self.chewing_editor, ev.vk, has_symbols, &mappings) {
+                     let is_backspace = ev.vk == 0x08;
+-                    let mapped_symbol = chewing_tip_core::f_layer::resolve(&self.cfg.chewing_tsf.f_layer_mappings, ev.vk).map(str::to_owned);
++                    let mapped_symbol = chewing_tip_core::f_layer::resolve(&mappings, ev.vk).map(str::to_owned);
++
++                    // Retract preview if still active
++                    if self.f_preview_active {
++                        self.f_preview_active = false;
++                        self.update_preedit(context, String::new())?;
++                    }
+ 
+-                    self.f_key_state = kanata_layer::FKeyState::Held;
++                    self.f_key_state = kanata_layer::FKeyState::Held { delay, mappings };
++                    self.f_timer = None;
+ 
+                     let mut chinese_commit = String::new();
+-                    if !was_held && !self.chewing_editor.is_empty() {
++                    if !is_held && !self.chewing_editor.is_empty() {
+                         let _ = self.chewing_editor.commit();
+                         chinese_commit = self.chewing_editor.display_commit().to_owned();
+                         if !chinese_commit.is_empty() {
+@@ -921,10 +975,19 @@ impl ChewingTextService {
+                     }
+                     return Ok(true);
+                 }
+-                // Refusing a layer handoff does not forward the current key to the
+-                // host. Resolve the deferred F, then continue through normal input.
+-                if pending { self.replay_f_tap(context)?; }
+-                else { self.finish_f_buffer(context)?; }
++
++                // Any other key at/before deadline (or unmapped key while pending):
++                // Retract marked preview, resolve F as ordinary typing, then process next key normally.
++                if self.f_preview_active {
++                    self.f_preview_active = false;
++                    self.update_preedit(context, String::new())?;
++                }
++                self.f_timer = None;
++                if pending {
++                    self.replay_f_tap(context)?;
++                } else {
++                    self.finish_f_buffer(context)?;
++                }
+                 self.f_key_state = kanata_layer::FKeyState::Cancelled;
+             }
+         }
+@@ -1300,14 +1363,25 @@ impl ChewingTextService {
+             self.cancel_initial_hold();
+         }
+         if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up {
+-            let previous = self.f_key_state;
+-            let delay = Duration::from_millis(self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64);
+-            if matches!(previous, kanata_layer::FKeyState::Down(t) if t.elapsed() <= delay) {
+-                self.replay_f_tap(context)?;
+-            } else if matches!(previous, kanata_layer::FKeyState::Down(_) | kanata_layer::FKeyState::Held) {
+-                self.finish_f_buffer(context)?;
++            let previous = std::mem::replace(&mut self.f_key_state, kanata_layer::FKeyState::Up);
++            self.f_timer = None;
++            if self.f_preview_active {
++                self.f_preview_active = false;
++                self.update_preedit(context, String::new())?;
++            }
++            match previous {
++                kanata_layer::FKeyState::Down { started_at, delay, .. } => {
++                    if started_at.elapsed() <= delay {
++                        self.replay_f_tap(context)?;
++                    } else {
++                        self.finish_f_buffer(context)?;
++                    }
++                }
++                kanata_layer::FKeyState::Held { .. } => {
++                    self.finish_f_buffer(context)?;
++                }
++                _ => {}
+             }
+-            self.f_key_state = kanata_layer::FKeyState::Up;
+             self.f_event = None;
+             return Ok(false);
+         }
+@@ -1419,6 +1493,8 @@ impl ChewingTextService {
+         self.f_key_state = kanata_layer::FKeyState::Up;
+         self.f_event = None;
+         self.f_buffer = None;
++        self.f_timer = None;
++        self.f_preview_active = false;
+         self.shift_session = None;
+         self.double_shift.reset();
+         if self.candidate_list.is_some() {
+@@ -1682,6 +1758,53 @@ impl ChewingTextService {
+         self.apply_initial_effect(&context, effect)
+     }
+ 
++    pub(super) fn on_f_hold_tick(&mut self, generation: u32) -> Result<()> {
++        if !self.f_timer.as_ref().is_some_and(|timer| timer.generation == generation) { return Ok(()); }
++        self.f_timer = None;
++        let kanata_layer::FKeyState::Down { started_at, delay, mappings } = self.f_key_state.clone() else { return Ok(()); };
++        // Only elapsed time strictly greater than configured delay enters layer
++        if started_at.elapsed() <= delay { return Ok(()); }
++        let context = match unsafe { self.thread_mgr.GetFocus().and_then(|doc| doc.GetTop()) } {
++            Ok(context) => context,
++            Err(_) => {
++                self.f_key_state = kanata_layer::FKeyState::Cancelled;
++                return Ok(());
++            }
++        };
++        if !self.is_context_mutable(&context).unwrap_or(false) {
++            self.f_key_state = kanata_layer::FKeyState::Cancelled;
++            return Ok(());
++        }
++
++        // Retract preview if active
++        if self.f_preview_active {
++            self.f_preview_active = false;
++            self.update_preedit(&context, String::new())?;
++        }
++
++        self.f_key_state = kanata_layer::FKeyState::Held { delay, mappings };
++        Ok(())
++    }
++
++    fn f_hold_zhuyin_preview(&self) -> String {
++        match self.kbtype {
++            KeyboardLayoutCompat::Hsu | KeyboardLayoutCompat::DvorakHsu => "ㄑ".to_string(),
++            KeyboardLayoutCompat::Default
++            | KeyboardLayoutCompat::Dvorak
++            | KeyboardLayoutCompat::Carpalx
++            | KeyboardLayoutCompat::ColemakDhAnsi
++            | KeyboardLayoutCompat::ColemakDhOrth
++            | KeyboardLayoutCompat::Workman
++            | KeyboardLayoutCompat::Colemak => "ㄑ".to_string(),
++            KeyboardLayoutCompat::Ibm => "ㄑ".to_string(),
++            KeyboardLayoutCompat::GinYieh => "ㄑ".to_string(),
++            KeyboardLayoutCompat::Et => "ㄑ".to_string(),
++            KeyboardLayoutCompat::Et26 => "ㄑ".to_string(),
++            KeyboardLayoutCompat::DachenCp26 => "ㄑ".to_string(),
++            _ => "ㄑ".to_string(),
++        }
++    }
++
+     fn cancel_custom_input(&mut self, context: &ITfContext) -> Result<()> {
+         self.cancel_initial_hold();
+         let active = self.f_buffer.is_some() || self.shift_session.is_some();
+@@ -2773,12 +2896,19 @@ mod f_and_shift_handoff_tests {
+         assert_eq!(f_state, kanata_layer::FKeyState::Up);
+ 
+         // F KeyDown
+-        f_state = kanata_layer::FKeyState::Down(Instant::now());
+-        assert!(matches!(f_state, kanata_layer::FKeyState::Down(_)));
++        f_state = kanata_layer::FKeyState::Down {
++            started_at: Instant::now(),
++            delay: Duration::from_millis(150),
++            mappings: std::collections::BTreeMap::new(),
++        };
++        assert!(matches!(f_state, kanata_layer::FKeyState::Down { .. }));
+ 
+         // Layer symbol confirmed: transitions to Held
+-        f_state = kanata_layer::FKeyState::Held;
+-        assert_eq!(f_state, kanata_layer::FKeyState::Held);
++        f_state = kanata_layer::FKeyState::Held {
++            delay: Duration::from_millis(150),
++            mappings: std::collections::BTreeMap::new(),
++        };
++        assert!(matches!(f_state, kanata_layer::FKeyState::Held { .. }));
+ 
+         // F KeyUp
+         f_state = kanata_layer::FKeyState::Up;
+diff --git a/tip/src/text_service/initial_hold_timer.rs b/tip/src/text_service/initial_hold_timer.rs
+index 7976f44..8ba73e5 100644
+--- a/tip/src/text_service/initial_hold_timer.rs
++++ b/tip/src/text_service/initial_hold_timer.rs
+@@ -4,18 +4,22 @@ use std::{cell::RefCell, collections::HashMap, sync::atomic::{AtomicU32, Orderin
+ use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::{KillTimer, SetTimer}};
+ use super::{CommandType, IFnRunCommand};
+ 
+-struct Target { command: IFnRunCommand, generation: u32 }
++struct Target { command: IFnRunCommand, generation: u32, cmd_type: CommandType }
+ thread_local! { static TARGETS: RefCell<HashMap<usize, Target>> = RefCell::new(HashMap::new()); }
+ static NEXT: AtomicU32 = AtomicU32::new(1);
+ 
+-pub(super) struct HoldTimer { id: usize, pub generation: u32, _thread: PhantomData<Rc<()>> }
++pub(super) struct HoldTimer { id: usize, pub generation: u32, cmd_type: CommandType, _thread: PhantomData<Rc<()>> }
+ impl HoldTimer {
+     pub fn start(command: IFnRunCommand, delay_ms: u32) -> Option<Self> {
++        Self::start_with_cmd(command, delay_ms, CommandType::InitialHoldTick)
++    }
++
++    pub fn start_with_cmd(command: IFnRunCommand, delay_ms: u32, cmd_type: CommandType) -> Option<Self> {
+         let generation = NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1)).ok()?;
+         let id = unsafe { SetTimer(None, 0, delay_ms.clamp(100, 1000), Some(tick)) };
+         if id == 0 { return None; }
+-        TARGETS.with(|targets| targets.borrow_mut().insert(id, Target {command, generation}));
+-        Some(Self {id, generation, _thread: PhantomData})
++        TARGETS.with(|targets| targets.borrow_mut().insert(id, Target {command, generation, cmd_type}));
++        Some(Self {id, generation, cmd_type, _thread: PhantomData})
+     }
+ }
+ impl Drop for HoldTimer {
+@@ -35,7 +39,7 @@ unsafe extern "system" fn tick(_: HWND, _: u32, id: usize, _: u32) {
+     let _ = unsafe { KillTimer(None, id) };
+     let target = TARGETS.with(|targets| targets.borrow_mut().remove(&id));
+     if let Some(target) = target {
+-        unsafe { target.command.on_command(target.generation, CommandType::InitialHoldTick); }
++        unsafe { target.command.on_command(target.generation, target.cmd_type); }
+     }
+ }
+ 
+diff --git a/tip/src/text_service/kanata_layer.rs b/tip/src/text_service/kanata_layer.rs
+index 14a642e..1a1bf1d 100644
+--- a/tip/src/text_service/kanata_layer.rs
++++ b/tip/src/text_service/kanata_layer.rs
+@@ -2,18 +2,25 @@
+ // Kanata Number & Symbol Layer emulator for Chewing TSF
+ // Based on kanata.original.kbd (tap-hold 120 180 f (layer-toggle number))
+ 
+-use std::time::Instant;
++use std::{collections::BTreeMap, time::{Duration, Instant}};
+ 
+ #[allow(unused_imports)]
+ pub(crate) use chewing_policy_core::f_hold::{
+-    can_start_chord, is_phonetic_f_overlap, prefers_phonetic_f_chord,
++    can_start_chord, is_phonetic_f_overlap, prefers_phonetic_f_chord, FHoldGesture, Phase, Event, Effect,
+ };
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[derive(Debug, Clone, PartialEq, Eq)]
+ pub(crate) enum FKeyState {
+     Up,
+-    Down(Instant),
+-    Held,
++    Down {
++        started_at: Instant,
++        delay: Duration,
++        mappings: BTreeMap<String, String>,
++    },
++    Held {
++        delay: Duration,
++        mappings: BTreeMap<String, String>,
++    },
+     Cancelled,
+ }
+ 
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index 4776e9e..4d4ab96 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -61,6 +61,7 @@ pub(super) enum CommandType {
+     RightClick,
+     Menu,
+     InitialHoldTick,
++    FHoldTick,
+ }
+ 
+ #[interface("f320f835-b95d-4d3f-89d5-fd4ab7b9d7bb")]
+@@ -164,6 +165,10 @@ impl IFnRunCommand_Impl for TextService_Impl {
+             if let Err(error) = ts.on_initial_hold_tick(id) { error!("Initial letter timer failed: {error:#}"); }
+             return;
+         }
++        if matches!(cmd_type, CommandType::FHoldTick) {
++            if let Err(error) = ts.on_f_hold_tick(id) { error!("F hold timer failed: {error:#}"); }
++            return;
++        }
+         ts.on_command(id, cmd_type);
+         let reentrant_ops = ReentrantOps::from_mut(&self.inner, borrowed_ts);
+         if let Err(error) = reentrant_ops.sync_keyboard_openclose(false) {
+-- 
+2.54.0 (Apple Git-157)
+

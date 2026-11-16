@@ -1,0 +1,26 @@
+From 0f49538c700c1c6b17ad3b220078feb2e6d4d74f Mon Sep 17 00:00:00 2001
+From: Defu Chen <edward61221@gmail.com>
+Date: Mon, 16 Nov 2026 14:08:01 +0800
+Subject: [PATCH 52/52] fix(input): render actual native syllable instead of
+ layout name
+
+---
+ tip/src/text_service/chewing.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index cb423cd..8d4ac00 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -2836,7 +2836,7 @@ fn can_handle_configured_f_layer(editor: &Editor, vk: u16, has_symbols: bool, ma
+ fn phonetic_f_preview(kbtype: KeyboardLayoutCompat, event: KeyboardEvent) -> Option<String> {
+     let mut syllable = syl_editor_from_kbtype(kbtype);
+     syllable.key_press(event);
+-    let text = syllable.to_string();
++    let text = syllable.key_seq().unwrap_or_else(||syllable.read().to_string());
+     (!text.is_empty()).then_some(text)
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,145 @@
+From 5da8f2b30295a77c711395a18d2fcc0706326995 Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Mon, 16 Nov 2026 00:18:38 +0800
+Subject: [PATCH] feat(settings): choose running apps without reading window
+ titles
+
+---
+ src-tauri/Cargo.toml             |  2 ++
+ src-tauri/src/app_input_rules.rs | 36 ++++++++++++++++++++++++++++++++
+ src-tauri/src/lib.rs             |  1 +
+ src/AppInputRules.tsx            | 35 +++++++++++++++++++++++++------
+ 4 files changed, 68 insertions(+), 6 deletions(-)
+
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+index 163d5e8..f0c851a 100644
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -40,6 +40,8 @@ windows = {
+   version = "0.61.0",
+   features = [
+     "Win32_Graphics_DirectWrite",
++    "Win32_System_Threading",
++    "Win32_UI_WindowsAndMessaging",
+   ]
+ }
+ 
+diff --git a/src-tauri/src/app_input_rules.rs b/src-tauri/src/app_input_rules.rs
+index 75f0949..0dad0d6 100644
+--- a/src-tauri/src/app_input_rules.rs
++++ b/src-tauri/src/app_input_rules.rs
+@@ -48,3 +48,39 @@ mod tests {
+         }
+     }
+ }
++
++/// Enumerate visible applications only when the user presses the picker button.
++/// Window titles and document contents are deliberately not queried.
++#[tauri::command]
++pub(crate) fn running_app_input_rules() -> Result<Vec<AppRule>, String> {
++    use std::collections::{HashSet, BTreeMap};
++    use windows::{core::{BOOL, PWSTR}, Win32::{
++        Foundation::{HWND, LPARAM, CloseHandle},
++        System::Threading::{GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION},
++        UI::WindowsAndMessaging::{EnumWindows, IsWindowVisible, GetWindowThreadProcessId},
++    }};
++    unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> BOOL {
++        if unsafe { IsWindowVisible(hwnd) }.as_bool() {
++            let mut pid=0;
++            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)); }
++            if pid!=0 { unsafe { &mut *(data.0 as *mut HashSet<u32>) }.insert(pid); }
++        }
++        BOOL(1)
++    }
++    let mut pids=HashSet::<u32>::new();
++    unsafe { EnumWindows(Some(collect), LPARAM(&mut pids as *mut _ as isize)) }.map_err(|_| "無法列出已開啟的應用程式。")?;
++    let mut rules=BTreeMap::new();
++    for pid in pids {
++        if pid == unsafe { GetCurrentProcessId() } { continue; }
++        let Ok(handle)=(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {continue};
++        let mut buffer=vec![0u16;32768]; let mut length=buffer.len() as u32;
++        let result=unsafe { QueryFullProcessImageNameW(handle,PROCESS_NAME_FORMAT(0),PWSTR(buffer.as_mut_ptr()), &mut length) };
++        unsafe { let _=CloseHandle(handle); }
++        if result.is_err() || length==0 || length as usize>=buffer.len() {continue;}
++        let Ok(path)=String::from_utf16(&buffer[..length as usize]) else {continue};
++        let Some(app_id)=normalize_path(&path) else {continue};
++        let Some(name)=Path::new(&path).file_name().and_then(|n|n.to_str()) else {continue};
++        rules.entry(app_id.clone()).or_insert(AppRule{app_id, display_name:name.into(),mode:"english"});
++    }
++    Ok(rules.into_values().take(256).collect())
++}
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index b9e45c3..cf20de3 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -82,6 +82,7 @@ pub fn run() {
+             load_config,
+             config::f_layer_defaults,
+             app_input_rules::resolve_app_input_rule,
++            app_input_rules::running_app_input_rules,
+             save_config,
+             get_system_fonts,
+             chewing_version,
+diff --git a/src/AppInputRules.tsx b/src/AppInputRules.tsx
+index e902512..f9e6404 100644
+--- a/src/AppInputRules.tsx
++++ b/src/AppInputRules.tsx
+@@ -24,12 +24,9 @@ export default function AppInputRules({ config, onChange }: { config: ChewingTsf
+   const [busy, setBusy] = useState(false);
+   const { rules, invalid } = decodeRules(config.app_input_rules_json);
+   const update = (next: AppRule[]) => onChange({ ...latest.current, app_input_rules_json: JSON.stringify({ version: 1, rules: next }) });
+-  const add = async () => {
+-    setBusy(true); setError("");
+-    try {
+-      const path = await open({ title: "選擇應用程式", multiple: false, directory: false, filters: [{ name: "Windows 應用程式", extensions: ["exe"] }] });
+-      if (typeof path !== "string") return;
+-      const rule = await invoke<AppRule>("resolve_app_input_rule", { path });
++  const [running, setRunning] = useState<AppRule[]>([]);
++  const [selected, setSelected] = useState("");
++  const appendRule = (rule: AppRule) => {
+       if (!mounted.current) return;
+       const current = decodeRules(latest.current.app_input_rules_json);
+       if (current.invalid) { setError("規則已變更，請先確認設定內容。"); return; }
+@@ -39,6 +36,23 @@ export default function AppInputRules({ config, onChange }: { config: ChewingTsf
+       }
+       if (rules.length >= 256) { setError("最多可加入 256 個應用程式。"); return; }
+       update([...rules, rule]);
++  };
++  const loadRunning = async () => {
++    setBusy(true); setError("");
++    try {
++      const apps = await invoke<AppRule[]>("running_app_input_rules");
++      if (!mounted.current) return;
++      setRunning(apps); setSelected(apps[0]?.app_id ?? "");
++    } catch (e) { setError(String(e)); }
++    finally { setBusy(false); }
++  };
++  const add = async () => {
++    setBusy(true); setError("");
++    try {
++      const path = await open({ title: "選擇應用程式", multiple: false, directory: false, filters: [{ name: "Windows 應用程式", extensions: ["exe"] }] });
++      if (typeof path !== "string") return;
++      const rule = await invoke<AppRule>("resolve_app_input_rule", { path });
++      appendRule(rule);
+     } catch (e) { setError(String(e)); }
+     finally { setBusy(false); }
+   };
+@@ -48,6 +62,15 @@ export default function AppInputRules({ config, onChange }: { config: ChewingTsf
+     <Text>只切換 AI新酷音內部的英文／注音，不會搶回其他輸入法。同一 App 手動切換後會保留選擇；離開再返回才重新套用。</Text>
+     <Text>按下「套用」或「確定」儲存後，規則與開關從下一次切入 App 生效。組字、選字或按鍵手勢尚未結束時會延後切換。</Text>
+     {config.enable_caps_lock && <Text role="status">Caps Lock 模式控制已啟用; App 規則暫不介入。</Text>}
++    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
++      <Button disabled={busy || invalid} onClick={loadRunning}>從已開啟的 App 選擇</Button>
++      {running.length > 0 && <>
++        <Select aria-label="已開啟的應用程式" value={selected} onChange={(_, data) => setSelected(data.value)}>
++          {running.map(app => <option key={app.app_id} value={app.app_id}>{app.display_name} — {app.app_id}</option>)}
++        </Select>
++        <Button disabled={busy || invalid || !selected} onClick={() => { const app = running.find(a => a.app_id === selected); if (app) appendRule(app); }}>加入選取的 App</Button>
++      </>}
++    </div>
+     <div><Button disabled={busy || invalid} onClick={add}>加入應用程式…</Button></div>
+     <Text size={200}>請選擇實際的 .exe，不是捷徑。辨識依完整程式路徑，程式搬移後請重新加入。不辨識網站、Vim、SSH 或終端機分頁。</Text>
+     {invalid && <div role="alert"><Text>儲存的規則格式無法辨識，暫不套用。可清空規則後重新加入。</Text> <Button onClick={() => update([])}>清空規則</Button></div>}
+-- 
+2.54.0 (Apple Git-157)
+

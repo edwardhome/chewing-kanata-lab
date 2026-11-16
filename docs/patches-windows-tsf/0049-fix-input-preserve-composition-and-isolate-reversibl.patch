@@ -1,0 +1,469 @@
+From 4b0cdedc5f1fbc46d31d2b80eb9d5da39d74eaa7 Mon Sep 17 00:00:00 2001
+From: Defu Chen <edward61221@gmail.com>
+Date: Mon, 16 Nov 2026 14:02:30 +0800
+Subject: [PATCH 49/52] fix(input): preserve composition and isolate reversible
+ F previews
+
+---
+ tip/src/text_service/chewing.rs            | 215 ++++++++++++---------
+ tip/src/text_service/f_preview.rs          |  45 +++++
+ tip/src/text_service/initial_hold_timer.rs |   6 +-
+ tip/src/text_service/mod.rs                |   1 +
+ 4 files changed, 170 insertions(+), 97 deletions(-)
+ create mode 100644 tip/src/text_service/f_preview.rs
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 05cd419..6b4ff65 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -229,6 +229,8 @@ pub(super) struct ChewingTextService {
+     f_buffer: Option<FCompositionBuffer>,
+     f_timer: Option<HoldTimer>,
+     f_preview_active: bool,
++    f_target: Option<Rc<CompositionSession>>,
++    f_mode: Option<TsfLangMode>,
+     double_shift: DoubleShiftGesture,
+     start_time: Instant,
+     cfg: Config,
+@@ -372,6 +374,8 @@ impl ChewingTextService {
+             f_buffer: None,
+             f_timer: None,
+             f_preview_active: false,
++            f_target: None,
++            f_mode: None,
+             double_shift: DoubleShiftGesture::new(),
+             start_time: Instant::now(),
+             cfg,
+@@ -470,6 +474,10 @@ impl ChewingTextService {
+ 
+     pub(super) fn reset_shift_gesture(&mut self) {
+         self.cancel_initial_hold();
++        if let Some(context) = self.f_target.as_ref().map(|s| s.context.clone()) {
++            let _ = self.cancel_f_preview(&context);
++        }
++        self.f_timer = None;
+         if let Some(session)=self.shift_session.as_mut() {session.cancel_initial_timing();}
+         self.shift_key_state = ShiftKeyState::Up;
+         self.double_shift.reset();
+@@ -495,24 +503,13 @@ impl ChewingTextService {
+     fn app_rule_context_valid(&self) -> bool {
+         if !self.has_focus || self.lang_mode.get().is_disabled() { return false; }
+         (|| -> Result<bool> {
+-            use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GetWindowThreadProcessId, GA_ROOT};
++            use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
+             let context = unsafe { self.thread_mgr.GetFocus()?.GetTop()? };
+             if !self.is_context_mutable(&context).unwrap_or(false) { return Ok(false); }
+             let view = unsafe { context.GetActiveView()?.GetWnd()? };
+             let foreground = unsafe { GetForegroundWindow() };
+             if view.is_invalid() || foreground.is_invalid() { return Ok(false); }
+-            if unsafe { GetAncestor(view, GA_ROOT) == GetAncestor(foreground, GA_ROOT) } {
+-                return Ok(true);
+-            }
+-            // Hosted XAML Island applications (such as Windows Terminal) have distinct root HWNDs
+-            // for the hosting frame and the embedded XAML/PTY control. Compare process IDs.
+-            let mut view_pid = 0;
+-            let mut fg_pid = 0;
+-            unsafe {
+-                GetWindowThreadProcessId(view, Some(&mut view_pid));
+-                GetWindowThreadProcessId(foreground, Some(&mut fg_pid));
+-            }
+-            Ok(view_pid != 0 && view_pid == fg_pid)
++            Ok(unsafe { GetAncestor(view, GA_ROOT) == GetAncestor(foreground, GA_ROOT) })
+         })().unwrap_or(false)
+     }
+ 
+@@ -723,7 +720,7 @@ impl ChewingTextService {
+         }
+ 
+         // Shift itself is a modifier, never an instruction to commit an English word.
+-        if evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT { return Ok(false); }
++        if (evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT) && self.f_target.is_none() { return Ok(false); }
+ 
+         let shift_held = self.shift_key_state.reconcile(evt.is_state_on(KeyState::Shift),
+             evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT);
+@@ -731,20 +728,14 @@ impl ChewingTextService {
+         // Shortcut modifiers must bypass the custom F/English policy.
+         if other_modifiers {
+             self.double_shift.reset();
+-            if let Some(buffer) = self.f_buffer.take() {
+-                self.shift_session = buffer.base;
+-                self.f_key_state = kanata_layer::FKeyState::Cancelled;
+-                self.f_event = None;
+-                self.f_timer = None;
+-            }
+             if self.shift_session.is_some() { return Ok(true); }
+             // Leave upstream Ctrl keybindings to the normal handling below.
+         }
+-        if shift_held && ev.vk == 0x46 && self.f_buffer.as_ref().is_some_and(|b| b.symbols().is_empty()) || (shift_held && self.f_buffer.is_none()) {
++        if shift_held && ev.vk == 0x46 && self.f_buffer.as_ref().is_none_or(|b| b.symbols().is_empty()) {
+             // Shift+F belongs strictly to English casing (ShiftLetterSession), never F layer.
+         } else {
+             if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
+-            if !other_modifiers && ev.vk == 0x46 && !self.chewing_editor.is_selecting() {
++            if !other_modifiers && ev.vk == 0x46 && !self.chewing_editor.is_selecting() && self.chewing_editor.syllable_buffer_display().is_empty() {
+                 return Ok(true);
+             }
+             if matches!(self.f_key_state, kanata_layer::FKeyState::Down { .. } | kanata_layer::FKeyState::Held { .. }) {
+@@ -889,16 +880,22 @@ impl ChewingTextService {
+             evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT);
+         let _is_english = self.lang_mode.get() == TsfLangMode::English;
+ 
++        if self.f_target.is_some() && !self.f_target_valid(context) {
++            self.discard_f_gesture();
++        }
+         // Resolve the F gesture before Shift-letter handling, including direct
+         // English and an existing ASCII composition. Key-up owns the commit.
+         // NOTE: If shift is held and no F-layer buffer is currently accumulating,
+         // user intends to type Shift+F (or start/continue ShiftLetterSession).
+         // Let it fall through to ShiftLetterSession rather than hijacking into F-layer.
+-        let is_shift_f = shift_held && self.f_buffer.as_ref().is_some_and(|b| b.symbols().is_empty()) || (shift_held && self.f_buffer.is_none());
++        if evt.is_state_on(KeyState::Control) || evt.is_state_on(KeyState::Alt) || evt.is_state_on(KeyState::Super) {
++            if self.f_target.is_some() { self.cancel_f_preview(context)?; }
++        }
++        let is_shift_f = shift_held && ev.vk == 0x46 && self.f_buffer.as_ref().is_none_or(|b| b.symbols().is_empty());
+         if !is_shift_f {
+             if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
+             if ev.vk == 0x46 && !evt.is_state_on(KeyState::Control) && !evt.is_state_on(KeyState::Alt)
+-                && !evt.is_state_on(KeyState::Super) && !self.chewing_editor.is_selecting() {
++                && !evt.is_state_on(KeyState::Super) && !self.chewing_editor.is_selecting() && self.chewing_editor.syllable_buffer_display().is_empty() {
+                 if self.f_key_state == kanata_layer::FKeyState::Up && !ev.repeating {
+                     let delay = Duration::from_millis(self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64);
+                     let mappings = self.cfg.chewing_tsf.f_layer_mappings.clone();
+@@ -909,22 +906,13 @@ impl ChewingTextService {
+                         delay,
+                         mappings,
+                     };
+-                    // Show reversible marked preview immediately without committing
+-                    if self.lang_mode.get() == TsfLangMode::Chinese {
+-                        let preview_char = self.f_hold_zhuyin_preview();
+-                        self.set_composition_string(context, "", &preview_char, vec![(0, preview_char.encode_utf16().count())], preview_char.encode_utf16().count())?;
+-                        self.f_preview_active = true;
+-                    } else if self.shift_session.is_some() || self.f_buffer.as_ref().is_some_and(|b| b.base.is_some()) {
+-                        self.render_ascii(context)?;
+-                        self.f_preview_active = true;
+-                    } else {
+-                        // Direct English: preview 'f' in preedit without committing
+-                        self.set_composition_string(context, "", "f", vec![(0, 1)], 1)?;
+-                        self.f_preview_active = true;
+-                    }
+-                    if let Ok(command) = self.composition_sink.cast::<super::IFnRunCommand>() {
+-                        self.f_timer = HoldTimer::start_with_cmd(command, delay.as_millis() as u32, CommandType::FHoldTick);
+-                    }
++                    self.cancel_initial_hold();
++                    self.render_f_preview(context)?;
++                    self.f_preview_active = true;
++                    self.f_target = self.pending_state.clone();
++                    self.f_mode = Some(self.lang_mode.get());
++                    self.schedule_f_tick(delay.as_millis() as u32 + 1);
++
+                 }
+                 return Ok(true);
+             }
+@@ -942,17 +930,12 @@ impl ChewingTextService {
+                     let is_backspace = ev.vk == 0x08;
+                     let mapped_symbol = chewing_tip_core::f_layer::resolve(&mappings, ev.vk).map(str::to_owned);
+ 
+-                    // Retract preview if still active
+-                    if self.f_preview_active {
+-                        self.f_preview_active = false;
+-                        self.update_preedit(context, String::new())?;
+-                    }
+-
++                    self.f_preview_active = false;
+                     self.f_key_state = kanata_layer::FKeyState::Held { delay, mappings };
+                     self.f_timer = None;
+ 
+                     let mut chinese_commit = String::new();
+-                    if !is_held && !self.chewing_editor.is_empty() {
++                    if !self.chewing_editor.is_empty() {
+                         let _ = self.chewing_editor.commit();
+                         chinese_commit = self.chewing_editor.display_commit().to_owned();
+                         if !chinese_commit.is_empty() {
+@@ -976,12 +959,8 @@ impl ChewingTextService {
+                     return Ok(true);
+                 }
+ 
+-                // Any other key at/before deadline (or unmapped key while pending):
+-                // Retract marked preview, resolve F as ordinary typing, then process next key normally.
+-                if self.f_preview_active {
+-                    self.f_preview_active = false;
+-                    self.update_preedit(context, String::new())?;
+-                }
++                // Normal typing replaces the marked preview in the same context.
++                self.f_preview_active = false;
+                 self.f_timer = None;
+                 if pending {
+                     self.replay_f_tap(context)?;
+@@ -989,6 +968,8 @@ impl ChewingTextService {
+                     self.finish_f_buffer(context)?;
+                 }
+                 self.f_key_state = kanata_layer::FKeyState::Cancelled;
++                self.f_target = None;
++                self.f_mode = None;
+             }
+         }
+ 
+@@ -1363,12 +1344,14 @@ impl ChewingTextService {
+             self.cancel_initial_hold();
+         }
+         if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up {
++            if self.f_target.is_some() && !self.f_target_valid(context) {
++                self.discard_f_gesture();
++                self.f_key_state = kanata_layer::FKeyState::Up;
++                return Ok(true);
++            }
+             let previous = std::mem::replace(&mut self.f_key_state, kanata_layer::FKeyState::Up);
+             self.f_timer = None;
+-            if self.f_preview_active {
+-                self.f_preview_active = false;
+-                self.update_preedit(context, String::new())?;
+-            }
++            self.f_preview_active = false;
+             match previous {
+                 kanata_layer::FKeyState::Down { started_at, delay, .. } => {
+                     if started_at.elapsed() <= delay {
+@@ -1383,7 +1366,9 @@ impl ChewingTextService {
+                 _ => {}
+             }
+             self.f_event = None;
+-            return Ok(false);
++            self.f_target = None;
++            self.f_mode = None;
++            return Ok(true);
+         }
+         let evt = ev.to_keyboard_event(self.keymap);
+         let last_is_shift = evt.ksym == SYM_LEFTSHIFT || evt.ksym == SYM_RIGHTSHIFT;
+@@ -1758,55 +1743,97 @@ impl ChewingTextService {
+         self.apply_initial_effect(&context, effect)
+     }
+ 
++    fn schedule_f_tick(&mut self, delay_ms: u32) {
++        if let Ok(command) = self.composition_sink.cast::<super::IFnRunCommand>() {
++            self.f_timer = HoldTimer::start_with_cmd(command, delay_ms, CommandType::FHoldTick);
++        }
++    }
++
++    fn f_target_valid(&self, context: &ITfContext) -> bool {
++        self.has_focus && self.f_mode == Some(self.lang_mode.get())
++            && self.is_context_mutable(context).unwrap_or(false)
++            && self.f_target.as_ref().zip(self.pending_state.as_ref()).is_some_and(|(a,b)|
++                Rc::ptr_eq(a,b) && a.same_context(context) && a.is_active() && !a.is_failed() && !a.is_ending())
++    }
++
++    fn discard_f_gesture(&mut self) {
++        self.f_timer = None;
++        self.f_target = None;
++        self.f_mode = None;
++        self.f_event = None;
++        self.f_preview_active = false;
++        self.f_key_state = kanata_layer::FKeyState::Cancelled;
++        if let Some(buffer) = self.f_buffer.take() { self.shift_session = buffer.base; }
++    }
++
++    fn cancel_f_preview(&mut self, context: &ITfContext) -> Result<()> {
++        let own = self.f_target.as_ref().is_some_and(|s| s.same_context(context) && s.is_active() && !s.is_failed());
++        self.discard_f_gesture();
++        if own {
++            if self.shift_session.is_some() { self.render_ascii(context)?; }
++            else { self.update_preedit(context, String::new())?; }
++        }
++        Ok(())
++    }
++
++    // Display only. Neither the native editor nor the ASCII base is modified.
++    fn render_f_preview(&mut self, context: &ITfContext) -> Result<()> {
++        let Some(event) = self.f_event else { return Ok(()); };
++        let (base,cursor,insert) = if let Some(session) = self.f_buffer.as_ref().and_then(|b| b.base.as_ref()) {
++            (session.composition.raw.clone(),session.composition.cursor,"f".to_string())
++        } else if self.lang_mode.get() == TsfLangMode::Chinese {
++            let mut syllable = syl_editor_from_kbtype(self.kbtype);
++            syllable.key_press(event.to_keyboard_event(self.keymap));
++            let text = syllable.to_string();
++            // Layouts where F is not a phonetic key retain its literal preview.
++            let text = if text.is_empty() { (event.ascii_code as char).to_string() } else { text };
++            (self.chewing_editor.intervals().map(|i| i.text).collect::<String>(),self.chewing_editor.cursor(),text)
++        } else {
++            (String::new(),0,if event.ascii_code == b'F' { "F" } else { "f" }.to_string())
++        };
++        let (text,caret) = super::f_preview::insert_marked(&base,cursor,&insert);
++        self.set_composition_string(context,"",&text,vec![(0,text.encode_utf16().count())],caret)
++    }
++
++    fn render_empty_f_layer(&mut self, context: &ITfContext) -> Result<()> {
++        // Keep a marked range alive even when the layer has no output yet.
++        // The placeholder is never committed and never sent as a host key.
++        let (base,cursor) = if let Some(session)=self.f_buffer.as_ref().and_then(|b|b.base.as_ref()) {
++            (session.composition.raw.clone(),session.composition.cursor)
++        } else {
++            (self.chewing_editor.intervals().map(|i|i.text).collect::<String>(),self.chewing_editor.cursor())
++        };
++        let (text,caret)=super::f_preview::insert_marked(&base,cursor,"·");
++        self.set_composition_string(context,"",&text,vec![(0,text.encode_utf16().count())],caret)
++    }
++
+     pub(super) fn on_f_hold_tick(&mut self, generation: u32) -> Result<()> {
+         if !self.f_timer.as_ref().is_some_and(|timer| timer.generation == generation) { return Ok(()); }
+         self.f_timer = None;
+         let kanata_layer::FKeyState::Down { started_at, delay, mappings } = self.f_key_state.clone() else { return Ok(()); };
+-        // Only elapsed time strictly greater than configured delay enters layer
+-        if started_at.elapsed() <= delay { return Ok(()); }
+         let context = match unsafe { self.thread_mgr.GetFocus().and_then(|doc| doc.GetTop()) } {
+             Ok(context) => context,
+-            Err(_) => {
+-                self.f_key_state = kanata_layer::FKeyState::Cancelled;
+-                return Ok(());
+-            }
++            Err(_) => { self.discard_f_gesture(); return Ok(()); }
+         };
+-        if !self.is_context_mutable(&context).unwrap_or(false) {
+-            self.f_key_state = kanata_layer::FKeyState::Cancelled;
++        if !self.f_target_valid(&context) { self.discard_f_gesture(); return Ok(()); }
++        let mut keys = [0u8;256];
++        if unsafe { GetKeyboardState(&mut keys) }.is_err() { return Ok(()); }
++        if [0x10,0x11,0x12,0x5b,0x5c].iter().any(|&k| keys[k] & 0x80 != 0) {
++            return self.cancel_f_preview(&context);
++        }
++        if keys[0x46] & 0x80 == 0 { return Ok(()); }
++        if let Some(remaining)=super::f_preview::remaining_delay(started_at.elapsed(),delay) {
++            self.schedule_f_tick(remaining);
+             return Ok(());
+         }
+-
+-        // Retract preview if active
+-        if self.f_preview_active {
+-            self.f_preview_active = false;
+-            self.update_preedit(&context, String::new())?;
+-        }
+-
++        self.f_preview_active = false;
+         self.f_key_state = kanata_layer::FKeyState::Held { delay, mappings };
+-        Ok(())
+-    }
+-
+-    fn f_hold_zhuyin_preview(&self) -> String {
+-        match self.kbtype {
+-            KeyboardLayoutCompat::Hsu | KeyboardLayoutCompat::DvorakHsu => "ㄑ".to_string(),
+-            KeyboardLayoutCompat::Default
+-            | KeyboardLayoutCompat::Dvorak
+-            | KeyboardLayoutCompat::Carpalx
+-            | KeyboardLayoutCompat::ColemakDhAnsi
+-            | KeyboardLayoutCompat::ColemakDhOrth
+-            | KeyboardLayoutCompat::Workman
+-            | KeyboardLayoutCompat::Colemak => "ㄑ".to_string(),
+-            KeyboardLayoutCompat::Ibm => "ㄑ".to_string(),
+-            KeyboardLayoutCompat::GinYieh => "ㄑ".to_string(),
+-            KeyboardLayoutCompat::Et => "ㄑ".to_string(),
+-            KeyboardLayoutCompat::Et26 => "ㄑ".to_string(),
+-            KeyboardLayoutCompat::DachenCp26 => "ㄑ".to_string(),
+-            _ => "ㄑ".to_string(),
+-        }
++        self.render_empty_f_layer(&context)
+     }
+ 
+     fn cancel_custom_input(&mut self, context: &ITfContext) -> Result<()> {
+         self.cancel_initial_hold();
++        if self.f_target.is_some() { self.cancel_f_preview(context)?; }
+         let active = self.f_buffer.is_some() || self.shift_session.is_some();
+         let had_shift = self.shift_session.is_some();
+         let base = self.f_buffer.take().and_then(|b| b.base).or_else(|| self.shift_session.take());
+@@ -1878,7 +1905,7 @@ impl ChewingTextService {
+                 let text = composition.display();
+                 if !text.is_empty() {
+                     self.commit_ascii(context, text)?;
+-                } else if !self.chewing_editor.is_empty() {
++                } else {
+                     self.update_preedit(context, String::new())?;
+                 }
+             }
+diff --git a/tip/src/text_service/f_preview.rs b/tip/src/text_service/f_preview.rs
+new file mode 100644
+index 0000000..162722b
+--- /dev/null
++++ b/tip/src/text_service/f_preview.rs
+@@ -0,0 +1,45 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++//! Pure display/time helpers used by the native F gesture adapter.
++use std::time::Duration;
++
++/// Cursor is a Unicode scalar offset from the editor; TSF caret is UTF-16.
++/// Returns a display copy, without changing the original composition.
++pub(super) fn insert_marked(base: &str, cursor: usize, preview: &str) -> (String, usize) {
++    let head: String = base.chars().take(cursor).collect();
++    let tail: String = base.chars().skip(cursor).collect();
++    let caret = head.encode_utf16().count() + preview.encode_utf16().count();
++    (format!("{head}{preview}{tail}"), caret)
++}
++
++/// A timer may arrive early; equality is still normal typing, never a layer.
++pub(super) fn remaining_delay(elapsed: Duration, delay: Duration) -> Option<u32> {
++    (elapsed <= delay).then(|| (delay.saturating_sub(elapsed).as_millis() + 1).min(u32::MAX as u128) as u32)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn native_prefix_suffix_and_source_survive_preview() {
++        let base="中文輸入";
++        assert_eq!(insert_marked(base,2,"ㄑ"),("中文ㄑ輸入".into(),3));
++        assert_eq!(insert_marked(base,2,"·"),("中文·輸入".into(),3));
++        assert_eq!(base,"中文輸入");
++    }
++    #[test]
++    fn ascii_middle_preview_is_not_appended_or_committed() {
++        assert_eq!(insert_marked("abcd",2,"f"),("abfcd".into(),3));
++        assert_eq!(insert_marked("",0,"f"),("f".into(),1));
++    }
++    #[test]
++    fn supplementary_characters_use_utf16_caret() {
++        assert_eq!(insert_marked("𠀀文",1,"ㄑ"),("𠀀ㄑ文".into(),3));
++    }
++    #[test]
++    fn deadline_is_strict_and_early_tick_is_rescheduled() {
++        let d=Duration::from_millis(150);
++        assert_eq!(remaining_delay(Duration::from_millis(149),d),Some(2));
++        assert_eq!(remaining_delay(d,d),Some(1));
++        assert_eq!(remaining_delay(d+Duration::from_nanos(1),d),None);
++    }
++}
+diff --git a/tip/src/text_service/initial_hold_timer.rs b/tip/src/text_service/initial_hold_timer.rs
+index 8ba73e5..947f284 100644
+--- a/tip/src/text_service/initial_hold_timer.rs
++++ b/tip/src/text_service/initial_hold_timer.rs
+@@ -8,7 +8,7 @@ struct Target { command: IFnRunCommand, generation: u32, cmd_type: CommandType }
+ thread_local! { static TARGETS: RefCell<HashMap<usize, Target>> = RefCell::new(HashMap::new()); }
+ static NEXT: AtomicU32 = AtomicU32::new(1);
+ 
+-pub(super) struct HoldTimer { id: usize, pub generation: u32, cmd_type: CommandType, _thread: PhantomData<Rc<()>> }
++pub(super) struct HoldTimer { id: usize, pub generation: u32, _thread: PhantomData<Rc<()>> }
+ impl HoldTimer {
+     pub fn start(command: IFnRunCommand, delay_ms: u32) -> Option<Self> {
+         Self::start_with_cmd(command, delay_ms, CommandType::InitialHoldTick)
+@@ -16,10 +16,10 @@ impl HoldTimer {
+ 
+     pub fn start_with_cmd(command: IFnRunCommand, delay_ms: u32, cmd_type: CommandType) -> Option<Self> {
+         let generation = NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1)).ok()?;
+-        let id = unsafe { SetTimer(None, 0, delay_ms.clamp(100, 1000), Some(tick)) };
++        let id = unsafe { SetTimer(None, 0, delay_ms.clamp(1, 1001), Some(tick)) };
+         if id == 0 { return None; }
+         TARGETS.with(|targets| targets.borrow_mut().insert(id, Target {command, generation, cmd_type}));
+-        Some(Self {id, generation, cmd_type, _thread: PhantomData})
++        Some(Self {id, generation, _thread: PhantomData})
+     }
+ }
+ impl Drop for HoldTimer {
+diff --git a/tip/src/text_service/mod.rs b/tip/src/text_service/mod.rs
+index 4d4ab96..6187969 100644
+--- a/tip/src/text_service/mod.rs
++++ b/tip/src/text_service/mod.rs
+@@ -37,6 +37,7 @@ mod edit_session;
+ mod icons;
+ mod initial_hold_timer;
+ mod kanata_layer;
++mod f_preview;
+ mod key_event;
+ mod lang_bar;
+ mod menu;
+-- 
+2.54.0 (Apple Git-157)
+

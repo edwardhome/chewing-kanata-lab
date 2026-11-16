@@ -1,0 +1,97 @@
+From cc9a1ddbf3f3fea87d670a3ad25d3f8b73a9f0be Mon Sep 17 00:00:00 2001
+From: Defu Chen <edward61221@gmail.com>
+Date: Mon, 16 Nov 2026 14:07:04 +0800
+Subject: [PATCH 51/52] fix(input): defer F mode invalidation outside shared
+ TSF callbacks
+
+---
+ tip/src/text_service/chewing.rs | 23 +++++++++++++++++------
+ 1 file changed, 17 insertions(+), 6 deletions(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 47b2b61..cb423cd 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -231,6 +231,7 @@ pub(super) struct ChewingTextService {
+     f_preview_active: bool,
+     f_target: Option<Rc<CompositionSession>>,
+     f_mode: Option<TsfLangMode>,
++    f_invalidated: Cell<bool>,
+     double_shift: DoubleShiftGesture,
+     start_time: Instant,
+     cfg: Config,
+@@ -376,6 +377,7 @@ impl ChewingTextService {
+             f_preview_active: false,
+             f_target: None,
+             f_mode: None,
++            f_invalidated: Cell::new(false),
+             double_shift: DoubleShiftGesture::new(),
+             start_time: Instant::now(),
+             cfg,
+@@ -520,6 +522,7 @@ impl ChewingTextService {
+     }
+ 
+     pub(super) fn check_and_apply_app_rule(&mut self) -> Result<bool> {
++        self.reconcile_f_mode()?;
+         if self.has_pending_input()
+             || !matches!(self.f_key_state, kanata_layer::FKeyState::Up)
+             || !matches!(self.shift_key_state, ShiftKeyState::Up)
+@@ -916,6 +919,7 @@ impl ChewingTextService {
+                     self.f_preview_active = true;
+                     self.f_target = self.pending_state.clone();
+                     self.f_mode = Some(self.lang_mode.get());
++                    self.f_invalidated.set(false);
+                     self.schedule_f_tick(delay.as_millis() as u32 + 1);
+ 
+                 }
+@@ -1454,11 +1458,7 @@ impl ChewingTextService {
+         })();
+         let prev = self.lang_mode.get();
+         let next = mode_from_compartment(prev, value);
+-        if next != prev {
+-            if let Some(context)=self.f_target.as_ref().map(|s|s.context.clone()) {
+-                let _=self.cancel_f_preview(&context);
+-            }
+-        }
++        if next != prev { self.f_invalidated.set(true); }
+         self.lang_mode.set(next);
+         if next != prev && !next.is_disabled() {
+             let mode = if next == TsfLangMode::Chinese { chewing_policy_core::app_input_rules::RuleMode::Bopomofo } else { chewing_policy_core::app_input_rules::RuleMode::English };
+@@ -1532,6 +1532,7 @@ impl ChewingTextService {
+         {
+             if !self.handle_keyboard_openclose_change() { return Ok(()); }
+             self.sync_lang_mode(false)?;
++            self.reconcile_f_mode()?;
+             if self.is_composing() && self.lang_mode.get().is_disabled() {
+                 self.chewing_editor.commit()?;
+                 let commit = self.chewing_editor.display_commit().to_owned();
+@@ -1762,8 +1763,17 @@ impl ChewingTextService {
+         }
+     }
+ 
++    pub(super) fn reconcile_f_mode(&mut self) -> Result<()> {
++        if self.f_invalidated.replace(false) {
++            if let Some(context)=self.f_target.as_ref().map(|s|s.context.clone()) {
++                self.cancel_f_preview(&context)?;
++            }
++        }
++        Ok(())
++    }
++
+     fn f_target_valid(&self, context: &ITfContext) -> bool {
+-        self.has_focus && self.f_mode == Some(self.lang_mode.get())
++        !self.f_invalidated.get() && self.has_focus && self.f_mode == Some(self.lang_mode.get())
+             && self.is_context_mutable(context).unwrap_or(false)
+             && self.f_target.as_ref().zip(self.pending_state.as_ref()).is_some_and(|(a,b)|
+                 Rc::ptr_eq(a,b) && a.same_context(context) && a.is_active() && !a.is_failed() && !a.is_ending())
+@@ -1822,6 +1832,7 @@ impl ChewingTextService {
+     }
+ 
+     pub(super) fn on_f_hold_tick(&mut self, generation: u32) -> Result<()> {
++        self.reconcile_f_mode()?;
+         if !self.f_timer.as_ref().is_some_and(|timer| timer.generation == generation) { return Ok(()); }
+         self.f_timer = None;
+         let kanata_layer::FKeyState::Down { started_at, delay, mappings } = self.f_key_state.clone() else { return Ok(()); };
+-- 
+2.54.0 (Apple Git-157)
+

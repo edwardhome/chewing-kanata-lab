@@ -1,0 +1,27 @@
+From 10736f1df25c09a5cf52f787c3e33536b3c972ab Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Sun, 15 Nov 2026 23:45:08 +0800
+Subject: [PATCH 24/24] fix(settings): display current test package version in
+ About
+
+---
+ src/version.tsx | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/version.tsx b/src/version.tsx
+index 50e87d5..c87aba2 100644
+--- a/src/version.tsx
++++ b/src/version.tsx
+@@ -3,7 +3,7 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ const version = {
+-  productVersion: "1.0.1",
+-  buildDate: "2026-11-05T18:19:42+08:00",
++  productVersion: "1.3.0-dev.1",
++  buildDate: "2026-11-15T23:45:08+08:00",
+ };
+ export default version;
+-- 
+2.54.0 (Apple Git-157)
+

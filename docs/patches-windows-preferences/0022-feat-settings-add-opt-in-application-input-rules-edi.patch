@@ -1,0 +1,264 @@
+From 319fa5d70052d312f48ac431da5e6bb98ce6ca70 Mon Sep 17 00:00:00 2001
+From: Defu <edward61221@gmail.com>
+Date: Sun, 15 Nov 2026 23:42:25 +0800
+Subject: [PATCH 22/24] feat(settings): add opt-in application input rules
+ editor
+
+---
+ src-tauri/src/app_input_rules.rs | 50 +++++++++++++++++++++++++
+ src-tauri/src/lib.rs             |  2 +
+ src/App.tsx                      |  3 ++
+ src/AppInputRules.tsx            | 64 ++++++++++++++++++++++++++++++++
+ src/appRuleSettings.ts           | 21 +++++++++++
+ src/config.tsx                   |  2 +
+ tests/app-rules.test.mjs         | 21 +++++++++++
+ 7 files changed, 163 insertions(+)
+ create mode 100644 src-tauri/src/app_input_rules.rs
+ create mode 100644 src/AppInputRules.tsx
+ create mode 100644 src/appRuleSettings.ts
+ create mode 100644 tests/app-rules.test.mjs
+
+diff --git a/src-tauri/src/app_input_rules.rs b/src-tauri/src/app_input_rules.rs
+new file mode 100644
+index 0000000..75f0949
+--- /dev/null
++++ b/src-tauri/src/app_input_rules.rs
+@@ -0,0 +1,50 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Copyright (c) 2026 AI Chewing contributors
++use serde::Serialize;
++use std::path::Path;
++
++#[derive(Serialize)]
++pub(crate) struct AppRule {
++    app_id: String,
++    display_name: String,
++    mode: &'static str,
++}
++
++/// Resolve only the explicitly selected program. Never execute it or scan user documents.
++#[tauri::command]
++pub(crate) fn resolve_app_input_rule(path: String) -> Result<AppRule, String> {
++    let selected = Path::new(&path);
++    if !selected.is_absolute() || !selected.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")) {
++        return Err("請選擇應用程式的完整 .exe 路徑。".into());
++    }
++    let canonical = selected.canonicalize().map_err(|_| "無法確認程式路徑，請選擇已安裝的應用程式。")?;
++    if !canonical.is_file() { return Err("選取的項目不是程式檔案。".into()); }
++    let raw = canonical.to_str().ok_or("程式路徑含有無法辨識的字元。")?;
++    let app_id = normalize_path(raw).ok_or("目前僅支援本機磁碟上的應用程式。")?;
++    let display_name = canonical.file_name().and_then(|s| s.to_str()).ok_or("無法辨識程式名稱。")?.to_string();
++    Ok(AppRule { app_id, display_name, mode: "english" })
++}
++
++fn normalize_path(path: &str) -> Option<String> {
++    let path = path.strip_prefix(r"\\?\").unwrap_or(path).replace('/', "\\");
++    let b = path.as_bytes();
++    if b.len() < 4 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\'
++        || path.chars().any(char::is_control) || path.len() > 32767 { return None; }
++    Some(path.to_lowercase())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn local_identity_is_case_insensitive_and_accepts_extended_prefix() {
++        assert_eq!(normalize_path(r"\\?\C:\Apps\Editor.EXE"), Some(r"c:\apps\editor.exe".into()));
++        assert_eq!(normalize_path("C:/Apps/Editor.exe"), Some(r"c:\apps\editor.exe".into()));
++    }
++    #[test]
++    fn rejects_network_relative_device_and_control_paths() {
++        for p in [r"\\host\apps\a.exe", r"\\?\UNC\host\a.exe", r"a.exe", r"C:a.exe", r"\\.\device", "C:\\bad\n.exe"] {
++            assert!(normalize_path(p).is_none(), "{p}");
++        }
++    }
++}
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index beff1b8..b9e45c3 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -13,6 +13,7 @@ use tauri::Manager;
+ use tauri::menu::{MenuBuilder, SubmenuBuilder};
+ 
+ mod config;
++mod app_input_rules;
+ mod fonts;
+ mod version;
+ mod updates;
+@@ -80,6 +81,7 @@ pub fn run() {
+             export_config,
+             load_config,
+             config::f_layer_defaults,
++            app_input_rules::resolve_app_input_rule,
+             save_config,
+             get_system_fonts,
+             chewing_version,
+diff --git a/src/App.tsx b/src/App.tsx
+index c9c48f6..c0b94cc 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -40,6 +40,7 @@ import Recovery from "./Recovery";
+ import EngineeringTerms from "./EngineeringTerms";
+ import UnifiedLexicon from "./UnifiedLexicon";
+ import FLayerMappings from "./FLayerMappings";
++import AppInputRules from "./AppInputRules";
+ 
+ type FontFamilyName = {
+   name: string;
+@@ -330,6 +331,7 @@ function App() {
+         <Tab value="2">界面外觀</Tab>
+         <Tab value="3">鍵盤設定</Tab>
+         <Tab value="keybind">自訂快捷鍵</Tab>
++        <Tab value="appRules">應用程式</Tab>
+         <Tab value="flayer">F 分層映射</Tab>
+         <Tab value="engineering">自訂工程詞彙</Tab>
+         <Tab value="shared">使用者與工程詞庫</Tab>
+@@ -366,6 +368,7 @@ function App() {
+           setConfig={setConfig}
+         />
+       )}
++      {selectedTab === "appRules" && config && <AppInputRules config={config} onChange={setConfig} />}
+       {selectedTab === "flayer" && config && (
+         <FLayerMappings
+           mappings={config.f_layer_mappings ?? {}}
+diff --git a/src/AppInputRules.tsx b/src/AppInputRules.tsx
+new file mode 100644
+index 0000000..7c22c8f
+--- /dev/null
++++ b/src/AppInputRules.tsx
+@@ -0,0 +1,64 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Copyright (c) 2026 AI Chewing contributors
++import { useState, useEffect, useRef } from "react";
++import { Button, Checkbox, Select, Text, makeStyles } from "@fluentui/react-components";
++import { open } from "@tauri-apps/plugin-dialog";
++import { invoke } from "@tauri-apps/api/core";
++import type { ChewingTsfConfig } from "./config";
++
++import { decodeRules, type AppRule } from "./appRuleSettings";
++const useStyles = makeStyles({
++  root: { padding: "16px", display: "flex", flexDirection: "column", gap: "14px", maxHeight: "65vh", overflowY: "auto" },
++  row: { display: "flex", alignItems: "center", gap: "12px", borderBottom: "1px solid #8885", padding: "10px 0" },
++  identity: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "4px", overflowWrap: "anywhere" },
++});
++
++
++export default function AppInputRules({ config, onChange }: { config: ChewingTsfConfig; onChange: (config: ChewingTsfConfig) => void }) {
++  const styles = useStyles();
++  const latest = useRef(config);
++  latest.current = config;
++  const mounted = useRef(true);
++  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
++  const [error, setError] = useState("");
++  const [busy, setBusy] = useState(false);
++  const { rules, invalid } = decodeRules(config.app_input_rules_json);
++  const update = (next: AppRule[]) => onChange({ ...latest.current, app_input_rules_json: JSON.stringify({ version: 1, rules: next }) });
++  const add = async () => {
++    setBusy(true); setError("");
++    try {
++      const path = await open({ title: "選擇應用程式", multiple: false, directory: false, filters: [{ name: "Windows 應用程式", extensions: ["exe"] }] });
++      if (typeof path !== "string") return;
++      const rule = await invoke<AppRule>("resolve_app_input_rule", { path });
++      if (!mounted.current) return;
++      const current = decodeRules(latest.current.app_input_rules_json);
++      if (current.invalid) { setError("規則已變更，請先確認設定內容。"); return; }
++      const rules = current.rules;
++      if (rules.some(r => r.app_id.toLowerCase() === rule.app_id.toLowerCase())) {
++        setError("這個應用程式已在清單中，原本的模式保持不變。"); return;
++      }
++      if (rules.length >= 256) { setError("最多可加入 256 個應用程式。"); return; }
++      update([...rules, rule]);
++    } catch (e) { setError(String(e)); }
++    finally { setBusy(false); }
++  };
++  return <div className={styles.root}>
++    <Checkbox label="啟用應用程式輸入模式規則" checked={config.app_input_rules_enabled ?? false}
++      onChange={(_, data) => onChange({ ...config, app_input_rules_enabled: data.checked === true })} />
++    <Text>只切換 AI新酷音內部的英文／注音，不會搶回其他輸入法。同一 App 手動切換後會保留選擇；離開再返回才重新套用。</Text>
++    <Text>按下「套用」或「確定」儲存後，規則與開關從下一次切入 App 生效。組字、選字或按鍵手勢尚未結束時會延後切換。</Text>
++    <div><Button disabled={busy || invalid} onClick={add}>加入應用程式…</Button></div>
++    <Text size={200}>請選擇實際的 .exe，不是捷徑。辨識依完整程式路徑，程式搬移後請重新加入。不辨識網站、Vim、SSH 或終端機分頁。</Text>
++    {invalid && <div role="alert"><Text>儲存的規則格式無法辨識，暫不套用。可清空規則後重新加入。</Text> <Button onClick={() => update([])}>清空規則</Button></div>}
++    {error && <Text role="alert">{error}</Text>}
++    {!rules.length && !invalid && <Text>尚未加入應用程式，維持原本的輸入行為。</Text>}
++    {rules.map(rule => <div className={styles.row} key={rule.app_id}>
++      <div className={styles.identity}><Text weight="semibold">{rule.display_name}</Text><Text size={200}>{rule.app_id}</Text></div>
++      <Select aria-label={`${rule.display_name} 的預設模式`} value={rule.mode}
++        onChange={(_, data) => update(rules.map(r => r.app_id === rule.app_id ? { ...r, mode: data.value as AppRule["mode"] } : r))}>
++        <option value="english">預設英文</option><option value="bopomofo">預設注音</option>
++      </Select>
++      <Button aria-label={`移除 ${rule.display_name}`} onClick={() => update(rules.filter(r => r.app_id !== rule.app_id))}>移除</Button>
++    </div>)}
++  </div>;
++}
+diff --git a/src/appRuleSettings.ts b/src/appRuleSettings.ts
+new file mode 100644
+index 0000000..23286db
+--- /dev/null
++++ b/src/appRuleSettings.ts
+@@ -0,0 +1,21 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++export type AppRule = { app_id: string; display_name: string; mode: "english" | "bopomofo" };
++export function decodeRules(json: string | undefined): { rules: AppRule[]; invalid: boolean } {
++  if (!json) return { rules: [], invalid: false };
++  try {
++    if (new TextEncoder().encode(json).length > 1048576) throw Error();
++    const data = JSON.parse(json);
++    if (data.version !== 1 || !Array.isArray(data.rules) || data.rules.length > 256) throw Error();
++    const seen = new Set<string>();
++    const rules: AppRule[] = [];
++    for (const r of data.rules) {
++      if (typeof r.app_id !== "string" || typeof r.display_name !== "string" || !r.display_name || r.display_name.length > 256 ||
++          !/^[a-z]:\\/i.test(r.app_id) || r.app_id.length > 32767 || /[\x00-\x1f]/.test(r.app_id) ||
++          !["english", "bopomofo"].includes(r.mode)) throw Error();
++      const id = r.app_id.replaceAll("/", "\\").toLowerCase();
++      if (!seen.has(id)) { rules.push({ ...r, app_id: id }); seen.add(id); }
++    }
++    return { rules, invalid: false };
++  } catch { return { rules: [], invalid: true }; }
++}
++
+diff --git a/src/config.tsx b/src/config.tsx
+index df0c64f..f4b6fbb 100644
+--- a/src/config.tsx
++++ b/src/config.tsx
+@@ -3,6 +3,8 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ export type ChewingTsfConfig = {
++  app_input_rules_enabled: boolean;
++  app_input_rules_json: string;
+   f_layer_mappings?: Record<string, string>;
+   f_hold_delay_ms: number;
+   initial_letter_hold_delay_ms: number;
+diff --git a/tests/app-rules.test.mjs b/tests/app-rules.test.mjs
+new file mode 100644
+index 0000000..733efb9
+--- /dev/null
++++ b/tests/app-rules.test.mjs
+@@ -0,0 +1,21 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { decodeRules } from '../src/appRuleSettings.ts';
++const rule = { app_id: 'C:\\Apps\\Editor.exe', display_name: 'Editor', mode: 'english' };
++const decode = (rules, version=1) => decodeRules(JSON.stringify({version,rules}));
++test('fresh preferences are empty', () => assert.deepEqual(decodeRules(undefined), {rules:[],invalid:false}));
++test('duplicate program paths preserve first manual choice', () => {
++ const result=decode([{...rule,mode:'bopomofo'}, {...rule,app_id:rule.app_id.toLowerCase()}]);
++ assert.equal(result.rules.length,1);assert.equal(result.rules[0].mode,'bopomofo');
++});
++test('same names at different paths stay separate', () => assert.equal(decode([rule,{...rule,app_id:'D:\\Apps\\Editor.exe'}]).rules.length,2));
++test('malformed and future data fail closed', () => {
++ for(const value of ['{','null','[]',JSON.stringify({version:2,rules:[rule]})]) assert.equal(decodeRules(value).invalid,true);
++});
++test('invalid modes and nonlocal identities fail closed', () => {
++ for(const r of [{...rule,mode:'ai'}, {...rule,app_id:'Editor.exe'}, {...rule,app_id:'\\\\server\\a.exe'}, {...rule,app_id:'C:\\bad\n.exe'}]) assert.equal(decode([r]).invalid,true);
++});
++test('rule count and byte budget bounded', () => {
++ assert.equal(decode(Array(257).fill(rule)).invalid,true);
++ assert.equal(decodeRules(' '.repeat(1048577)).invalid,true);
++});
+-- 
+2.54.0 (Apple Git-157)
+
