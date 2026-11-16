@@ -1,0 +1,229 @@
+From 94b26d98b1fe036214a49121f17b9bd363f18e47 Mon Sep 17 00:00:00 2001
+From: Defu Chen <edward61221@gmail.com>
+Date: Mon, 16 Nov 2026 14:05:07 +0800
+Subject: [PATCH 50/52] fix(input): validate layout previews and release F
+ session references
+
+---
+ Cargo.lock                      |  8 ++---
+ Cargo.toml                      |  2 +-
+ tip/rc/version.rc               | 14 ++++----
+ tip/src/text_service/chewing.rs | 63 ++++++++++++++++++++++++++++-----
+ 4 files changed, 67 insertions(+), 20 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 1615b82..e28c69b 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -328,7 +328,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip"
+-version = "1.3.0-dev.1"
++version = "1.3.0-dev.2"
+ dependencies = [
+  "anyhow",
+  "cc",
+@@ -352,7 +352,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_core"
+-version = "1.3.0-dev.1"
++version = "1.3.0-dev.2"
+ dependencies = [
+  "base64 0.22.1",
+  "base64-serde",
+@@ -373,7 +373,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "chewing_tip_host"
+-version = "1.3.0-dev.1"
++version = "1.3.0-dev.2"
+ dependencies = [
+  "anyhow",
+  "chewing",
+@@ -2793,7 +2793,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
+ 
+ [[package]]
+ name = "tsfreg"
+-version = "1.3.0-dev.1"
++version = "1.3.0-dev.2"
+ dependencies = [
+  "chewing_tip_core",
+  "scoped-error",
+diff --git a/Cargo.toml b/Cargo.toml
+index ca562ac..e09776b 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -9,7 +9,7 @@ members = [
+ ]
+ 
+ [workspace.package]
+-version = "1.3.0-dev.1"
++version = "1.3.0-dev.2"
+ 
+ [workspace.dependencies]
+ anyhow = "1"
+diff --git a/tip/rc/version.rc b/tip/rc/version.rc
+index 7848ae8..db28216 100644
+--- a/tip/rc/version.rc
++++ b/tip/rc/version.rc
+@@ -1,8 +1,8 @@
+-#define VER_FILEVERSION             1,3,0,1
+-#define VER_FILEVERSION_STR         "1.3.0-dev.1\0"
+-#define VER_PRODUCTVERSION          1,3,0,1
+-#define VER_PRODUCTVERSION_STR      "1.3.0-dev.1\0"
+-#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.3.0-dev.1)\0"
+-#define ABOUT_VERSION_STR           "版本：1.3.0-dev.1\0"
++#define VER_FILEVERSION             1,3,0,2
++#define VER_FILEVERSION_STR         "1.3.0-dev.2\0"
++#define VER_PRODUCTVERSION          1,3,0,2
++#define VER_PRODUCTVERSION_STR      "1.3.0-dev.2\0"
++#define ABOUT_CAPTION_WITH_VER      "關於AI新酷音輸入法 (1.3.0-dev.2)\0"
++#define ABOUT_VERSION_STR           "版本：1.3.0-dev.2\0"
+ #define ABOUT_RELEASE_DATE_STR      "發行日期：2026 年 11 月 16 日\0"
+-#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.3.0-dev.1)\0"
++#define PREFS_TITLE_WITH_VER        "設定AI新酷音輸入法 (1.3.0-dev.2)\0"
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 6b4ff65..47b2b61 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -454,6 +454,8 @@ impl ChewingTextService {
+         self.f_buffer = None;
+         self.f_timer = None;
+         self.f_preview_active = false;
++        self.f_target = None;
++        self.f_mode = None;
+         self.shift_session = None;
+         self.double_shift.reset();
+         self.hide_candidates();
+@@ -735,7 +737,7 @@ impl ChewingTextService {
+             // Shift+F belongs strictly to English casing (ShiftLetterSession), never F layer.
+         } else {
+             if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
+-            if !other_modifiers && ev.vk == 0x46 && !self.chewing_editor.is_selecting() && self.chewing_editor.syllable_buffer_display().is_empty() {
++            if !other_modifiers && ev.vk == 0x46 && !self.chewing_editor.is_selecting() && self.chewing_editor.syllable_buffer_display().is_empty() && self.f_preview_supported(ev) {
+                 return Ok(true);
+             }
+             if matches!(self.f_key_state, kanata_layer::FKeyState::Down { .. } | kanata_layer::FKeyState::Held { .. }) {
+@@ -895,7 +897,7 @@ impl ChewingTextService {
+         if !is_shift_f {
+             if ev.vk == 0x46 && self.f_key_state != kanata_layer::FKeyState::Up { return Ok(true); }
+             if ev.vk == 0x46 && !evt.is_state_on(KeyState::Control) && !evt.is_state_on(KeyState::Alt)
+-                && !evt.is_state_on(KeyState::Super) && !self.chewing_editor.is_selecting() && self.chewing_editor.syllable_buffer_display().is_empty() {
++                && !evt.is_state_on(KeyState::Super) && !self.chewing_editor.is_selecting() && self.chewing_editor.syllable_buffer_display().is_empty() && self.f_preview_supported(ev) {
+                 if self.f_key_state == kanata_layer::FKeyState::Up && !ev.repeating {
+                     let delay = Duration::from_millis(self.cfg.chewing_tsf.f_hold_delay_ms.clamp(100, 1000) as u64);
+                     let mappings = self.cfg.chewing_tsf.f_layer_mappings.clone();
+@@ -907,7 +909,10 @@ impl ChewingTextService {
+                         mappings,
+                     };
+                     self.cancel_initial_hold();
+-                    self.render_f_preview(context)?;
++                    if let Err(error)=self.render_f_preview(context) {
++                        self.discard_f_gesture();
++                        return Err(error);
++                    }
+                     self.f_preview_active = true;
+                     self.f_target = self.pending_state.clone();
+                     self.f_mode = Some(self.lang_mode.get());
+@@ -1323,6 +1328,7 @@ impl ChewingTextService {
+     ) -> Result<bool> {
+         if !self.has_focus || !self.is_context_mutable(context)? {
+             self.cancel_initial_hold();
++            self.discard_f_gesture();
+             self.f_key_state = kanata_layer::FKeyState::Up;
+             self.f_event = None; self.f_buffer = None; self.shift_session = None;
+             self.double_shift.reset();
+@@ -1448,6 +1454,11 @@ impl ChewingTextService {
+         })();
+         let prev = self.lang_mode.get();
+         let next = mode_from_compartment(prev, value);
++        if next != prev {
++            if let Some(context)=self.f_target.as_ref().map(|s|s.context.clone()) {
++                let _=self.cancel_f_preview(&context);
++            }
++        }
+         self.lang_mode.set(next);
+         if next != prev && !next.is_disabled() {
+             let mode = if next == TsfLangMode::Chinese { chewing_policy_core::app_input_rules::RuleMode::Bopomofo } else { chewing_policy_core::app_input_rules::RuleMode::English };
+@@ -1480,6 +1491,8 @@ impl ChewingTextService {
+         self.f_buffer = None;
+         self.f_timer = None;
+         self.f_preview_active = false;
++        self.f_target = None;
++        self.f_mode = None;
+         self.shift_session = None;
+         self.double_shift.reset();
+         if self.candidate_list.is_some() {
+@@ -1776,17 +1789,18 @@ impl ChewingTextService {
+         Ok(())
+     }
+ 
++    fn f_preview_supported(&self, event: SystemKeyboardEvent) -> bool {
++        self.lang_mode.get() != TsfLangMode::Chinese || self.shift_session.is_some()
++            || phonetic_f_preview(self.kbtype,event.to_keyboard_event(self.keymap)).is_some()
++    }
++
+     // Display only. Neither the native editor nor the ASCII base is modified.
+     fn render_f_preview(&mut self, context: &ITfContext) -> Result<()> {
+         let Some(event) = self.f_event else { return Ok(()); };
+         let (base,cursor,insert) = if let Some(session) = self.f_buffer.as_ref().and_then(|b| b.base.as_ref()) {
+             (session.composition.raw.clone(),session.composition.cursor,"f".to_string())
+         } else if self.lang_mode.get() == TsfLangMode::Chinese {
+-            let mut syllable = syl_editor_from_kbtype(self.kbtype);
+-            syllable.key_press(event.to_keyboard_event(self.keymap));
+-            let text = syllable.to_string();
+-            // Layouts where F is not a phonetic key retain its literal preview.
+-            let text = if text.is_empty() { (event.ascii_code as char).to_string() } else { text };
++            let text = phonetic_f_preview(self.kbtype,event.to_keyboard_event(self.keymap)).unwrap_or_default();
+             (self.chewing_editor.intervals().map(|i| i.text).collect::<String>(),self.chewing_editor.cursor(),text)
+         } else {
+             (String::new(),0,if event.ascii_code == b'F' { "F" } else { "f" }.to_string())
+@@ -2808,6 +2822,13 @@ fn can_handle_configured_f_layer(editor: &Editor, vk: u16, has_symbols: bool, ma
+             || (vk == 0x08 && has_symbols))
+ }
+ 
++fn phonetic_f_preview(kbtype: KeyboardLayoutCompat, event: KeyboardEvent) -> Option<String> {
++    let mut syllable = syl_editor_from_kbtype(kbtype);
++    syllable.key_press(event);
++    let text = syllable.to_string();
++    (!text.is_empty()).then_some(text)
++}
++
+ fn syl_editor_from_kbtype(kbtype: KeyboardLayoutCompat) -> Box<dyn SyllableEditor> {
+     use zhuyin_layout::*;
+     match kbtype {
+@@ -3238,3 +3259,29 @@ mod f_and_shift_handoff_tests {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod reversible_f_native_tests {
++    use super::*;
++    fn f_event() -> SystemKeyboardEvent {
++        SystemKeyboardEvent { vk:0x46, repeating:false, scan_code:0x21, ascii_code:b'f', key_state:[0;256] }
++    }
++    #[test]
++    fn standard_f_preview_uses_native_reading_without_editing_original() {
++        let editor=Editor::fallback();
++        assert_eq!(phonetic_f_preview(KeyboardLayoutCompat::Default,f_event().to_keyboard_event(KeymapOp::None)),Some("ㄑ".into()));
++        assert!(editor.is_empty());
++        assert!(editor.syllable_buffer_display().is_empty());
++    }
++    #[test]
++    fn alternative_layout_preview_matches_native_engine() {
++        for layout in [KeyboardLayoutCompat::Hsu,KeyboardLayoutCompat::Ibm,KeyboardLayoutCompat::Et,KeyboardLayoutCompat::GinYieh] {
++            let event=f_event().to_keyboard_event(keymap_from_kbtype(layout));
++            let mut editor=Editor::fallback();
++            editor.set_syllable_editor(syl_editor_from_kbtype(layout));
++            editor.process_keyevent(event);
++            let actual=editor.syllable_buffer_display();
++            assert_eq!(phonetic_f_preview(layout,event).unwrap_or_default(),actual,"{layout:?}");
++        }
++    }
++}
+-- 
+2.54.0 (Apple Git-157)
+

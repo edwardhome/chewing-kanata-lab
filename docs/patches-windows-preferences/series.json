@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline": "141a10aa9e822ec4511b4bf47c21691c51ad6775",
-  "tree": "16b38d6f313b8fa39bffdfa560b88a490451b819",
-  "preferences_commit": "5da8f2b30295a77c711395a18d2fcc0706326995",
+  "tree": "3bd9308a5de7d8d9a52183575b355f8608f2918f",
+  "preferences_commit": "29a63619263dc8c0c9292e4f0057fd81b2026f61",
   "patches": [
     {
       "file": "0001-fix-preferences-restore-native-settings.patch",
@@ -111,6 +111,14 @@
     {
       "file": "0027-feat-settings-choose-running-apps-without-reading-wi.patch",
       "sha256": "3e86dfa5465c665e522a8c07f4b42d13f7ebeab799bf9e8954486f791580e06e"
+    },
+    {
+      "file": "0028-chore-release-prepare-1.3.0-dev.2-test-settings.patch",
+      "sha256": "87e197d2da6cfa7103db5755cc86655ad2d9de3f51fd97586f21d7be8b19c255"
+    },
+    {
+      "file": "0029-chore-release-date-dev2-settings-build.patch",
+      "sha256": "6c66294f22d91d3f1e37d6142b257e8d7c482083dd9eec40b15310c553ff36e4"
     }
   ]
 }
