@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: MIT
 //! F 鍵長按與分層手勢判定器 (FHoldGesture)
-//! 移植自 edwardhome/AI-Bopomofo (QuickSymbolLayer.swift 中的 FHoldGesture 與 canStartChord)
+//! 依據 Mac c2fe36e (QuickSymbolLayer.swift 中的 FHoldGesture 與 quick-symbols.md) 實作手勢語意對齊：
 //!
-//! 功能說明：
-//! 1. 支援 F 鍵長按進入符號數字分層 (held >= 150ms/180ms)
-//! 2. 支援 F 鍵未放開時的立即組合鍵 (0ms 即時 chording，如 F+R -> +, F+Esc -> `)
-//! 3. 快速注音保護 (0.6.11 fix/f-phonetic-overlap)：
-//!    在標準注音鍵盤下，F (ㄑ) 在長按門檻內 (pending) 遭遇 U (ㄧ) 或 M (ㄩ) 時，
-//!    優先視為注音音節 (ㄑㄧ / ㄑㄩ) 而非數字 8 / 2。
-//!    此時取消分層，先還原 F (ㄑ)，再處理 U/M，避免高速打字時誤輸出數字。
-//!    若需輸入數字 8 / 2，需先長按 F 超過門檻 (held) 再按對應鍵。
+//! 1. 按下 F 鍵立即顯示尚未提交的可撤回原生預覽字元（標準注音為「ㄑ」，英文/ASCII 為 `f`）。
+//! 2. 門檻內（含等於門檻）放開 F，或按任何下一鍵（包括 R/U/M/Esc）：取消長按手勢，送回原 F 一次，
+//!    再按正常流程處理下一鍵（移除立即 chord 行為，不提前進層）。
+//! 3. 只有經過時間嚴格大於設定延遲（elapsed > delay）且手勢仍在等待中（pending）才觸發逾時，
+//!    撤回 F 的預覽並進入符號層（Held 狀態）。
+//! 4. 一旦轉入一般打字（非 F 層），晚到的計時器逾時或按住 F 的重複事件絕不重新啟用分層，直到實體 F 放開。
+//! 5. 支援被動放開監聽（ObservedRelease）與標準放開（Release）。
 
 use std::time::Duration;
 
@@ -25,7 +24,7 @@ pub enum Event {
     Press { eligible: bool, repeating: bool },
     Release,
     ObservedRelease,
-    OtherKey { is_mapped: bool },
+    OtherKey,
     Timeout,
     Cancel,
     Elapsed(Duration),
@@ -63,8 +62,12 @@ impl FHoldGesture {
     pub const MIN_DELAY_MS: u64 = 100;
     pub const MAX_DELAY_MS: u64 = 1000;
 
+    pub fn clamped_delay_ms(ms: u64) -> u64 {
+        ms.clamp(Self::MIN_DELAY_MS, Self::MAX_DELAY_MS)
+    }
+
     pub fn new(delay: Duration) -> Self {
-        let clamped_ms = (delay.as_millis() as u64).clamp(Self::MIN_DELAY_MS, Self::MAX_DELAY_MS);
+        let clamped_ms = Self::clamped_delay_ms(delay.as_millis() as u64);
         Self {
             delay: Duration::from_millis(clamped_ms),
             phase: Phase::Idle,
@@ -116,16 +119,13 @@ impl FHoldGesture {
                     }
                 }
             }
-            Event::OtherKey { is_mapped } => {
+            Event::OtherKey => {
                 if self.phase != Phase::Pending {
                     return vec![];
                 }
-                if is_mapped {
-                    self.handle(Event::Timeout)
-                } else {
-                    self.phase = Phase::Idle;
-                    vec![Effect::Invalidate, Effect::ReplayTap]
-                }
+                // 門檻內（含等於門檻）任何下一鍵都屬正常打字；只能由 elapsed 判斷長按。
+                self.phase = Phase::Idle;
+                vec![Effect::Invalidate, Effect::ReplayTap]
             }
             Event::Elapsed(duration) => {
                 if self.phase == Phase::Pending && duration > self.delay {
@@ -156,6 +156,7 @@ impl FHoldGesture {
 }
 
 /// 判斷在標準注音鍵盤配置下，是否為與 F (ㄑ) 產生合法音節重疊之韻母鍵位 (U -> ㄧ, M -> ㄩ)
+/// 保留此輔助函式供相容與測試使用
 pub fn is_phonetic_f_overlap(vk: u16) -> bool {
     // 0x55: VK_U ('u' / ㄧ)
     // 0x4D: VK_M ('m' / ㄩ)
@@ -163,7 +164,7 @@ pub fn is_phonetic_f_overlap(vk: u16) -> bool {
 }
 
 /// 判斷在目前狀態下是否應優先保留注音 (ㄑㄧ / ㄑㄩ) 而非觸發 F 立即組合鍵 (8 / 2)
-/// 移植自 KeyHandler.mm 之 prefersPhoneticFChord
+/// 在新語意下，長按門檻內任何鍵均不進層，因此 pending 狀態下一律優先保留普通打字
 pub fn prefers_phonetic_f_chord(
     vk: u16,
     is_pending: bool,
@@ -174,7 +175,8 @@ pub fn prefers_phonetic_f_chord(
     is_pending && is_chinese_mode && is_default_layout && !has_modifiers && is_phonetic_f_overlap(vk)
 }
 
-/// 判斷是否能啟動 F 組合鍵 (對齊 QuickSymbolLayer.canStartChord)
+/// 判斷是否能啟動 F 組合鍵
+/// 在新語意下，未超逾門檻前不得立即 chord
 pub fn can_start_chord(
     has_output: bool,
     repeating: bool,
@@ -189,71 +191,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_phonetic_overlap_replays_once_and_never_reenters() {
-        for &vk in &[0x55u16, 0x4Du16] { // U (8 / ㄧ), M (2 / ㄩ)
-            for &ms in &[100u64, 150u64, 250u64, 1000u64] {
-                let delay = Duration::from_millis(ms);
-                for &elapsed_ms in &[1u64, ms.saturating_sub(1), ms] {
-                    for f_released_first in [false, true] {
-                        let mut gesture = FHoldGesture::new(delay);
-                        let effects = gesture.handle(Event::Press { eligible: true, repeating: false });
-                        assert_eq!(effects, vec![Effect::Schedule, Effect::Consume]);
+    fn test_exact_deadline_boundary_and_strict_greater_than() {
+        for &ms in &[100u64, 150u64, 250u64, 1000u64] {
+            let delay = Duration::from_millis(ms);
+            let mut gesture = FHoldGesture::new(delay);
+            assert_eq!(
+                gesture.handle(Event::Press { eligible: true, repeating: false }),
+                vec![Effect::Schedule, Effect::Consume]
+            );
+            assert_eq!(gesture.phase(), Phase::Pending);
 
-                        let elapsed = gesture.handle(Event::Elapsed(Duration::from_millis(elapsed_ms)));
-                        assert!(elapsed.is_empty());
+            // 門檻之前 (delay - 1ms) -> 不觸發
+            assert!(gesture.handle(Event::Elapsed(delay - Duration::from_millis(1))).is_empty());
+            assert_eq!(gesture.phase(), Phase::Pending);
 
-                        // 判斷注音優先
-                        let prefer = prefers_phonetic_f_chord(vk, gesture.phase() == Phase::Pending, true, true, false);
-                        assert!(prefer);
+            // 剛好等於門檻 (delay) -> 依然不觸發（必須 strictly greater than）
+            assert!(gesture.handle(Event::Elapsed(delay)).is_empty());
+            assert_eq!(gesture.phase(), Phase::Pending);
 
-                        let mapped = can_start_chord(true, false, false, prefer);
-                        assert!(!mapped);
-
-                        let chord_effects = gesture.handle(Event::OtherKey { is_mapped: mapped });
-                        assert_eq!(chord_effects, vec![Effect::Invalidate, Effect::ReplayTap]);
-                        assert_eq!(gesture.phase(), Phase::Idle);
-
-                        // 已選注音就不能被晚到的計時器或仍按住的 F 重複事件變回符號
-                        assert!(gesture.handle(Event::Elapsed(delay + Duration::from_millis(100))).is_empty());
-                        assert!(gesture.handle(Event::Timeout).is_empty());
-                        assert_eq!(
-                            gesture.handle(Event::Press { eligible: true, repeating: true }),
-                            vec![Effect::Consume]
-                        );
-                        assert!(gesture.handle(Event::OtherKey { is_mapped: true }).is_empty());
-
-                        if f_released_first {
-                            assert_eq!(gesture.handle(Event::Release), vec![Effect::Consume]);
-                        } else {
-                            assert_eq!(gesture.handle(Event::ObservedRelease), vec![Effect::Consume]);
-                            assert_eq!(gesture.handle(Event::Release), vec![Effect::Consume]);
-                        }
-                        assert!(gesture.handle(Event::Release).is_empty());
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_long_hold_keeps_eight_and_two_after_phonetic_deadline() {
-        for &vk in &[0x55u16, 0x4Du16] {
-            let mut gesture = FHoldGesture::new(Duration::from_millis(150));
-            gesture.handle(Event::Press { eligible: true, repeating: false });
-
-            // 超過 150ms 門檻，進入 Held
-            let effects = gesture.handle(Event::Elapsed(Duration::from_millis(151)));
-            assert_eq!(effects, vec![Effect::BeginLayer]);
+            // 嚴格大於門檻 (delay + 1ms) -> 觸發 Timeout 並進入 Held
+            assert_eq!(
+                gesture.handle(Event::Elapsed(delay + Duration::from_millis(1))),
+                vec![Effect::BeginLayer]
+            );
             assert_eq!(gesture.phase(), Phase::Held);
 
-            // 長按後已非 pending，不觸發注音優先
-            let prefer = prefers_phonetic_f_chord(vk, gesture.phase() == Phase::Pending, true, true, false);
-            assert!(!prefer);
-
-            let mapped = can_start_chord(true, false, false, prefer);
-            assert!(mapped);
-
-            // 放開 F
+            // 放開 F -> Invalidate, EndLayer, Consume
             assert_eq!(
                 gesture.handle(Event::Release),
                 vec![Effect::Invalidate, Effect::EndLayer, Effect::Consume]
@@ -263,40 +226,126 @@ mod tests {
     }
 
     #[test]
-    fn test_english_and_other_chords_keep_immediate_entry() {
-        // R (0x52 -> +), Esc (0x1B -> `), Y (0x59 -> 7)
-        for &vk in &[0x52u16, 0x1Bu16, 0x59u16] {
-            let mut gesture = FHoldGesture::new(Duration::from_millis(250));
-            gesture.handle(Event::Press { eligible: true, repeating: false });
+    fn test_any_other_key_at_or_before_deadline_resolves_ordinary_typing() {
+        // 包含 R, U, M, Esc 在門檻內按下，均應立即判定為普通打字 (ReplayTap)，絕不提前進層
+        for &ms in &[100u64, 150u64, 250u64] {
+            let delay = Duration::from_millis(ms);
 
-            // 其他鍵不受注音衝突保護，立即 chording
-            let prefer = prefers_phonetic_f_chord(vk, gesture.phase() == Phase::Pending, true, true, false);
-            assert!(!prefer);
-
-            let mapped = can_start_chord(true, false, false, prefer);
-            assert!(mapped);
-
-            assert_eq!(gesture.handle(Event::OtherKey { is_mapped: mapped }), vec![Effect::BeginLayer]);
-            assert_eq!(gesture.phase(), Phase::Held);
+            // 在 0ms (立即按下一鍵)
+            let mut g1 = FHoldGesture::new(delay);
+            g1.handle(Event::Press { eligible: true, repeating: false });
             assert_eq!(
-                gesture.handle(Event::Release),
-                vec![Effect::Invalidate, Effect::EndLayer, Effect::Consume]
+                g1.handle(Event::OtherKey),
+                vec![Effect::Invalidate, Effect::ReplayTap]
             );
+            assert_eq!(g1.phase(), Phase::Idle);
+
+            // 在門檻前半段
+            let mut g2 = FHoldGesture::new(delay);
+            g2.handle(Event::Press { eligible: true, repeating: false });
+            g2.handle(Event::Elapsed(delay / 2));
+            assert_eq!(
+                g2.handle(Event::OtherKey),
+                vec![Effect::Invalidate, Effect::ReplayTap]
+            );
+            assert_eq!(g2.phase(), Phase::Idle);
+
+            // 在剛好等於門檻時
+            let mut g3 = FHoldGesture::new(delay);
+            g3.handle(Event::Press { eligible: true, repeating: false });
+            g3.handle(Event::Elapsed(delay));
+            assert_eq!(
+                g3.handle(Event::OtherKey),
+                vec![Effect::Invalidate, Effect::ReplayTap]
+            );
+            assert_eq!(g3.phase(), Phase::Idle);
         }
     }
 
     #[test]
-    fn test_phonetic_priority_excludes_english_and_modifiers() {
-        // 英文模式下不觸發注音優先
-        assert!(!prefers_phonetic_f_chord(0x55, true, false, true, false));
-        assert!(!prefers_phonetic_f_chord(0x4D, true, false, true, false));
+    fn test_late_timeout_and_repeats_cannot_reactivate_after_ordinary_typing() {
+        let delay = Duration::from_millis(150);
+        let mut gesture = FHoldGesture::new(delay);
+        gesture.handle(Event::Press { eligible: true, repeating: false });
 
-        // 帶有修飾鍵 (Shift/Ctrl/Alt) 不觸發注音優先
-        assert!(!prefers_phonetic_f_chord(0x55, true, true, true, true));
-        assert!(!prefers_phonetic_f_chord(0x4D, true, true, true, true));
+        // 遭遇 OtherKey (例如 R, U, M, Esc) 解決為普通打字
+        let effects = gesture.handle(Event::OtherKey);
+        assert_eq!(effects, vec![Effect::Invalidate, Effect::ReplayTap]);
+        assert_eq!(gesture.phase(), Phase::Idle);
 
-        // 非標準注音配置 (例如許氏) 不觸發注音優先
-        assert!(!prefers_phonetic_f_chord(0x55, true, true, false, false));
-        assert!(!prefers_phonetic_f_chord(0x4D, true, true, false, false));
+        // 雖然實體 F 鍵尚未放開 (owns_key_up 仍為 true)，但 phase 已是 Idle
+        // 1. 晚到的計時器 Elapsed (> 150ms) 絕不能重新啟用
+        assert!(gesture.handle(Event::Elapsed(Duration::from_millis(200))).is_empty());
+        assert_eq!(gesture.phase(), Phase::Idle);
+
+        // 2. 晚到的 Timeout 絕不能重新啟用
+        assert!(gesture.handle(Event::Timeout).is_empty());
+        assert_eq!(gesture.phase(), Phase::Idle);
+
+        // 3. F 鍵自動重複 (repeating: true) 必須被 consume 且絕不能重新進入 Pending 或 Held
+        assert_eq!(
+            gesture.handle(Event::Press { eligible: true, repeating: true }),
+            vec![Effect::Consume]
+        );
+        assert_eq!(gesture.phase(), Phase::Idle);
+
+        // 4. 其他鍵也不會做任何事
+        assert!(gesture.handle(Event::OtherKey).is_empty());
+
+        // 5. 直到真正收到實體 F 放開 (Release 或 ObservedRelease)
+        assert_eq!(gesture.handle(Event::Release), vec![Effect::Consume]);
+        assert_eq!(gesture.phase(), Phase::Idle);
+        assert!(!gesture.owns_key_up());
+
+        // 後續重複的 Release 什麼都不做
+        assert!(gesture.handle(Event::Release).is_empty());
+    }
+
+    #[test]
+    fn test_short_tap_f_release_replays_tap() {
+        let delay = Duration::from_millis(150);
+        let mut gesture = FHoldGesture::new(delay);
+        gesture.handle(Event::Press { eligible: true, repeating: false });
+
+        // 在 50ms 放開 F
+        gesture.handle(Event::Elapsed(Duration::from_millis(50)));
+        assert_eq!(
+            gesture.handle(Event::Release),
+            vec![Effect::Invalidate, Effect::ReplayTap, Effect::Consume]
+        );
+        assert_eq!(gesture.phase(), Phase::Idle);
+    }
+
+    #[test]
+    fn test_observed_release_maintains_ownership_until_genuine_release() {
+        let delay = Duration::from_millis(150);
+        let mut gesture = FHoldGesture::new(delay);
+        gesture.handle(Event::Press { eligible: true, repeating: false });
+
+        // 被動監聽先觀察到放開
+        let effects = gesture.handle(Event::ObservedRelease);
+        assert_eq!(effects, vec![Effect::Invalidate, Effect::ReplayTap, Effect::Consume]);
+        assert_eq!(gesture.phase(), Phase::Idle);
+        assert!(gesture.owns_key_up()); // 仍然保有 ownership 直到真實 release 事件
+
+        // 真實 release 事件抵達
+        assert_eq!(gesture.handle(Event::Release), vec![Effect::Consume]);
+        assert!(!gesture.owns_key_up());
+    }
+
+    #[test]
+    fn test_cancel_handles_pending_and_held() {
+        let delay = Duration::from_millis(150);
+        let mut g1 = FHoldGesture::new(delay);
+        g1.handle(Event::Press { eligible: true, repeating: false });
+        assert_eq!(g1.handle(Event::Cancel), vec![Effect::Invalidate]);
+        assert_eq!(g1.phase(), Phase::Idle);
+
+        let mut g2 = FHoldGesture::new(delay);
+        g2.handle(Event::Press { eligible: true, repeating: false });
+        g2.handle(Event::Elapsed(Duration::from_millis(151)));
+        assert_eq!(g2.phase(), Phase::Held);
+        assert_eq!(g2.handle(Event::Cancel), vec![Effect::Invalidate, Effect::EndLayer]);
+        assert_eq!(g2.phase(), Phase::Idle);
     }
 }

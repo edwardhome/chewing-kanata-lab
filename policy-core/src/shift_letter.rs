@@ -536,7 +536,7 @@ impl FCompositionBuffer {
     pub fn append(&mut self, symbol: &str) {
         let base_len = self.base.as_ref().map_or(0, |s| s.composition.raw.chars().count());
         if base_len + self.symbols.chars().count() + symbol.chars().count() <= 256
-            && symbol.chars().all(|c| c.is_ascii_graphic() || c == '°') {
+            && symbol.chars().all(|c| !c.is_control()) {
             self.symbols.push_str(symbol);
         }
     }
