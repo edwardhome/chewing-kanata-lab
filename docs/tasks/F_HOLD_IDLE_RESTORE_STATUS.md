@@ -66,3 +66,7 @@
 `/Volumes/DATA/DATA/chewing-kanata-lab-f-idle-restore/.cache/verification/1.3.1/`
 
 內有 core-tests、native-tests、prefs-tests、package-tests、registration-tests 五份 UTF-8 log，與 summary.json。均取自本次 Windows 執行結果，不是手工產生的 PASS 日誌。UI 的六項 node 測試另由本機實際執行，摘要計數已標示。
+
+## 使用者驗收與發布授權
+
+2026-11-19：使用者明確回報 Windows 測試完成、沒有問題，授權發布並上傳 1.3.1。驗收的是本報告列出的既有 ZIP，不重新編譯或替換其內容。Linux 驗收狀態不因本次 Windows 確認而改變。
