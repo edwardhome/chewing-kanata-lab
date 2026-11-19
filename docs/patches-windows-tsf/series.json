@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "baseline": "053d31ba10c089ae98508dd4a908ac2c2be3cb49",
-  "tree": "02153656c19aaafca0dacdec973298c0a4506f2b",
+  "tree": "2c2e7e42d2937ce346dd83a307e43f4442565bff",
   "patches": [
     {
       "file": "0001-feat-tip-embed-Kanata-number-layer-and-fix-context-m.patch",
@@ -210,7 +210,15 @@
     {
       "file": "0052-fix-input-render-actual-native-syllable-instead-of-l.patch",
       "sha256": "bcfc334de4ee6149d05dc19a4946269f0892527a0faac2c031bcc807b4f5fdd3"
+    },
+    {
+      "file": "0053-fix-input-restore-unused-F-holds-and-drive-timer-pre.patch",
+      "sha256": "eecee92bf1d43dbd7ea591b8754e1342bd5907d324c1d1e011069a22a5c8facc"
+    },
+    {
+      "file": "0054-fix-input-preserve-predeadline-typing-across-late-me.patch",
+      "sha256": "fba467a6241be3e84a6dff52fe863311b01a258f561d212f1c207b8c08882bed"
     }
   ],
-  "native_commit": "0f49538c700c1c6b17ad3b220078feb2e6d4d74f"
+  "native_commit": "f53d4e9578fb15d7c8fe082012d6798ff6ce2659"
 }
