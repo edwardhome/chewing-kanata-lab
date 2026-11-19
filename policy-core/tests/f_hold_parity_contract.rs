@@ -84,7 +84,7 @@ fn test_strict_boundary_elapsed_vs_delay() {
         let eff_rel = g_greater.handle(FHoldEvent::Release);
         assert_eq!(
             eff_rel,
-            vec![FHoldEffect::Invalidate, FHoldEffect::EndLayer, FHoldEffect::Consume]
+            vec![FHoldEffect::Invalidate, FHoldEffect::EndLayer, FHoldEffect::ReplayTap, FHoldEffect::Consume]
         );
         assert_eq!(g_greater.phase(), FHoldPhase::Idle);
         assert!(!g_greater.owns_key_up());
@@ -195,7 +195,7 @@ fn test_observed_release_while_held() {
     let eff_obs = gesture.handle(FHoldEvent::ObservedRelease);
     assert_eq!(
         eff_obs,
-        vec![FHoldEffect::Invalidate, FHoldEffect::EndLayer, FHoldEffect::Consume]
+        vec![FHoldEffect::Invalidate, FHoldEffect::EndLayer, FHoldEffect::ReplayTap, FHoldEffect::Consume]
     );
     assert_eq!(gesture.phase(), FHoldPhase::Idle);
     assert!(gesture.owns_key_up());
