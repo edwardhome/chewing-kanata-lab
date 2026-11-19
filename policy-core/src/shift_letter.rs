@@ -522,6 +522,7 @@ mod tests {
 pub struct FCompositionBuffer {
     pub base: Option<ShiftLetterSession>,
     symbols: String,
+    layer_used: bool,
 }
 
 impl FCompositionBuffer {
@@ -531,16 +532,19 @@ impl FCompositionBuffer {
             session.composition = ASCIIComposition::accepted(session.composition.raw.clone(),
                 Some(session.composition.cursor), 0, lexicon);
         }
-        Self { base, symbols: String::new() }
+        Self { base, symbols: String::new(), layer_used: false }
     }
     pub fn append(&mut self, symbol: &str) {
         let base_len = self.base.as_ref().map_or(0, |s| s.composition.raw.chars().count());
         if base_len + self.symbols.chars().count() + symbol.chars().count() <= 256
-            && symbol.chars().all(|c| !c.is_control()) {
+            && !symbol.is_empty() && symbol.chars().all(|c| !c.is_control()) {
             self.symbols.push_str(symbol);
+            self.layer_used = true;
         }
     }
-    pub fn backspace(&mut self) { self.symbols.pop(); }
+    pub fn backspace(&mut self) { if self.symbols.pop().is_some() { self.layer_used = true; } }
+    /// Sticky execution history, independent of the remaining output.
+    pub fn layer_used(&self) -> bool { self.layer_used }
     pub fn symbols(&self) -> &str { &self.symbols }
     pub fn preview(&self, lexicon: &TechnicalLexicon) -> ASCIIComposition {
         let base = self.base.as_ref().map(|s| s.composition.clone())

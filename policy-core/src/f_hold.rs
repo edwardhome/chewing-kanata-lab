@@ -25,6 +25,7 @@ pub enum Event {
     Release,
     ObservedRelease,
     OtherKey,
+    LayerCommand,
     Timeout,
     Cancel,
     Elapsed(Duration),
@@ -45,6 +46,7 @@ pub struct FHoldGesture {
     pub delay: Duration,
     pub phase: Phase,
     owns_key_up: bool,
+    layer_used: bool,
 }
 
 impl Default for FHoldGesture {
@@ -53,6 +55,7 @@ impl Default for FHoldGesture {
             delay: Duration::from_millis(Self::DEFAULT_DELAY_MS),
             phase: Phase::Idle,
             owns_key_up: false,
+            layer_used: false,
         }
     }
 }
@@ -72,6 +75,7 @@ impl FHoldGesture {
             delay: Duration::from_millis(clamped_ms),
             phase: Phase::Idle,
             owns_key_up: false,
+            layer_used: false,
         }
     }
 
@@ -93,6 +97,7 @@ impl FHoldGesture {
                     return vec![];
                 }
                 self.phase = Phase::Pending;
+                self.layer_used = false;
                 self.owns_key_up = true;
                 vec![Effect::Schedule, Effect::Consume]
             }
@@ -109,7 +114,12 @@ impl FHoldGesture {
                 self.phase = Phase::Idle;
                 match previous {
                     Phase::Pending => vec![Effect::Invalidate, Effect::ReplayTap, Effect::Consume],
-                    Phase::Held => vec![Effect::Invalidate, Effect::EndLayer, Effect::Consume],
+                    Phase::Held => {
+                        let mut effects = vec![Effect::Invalidate, Effect::EndLayer];
+                        if !self.layer_used { effects.push(Effect::ReplayTap); }
+                        effects.push(Effect::Consume);
+                        effects
+                    },
                     Phase::Idle => {
                         if owned {
                             vec![Effect::Consume]
@@ -118,6 +128,10 @@ impl FHoldGesture {
                         }
                     }
                 }
+            }
+            Event::LayerCommand => {
+                if self.phase == Phase::Held { self.layer_used = true; }
+                vec![]
             }
             Event::OtherKey => {
                 if self.phase != Phase::Pending {
@@ -219,7 +233,7 @@ mod tests {
             // 放開 F -> Invalidate, EndLayer, Consume
             assert_eq!(
                 gesture.handle(Event::Release),
-                vec![Effect::Invalidate, Effect::EndLayer, Effect::Consume]
+                vec![Effect::Invalidate, Effect::EndLayer, Effect::ReplayTap, Effect::Consume]
             );
             assert_eq!(gesture.phase(), Phase::Idle);
         }

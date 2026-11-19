@@ -1,0 +1,102 @@
+From f53d4e9578fb15d7c8fe082012d6798ff6ce2659 Mon Sep 17 00:00:00 2001
+From: Defu Chen <edward61221@gmail.com>
+Date: Thu, 19 Nov 2026 10:44:30 +0800
+Subject: [PATCH] fix(input): preserve predeadline typing across late message
+ dispatch
+
+---
+ tip/src/text_service/chewing.rs   |  7 +++++--
+ tip/src/text_service/f_preview.rs | 34 +++++++++++++++++++++++++++++++
+ tip/src/text_service/key_event.rs |  2 ++
+ 3 files changed, 41 insertions(+), 2 deletions(-)
+
+diff --git a/tip/src/text_service/chewing.rs b/tip/src/text_service/chewing.rs
+index 6def665..004803e 100644
+--- a/tip/src/text_service/chewing.rs
++++ b/tip/src/text_service/chewing.rs
+@@ -932,7 +932,10 @@ impl ChewingTextService {
+                     kanata_layer::FKeyState::Held { delay, mappings } => (Instant::now(), delay, mappings, true),
+                     _ => unreachable!(),
+                 };
+-                let pending = !is_held && started_at.elapsed() <= delay;
++                let pending = super::f_preview::ordinary_key_before_deadline(
++                    is_held, started_at.elapsed(), delay,
++                    self.f_event.and_then(|event|event.message_time), ev.message_time,
++                    self.f_buffer.as_ref().is_some_and(|buffer|buffer.layer_used()));
+                 let has_symbols = self.f_buffer.as_ref().is_some_and(|b| !b.symbols().is_empty());
+ 
+                 if !pending && can_handle_configured_f_layer(&self.chewing_editor, ev.vk, has_symbols, &mappings) {
+@@ -3275,7 +3278,7 @@ mod f_and_shift_handoff_tests {
+ mod reversible_f_native_tests {
+     use super::*;
+     fn f_event() -> SystemKeyboardEvent {
+-        SystemKeyboardEvent { vk:0x46, repeating:false, scan_code:0x21, ascii_code:b'f', key_state:[0;256] }
++        SystemKeyboardEvent { message_time:None, vk:0x46, repeating:false, scan_code:0x21, ascii_code:b'f', key_state:[0;256] }
+     }
+     #[test]
+     fn standard_f_preview_uses_native_reading_without_editing_original() {
+diff --git a/tip/src/text_service/f_preview.rs b/tip/src/text_service/f_preview.rs
+index 162722b..ede5103 100644
+--- a/tip/src/text_service/f_preview.rs
++++ b/tip/src/text_service/f_preview.rs
+@@ -43,3 +43,37 @@ mod tests {
+         assert_eq!(remaining_delay(d+Duration::from_nanos(1),d),None);
+     }
+ }
++
++/// Keyboard message timestamps share the same wrapping millisecond clock.
++/// A late-dispatched key can precede an already-delivered timer deadline.
++/// Do not compare this clock against Instant or revive an already-used layer.
++pub(super) fn ordinary_key_before_deadline(
++    held: bool, received_elapsed: Duration, delay: Duration,
++    press_time: Option<u32>, key_time: Option<u32>, used: bool,
++) -> bool {
++    if used { return false; }
++    if let Some(elapsed) = press_time.zip(key_time).map(|(start,end)|end.wrapping_sub(start)) {
++        if elapsed <= i32::MAX as u32 {
++            return Duration::from_millis(elapsed as u64) <= delay;
++        }
++    }
++    !held && received_elapsed <= delay
++}
++
++#[cfg(test)]
++mod delivery_order_tests {
++    use super::*;
++    #[test]
++    fn timer_first_does_not_reclassify_earlier_keyboard_message() {
++        for elapsed in [149,150] {
++            assert!(ordinary_key_before_deadline(true,Duration::from_millis(250),Duration::from_millis(150),Some(1000),Some(1000+elapsed),false));
++        }
++        assert!(!ordinary_key_before_deadline(true,Duration::from_millis(250),Duration::from_millis(150),Some(1000),Some(1151),false));
++    }
++    #[test]
++    fn wrapping_clock_and_used_layer_do_not_replay_twice() {
++        assert!(ordinary_key_before_deadline(true,Duration::from_secs(1),Duration::from_millis(150),Some(u32::MAX-100),Some(49),false));
++        assert!(!ordinary_key_before_deadline(true,Duration::from_secs(1),Duration::from_millis(150),Some(1000),Some(1100),true));
++        assert!(!ordinary_key_before_deadline(true,Duration::from_secs(1),Duration::from_millis(150),Some(1000),Some(900),false));
++    }
++}
+diff --git a/tip/src/text_service/key_event.rs b/tip/src/text_service/key_event.rs
+index 77226ff..0bcbf0f 100644
+--- a/tip/src/text_service/key_event.rs
++++ b/tip/src/text_service/key_event.rs
+@@ -15,6 +15,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
+ #[derive(Debug, Clone, Copy)]
+ pub(super) struct SystemKeyboardEvent {
+     pub(super) vk: u16,
++    pub(super) message_time: Option<u32>,
+     pub(super) repeating: bool,
+     pub(super) scan_code: u16,
+     pub(super) ascii_code: u8,
+@@ -56,6 +57,7 @@ impl SystemKeyboardEvent {
+         }
+         SystemKeyboardEvent {
+             repeating: lparam & (1 << 30) != 0,
++            message_time: Some(unsafe { windows::Win32::UI::WindowsAndMessaging::GetMessageTime() } as u32),
+             vk,
+             scan_code,
+             ascii_code: code,
+-- 
+2.54.0 (Apple Git-157)
+
