@@ -1,0 +1,20 @@
+test_absolute_loader_path (__main__.InstallerTests.test_absolute_loader_path) ... ok
+test_dangling_registration_symlink_rejected (__main__.InstallerTests.test_dangling_registration_symlink_rejected) ... ok
+test_dangling_target_library_symlink_rejected (__main__.InstallerTests.test_dangling_target_library_symlink_rejected) ... ok
+test_duplicate_manifest_entry_rejected (__main__.InstallerTests.test_duplicate_manifest_entry_rejected) ... ok
+test_duplicate_registration_preserved (__main__.InstallerTests.test_duplicate_registration_preserved) ... ok
+test_empty_manifest_rejected (__main__.InstallerTests.test_empty_manifest_rejected) ... ok
+test_isolated_install (__main__.InstallerTests.test_isolated_install) ... ok
+test_missing_manifest_entry_rejected (__main__.InstallerTests.test_missing_manifest_entry_rejected) ... ok
+test_remove_preflights_both_registrations (__main__.InstallerTests.test_remove_preflights_both_registrations) ... ok
+test_remove_preserves_dictionary_settings_and_binary (__main__.InstallerTests.test_remove_preserves_dictionary_settings_and_binary) ... ok
+test_tampered_digest_rejected (__main__.InstallerTests.test_tampered_digest_rejected) ... ok
+test_tampered_payload_rejected (__main__.InstallerTests.test_tampered_payload_rejected) ... ok
+test_target_library_symlink_rejected (__main__.InstallerTests.test_target_library_symlink_rejected) ... ok
+test_unmanaged_registration_preserved (__main__.InstallerTests.test_unmanaged_registration_preserved) ... ok
+test_version_directory_symlink_rejected (__main__.InstallerTests.test_version_directory_symlink_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 0.363s
+
+OK

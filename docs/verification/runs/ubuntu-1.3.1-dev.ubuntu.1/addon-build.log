@@ -1,0 +1,93 @@
+Cloning into '/work/release-131/addon-build-1/source'...
+HEAD is now at 918156a bump version
+-- The C compiler identification is GNU 13.3.0
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found PkgConfig: /usr/bin/pkg-config (found version "1.8.1") 
+-- Installing in the same prefix as Fcitx, adopting their path scheme by default
+-- Found Gettext: /usr/bin/msgmerge (found version "0.21") 
+-- Checking for module 'chewing>=0.5.0'
+--   Found chewing, version 0.6.0
+ai-chewing
+-- The following REQUIRED packages have been found:
+
+ * ECM
+ * PkgConfig
+ * Fcitx5Core (required version >= 5.0.2)
+ * Gettext
+
+-- Configuring done (0.5s)
+-- Generating done (0.0s)
+-- Build files have been written to: /work/release-131/addon-build-1/build
+[1/12] Generating fcitx5-chewing-de.mo
+[2/12] Generating fcitx5-chewing-ca.mo
+[3/12] Generating fcitx5-chewing-da.mo
+[4/12] Generating fcitx5-chewing-he.mo
+[5/12] Generating fcitx5-chewing-ja.mo
+[6/12] Generating fcitx5-chewing-ko.mo
+[7/12] Generating fcitx5-chewing-ru.mo
+[8/12] Generating fcitx5-chewing-tr.mo
+[9/12] Generating fcitx5-chewing-zh_CN.mo
+[10/12] Generating fcitx5-chewing-zh_TW.mo
+[11/12] Building CXX object src/CMakeFiles/ai-chewing.dir/eim.cpp.o
+[12/12] Linking CXX shared module src/libai-chewing.so
+-- Install configuration: "Release"
+-- Installing: /work/release-131/addon-build-1/stage/usr/lib/fcitx5/libai-chewing.so
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/fcitx5/inputmethod/ai-chewing.conf
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/16x16
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/16x16/apps
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/16x16/apps/org.fcitx.Fcitx5.fcitx-chewing.png
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/16x16/apps/fcitx-chewing.png
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/22x22
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/22x22/apps
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/22x22/apps/org.fcitx.Fcitx5.fcitx-chewing.png
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/22x22/apps/fcitx-chewing.png
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/24x24
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/24x24/apps
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/24x24/apps/org.fcitx.Fcitx5.fcitx-chewing.png
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/24x24/apps/fcitx-chewing.png
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/48x48
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/48x48/apps
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/48x48/apps/org.fcitx.Fcitx5.fcitx-chewing.png
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/icons/hicolor/48x48/apps/fcitx-chewing.png
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/locale/ca/LC_MESSAGES/fcitx5-chewing.mo
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/locale/da/LC_MESSAGES/fcitx5-chewing.mo
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/locale/de/LC_MESSAGES/fcitx5-chewing.mo
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/locale/he/LC_MESSAGES/fcitx5-chewing.mo
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/locale/ja/LC_MESSAGES/fcitx5-chewing.mo
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/locale/ko/LC_MESSAGES/fcitx5-chewing.mo
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/locale/ru/LC_MESSAGES/fcitx5-chewing.mo
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/locale/tr/LC_MESSAGES/fcitx5-chewing.mo
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/locale/zh_CN/LC_MESSAGES/fcitx5-chewing.mo
+-- Installing: /work/release-131/addon-build-1/stage/usr/share/locale/zh_TW/LC_MESSAGES/fcitx5-chewing.mo
+/work/release-131/addon-build-1/stage/usr/lib/fcitx5/libai-chewing.so: ELF 64-bit LSB shared object, x86-64, version 1 (SYSV), dynamically linked, BuildID[sha1]=e77ebb1a3fd951880f6f2a26edd0df45a47ba962, not stripped
+	linux-vdso.so.1 (0x0000724f07f90000)
+	libFcitx5Core.so.7 => /lib/x86_64-linux-gnu/libFcitx5Core.so.7 (0x0000724f07e8b000)
+	libFcitx5Config.so.6 => /lib/x86_64-linux-gnu/libFcitx5Config.so.6 (0x0000724f07e6b000)
+	libFcitx5Utils.so.2 => /lib/x86_64-linux-gnu/libFcitx5Utils.so.2 (0x0000724f07dc8000)
+	libchewing.so.3 => /lib/x86_64-linux-gnu/libchewing.so.3 (0x0000724f07da1000)
+	libstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (0x0000724f07a00000)
+	libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x0000724f07d71000)
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x0000724f07600000)
+	libxkbcommon.so.0 => /lib/x86_64-linux-gnu/libxkbcommon.so.0 (0x0000724f07d28000)
+	libuuid.so.1 => /lib/x86_64-linux-gnu/libuuid.so.1 (0x0000724f07d1e000)
+	libsystemd.so.0 => /lib/x86_64-linux-gnu/libsystemd.so.0 (0x0000724f07920000)
+	libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x0000724f07837000)
+	libsqlite3.so.0 => /lib/x86_64-linux-gnu/libsqlite3.so.0 (0x0000724f07498000)
+	/lib64/ld-linux-x86-64.so.2 (0x0000500000000000)
+	libcap.so.2 => /lib/x86_64-linux-gnu/libcap.so.2 (0x0000724f07d0f000)
+	libgcrypt.so.20 => /lib/x86_64-linux-gnu/libgcrypt.so.20 (0x0000724f0734f000)
+	liblz4.so.1 => /lib/x86_64-linux-gnu/liblz4.so.1 (0x0000724f07ced000)
+	liblzma.so.5 => /lib/x86_64-linux-gnu/liblzma.so.5 (0x0000724f07cb9000)
+	libzstd.so.1 => /lib/x86_64-linux-gnu/libzstd.so.1 (0x0000724f07295000)
+	libgpg-error.so.0 => /lib/x86_64-linux-gnu/libgpg-error.so.0 (0x0000724f07c94000)
+Native addon built. No installation, no Fcitx5 restart, no 1.3.0 feature-parity claim.

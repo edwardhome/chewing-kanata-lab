@@ -1,0 +1,36 @@
+PASS: module loads, native F creates Bopomofo, dictionary remains isolated
+libai-chewing.so: OK
+ai-chewing.conf: OK
+install-preview.py: OK
+UPSTREAM-COPYING: OK
+corresponding-source.tar.gz: OK
+README.txt: OK
+libai-chewing.so: ELF 64-bit LSB shared object, x86-64, version 1 (SYSV), dynamically linked, BuildID[sha1]=e77ebb1a3fd951880f6f2a26edd0df45a47ba962, not stripped
+	linux-vdso.so.1 (0x0000763334828000)
+	libFcitx5Core.so.7 => /lib/x86_64-linux-gnu/libFcitx5Core.so.7 (0x0000763334723000)
+	libFcitx5Config.so.6 => /lib/x86_64-linux-gnu/libFcitx5Config.so.6 (0x0000763334703000)
+	libFcitx5Utils.so.2 => /lib/x86_64-linux-gnu/libFcitx5Utils.so.2 (0x0000763334660000)
+	libchewing.so.3 => /lib/x86_64-linux-gnu/libchewing.so.3 (0x0000763334639000)
+	libstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (0x0000763334200000)
+	libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x0000763334609000)
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x0000763333e00000)
+	libxkbcommon.so.0 => /lib/x86_64-linux-gnu/libxkbcommon.so.0 (0x00007633345c0000)
+	libuuid.so.1 => /lib/x86_64-linux-gnu/libuuid.so.1 (0x00007633345b6000)
+	libsystemd.so.0 => /lib/x86_64-linux-gnu/libsystemd.so.0 (0x00007633344d6000)
+	libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x0000763334117000)
+	libsqlite3.so.0 => /lib/x86_64-linux-gnu/libsqlite3.so.0 (0x0000763333c98000)
+	/lib64/ld-linux-x86-64.so.2 (0x0000500000000000)
+	libcap.so.2 => /lib/x86_64-linux-gnu/libcap.so.2 (0x00007633344c7000)
+	libgcrypt.so.20 => /lib/x86_64-linux-gnu/libgcrypt.so.20 (0x0000763333b4f000)
+	liblz4.so.1 => /lib/x86_64-linux-gnu/liblz4.so.1 (0x00007633344a5000)
+	liblzma.so.5 => /lib/x86_64-linux-gnu/liblzma.so.5 (0x00007633340e5000)
+	libzstd.so.1 => /lib/x86_64-linux-gnu/libzstd.so.1 (0x000076333402b000)
+	libgpg-error.so.0 => /lib/x86_64-linux-gnu/libgpg-error.so.0 (0x000076333447e000)
+GLIBCXX_3.4.21
+GLIBCXX_3.4.26
+GLIBCXX_3.4.32
+GLIBC_2.2.5
+GLIBC_2.3.4
+GLIBC_2.4
+GLIBC_2.14
+GLIBC_2.32

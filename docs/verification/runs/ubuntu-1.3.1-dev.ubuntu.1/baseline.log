@@ -1,0 +1,62 @@
+Ubuntu=24.04 Architecture=amd64
+0.6.0
+5.1.7
+5.1.7
+5.1.7
+=========================================
+ Chewing Policy Core Unit Test Suite
+=========================================
+Running test_default_context...
+  [PASS] Default mode must be LEGACY for safe fallback
+  [PASS] Default preedit must be false
+  [PASS] Default is_secure_field must be false
+  [PASS] Default editor mode must be UNKNOWN
+Running test_ascii_first_bypass...
+  [PASS] Colon ':' should bypass in ASCII-first
+  [PASS] Left bracket '[' should bypass in ASCII-first
+  [PASS] Right bracket ']' should bypass in ASCII-first
+  [PASS] Left brace '{' should bypass in ASCII-first
+  [PASS] Right brace '}' should bypass in ASCII-first
+  [PASS] Left paren '(' should bypass in ASCII-first
+  [PASS] Right paren ')' should bypass in ASCII-first
+  [PASS] Backtick '`' should bypass in ASCII-first
+  [PASS] Underscore '_' should bypass in ASCII-first
+  [PASS] Semicolon ';' should bypass in ASCII-first
+  [PASS] Colon ':' must NOT bypass when preedit is active
+  [PASS] Left bracket '[' must NOT bypass when preedit is active
+Running test_legacy_mode_fallback...
+  [PASS] Colon must NOT bypass in legacy mode
+  [PASS] Bracket must NOT bypass in legacy mode
+  [PASS] Legacy mode must keep fullwidth colon untouched
+Running test_formal_zh_mode...
+  [PASS] Formal mode should not bypass key
+  [PASS] Formal mode must preserve fullwidth colon
+  [PASS] Formal mode must preserve opening quote
+Running test_secure_and_vim_modes...
+  [PASS] Secure field must bypass all keys
+  [PASS] Vim Normal mode must bypass 'd'
+  [PASS] Vim Normal mode must bypass ':'
+  [PASS] Vim Command mode must bypass 'w'
+Running test_transform_commit...
+  [PASS] Transform '：' to ':' in ascii_first mode
+  [PASS] Transform '「' to '[' in ascii_first mode
+  [PASS] Transform '」' to ']' in ascii_first mode
+  [PASS] Chinese phrases must remain 100% untouched
+Running test_reranker_stub...
+  [PASS] Reranker stub should return success (0)
+  [PASS] Reranker stub must preserve candidate order
+=========================================
+ Test Results: 32 / 32 passed.
+=========================================
+=========================================
+ Fcitx5 Adapter Bridge Unit Test Suite
+=========================================
+  [PASS] ASCII syntax keys bypass when preedit is empty
+  [PASS] Keys are not bypassed when preedit is active
+  [PASS] Transform fullwidth colon to ascii in ASCII_FIRST
+  [PASS] Legacy mode preserves original fullwidth colon
+  [PASS] Chinese phrase remains 100% untouched
+=========================================
+ All Fcitx5 Adapter Tests Passed!
+=========================================
+Baseline checks finished. Full Fcitx5 engine and 1.3.0 feature parity are NOT verified.

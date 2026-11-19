@@ -8,11 +8,11 @@
 - 原生 Windows TSF / 設定程式不能直接編譯為 Linux；Fcitx5 需要獨立前端、事件計時及組字整合。
 - 上游 Fcitx5 Chewing 預設讀寫原版用戶詞庫；移植必須使用獨立 addon、設定及資料目錄，不能直接重新命名套件後出貨。
 - Ubuntu 24.04 官方基準為 fcitx5-chewing 5.1.1、libchewing 0.6.0；現有 vendor manifest 的較新版本不能直接假定相容。
-- WorkstationY 是 Ubuntu 26.04，免密碼登入已驗證；預計以 Ubuntu 24.04 AMD64 容器建置，主機桌面測試另列為 26.04 相容性證據。
+- WorkstationY 是 Ubuntu 26.04，免密碼登入已驗證；已以 Ubuntu 24.04 AMD64 PRoot 使用者空間建置，主機桌面測試另列為 26.04 相容性證據。
 
 ## 本輪準備
 
-packaging/linux/ubuntu24 提供容器建置環境及既有政策核心／橋接基線測試腳本。僅供開發，不是安裝包。
+packaging/linux/ubuntu24 提供建置環境、原生前端、獨立使用者安裝／移除器與打包腳本。政策橋接尚未接入原生前端。
 
 ## 尚待完成
 
@@ -23,4 +23,4 @@ packaging/linux/ubuntu24 提供容器建置環境及既有政策核心／橋接�
 - 設定介面、工程詞彙與 Ollama 功能逐項對齊及明確差異表。
 - Ubuntu 24.04 實鍵驗收、AMD64 套件及授權清單；通過前使用測試後綴，不發布正式 1.3.0。
 
-目前已在 WorkstationY 的 Ubuntu 24.04 AMD64 使用者空間完成編譯，產出 1.3.0-dev.ubuntu.1 原生前端基礎測試包。尚未達到完整 1.3.0 功能對等。未安裝、未重啟輸入法、未推送或發布；桌面測試仍 NOT_RUN。詳細證據見 docs/verification/runs/RUN-20261117-UBUNTU-NATIVE.md。
+目前在 WorkstationY 的 Ubuntu 24.04 AMD64 使用者空間重新建置 `1.3.1-dev.ubuntu.1`，新增完整套件校驗清單、連結目標保護及移除前完整預檢。依使用者授權公開預覽版；尚未達到 Windows 功能對等。沒有安裝或重啟真實輸入法；桌面測試仍 NOT_RUN。詳細證據見 docs/verification/runs/RUN-20261119-UBUNTU-PREVIEW-131.md。詞彙卡 v2 保持獨立，不混入本次發行。

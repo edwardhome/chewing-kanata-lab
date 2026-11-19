@@ -2,7 +2,7 @@
 set -euo pipefail
 # Run inside the disposable Ubuntu build workspace, after build_addon.sh.
 # addon-build-1 and install-preview.py must be present in the current directory.
-p=AI-Chewing-Ubuntu24.04-amd64-1.3.0-dev.ubuntu.1
+p=AI-Chewing-Ubuntu24.04-amd64-1.3.1-dev.ubuntu.1
 mkdir "$p"
 cp addon-build-1/stage/usr/lib/fcitx5/libai-chewing.so "$p/"
 cp addon-build-1/stage/usr/share/fcitx5/inputmethod/ai-chewing.conf "$p/"
@@ -11,9 +11,9 @@ cp addon-build-1/source/LICENSES/LGPL-2.1-or-later.txt "$p/UPSTREAM-COPYING"
 tar --exclude=.git -czf "$p/corresponding-source.tar.gz" -C addon-build-1 source
 cat > "$p/README.txt" <<'EOF'
 AI新酷音 Ubuntu 24.04 AMD64 原生前端基礎測試包
-版本：1.3.0-dev.ubuntu.1
+版本：1.3.1-dev.ubuntu.1
 
-這不是完整 Windows 1.3.0 功能對等版。
+這不是完整 Windows 1.3.1 功能對等版。
 已提供：獨立 Fcitx5 新酷音模組、原生注音/候選/設定、獨立使用者詞庫。
 尚未提供：F 長按分層、APP 自動切換、工程詞彙管理、Ollama 預測、GitHub 更新介面。
 
@@ -21,6 +21,7 @@ AI新酷音 Ubuntu 24.04 AMD64 原生前端基礎測試包
    sudo apt install fcitx5 fcitx5-config-qt fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 fcitx5-frontend-qt5 libchewing3 libchewing3-data python3
 2. 解壓縮後，以桌面使用者執行，不要 sudo：
    python3 install-preview.py install
+   已裝舊預覽版者，先用舊包的 install-preview.py remove 解除註冊，再安裝新版；詞庫保留。
 3. 請儲存工作，自行啟用/重新啟動 Fcitx5，再於 Fcitx5 設定加入 AI Chewing (Ubuntu preview)。
    若原本使用 IBus，切換框架涉及登入工作階段設定；此安裝器不代為修改。
 4. 測試記事本/瀏覽器/終端機的注音、空白選字、Enter、退格、切換視窗。
